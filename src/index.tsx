@@ -80,6 +80,8 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('paid_hours_per_day', '7.5')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('work_days', '1,2,3,4,5')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('stat_pay_multiplier', '1.5')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_email', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('last_weekly_email_sent', '')`,
   ]
   for (const sql of statements) {
     await db.prepare(sql).run()
@@ -623,6 +625,625 @@ app.get('/api/payroll/:year/:month', async (c) => {
 
   return c.json({ payroll: Object.values(byWorker), period: `${year}-${String(month).padStart(2,'0')}`, start: startDate, end: endDate })
 })
+
+// ─── WEEKLY EXPORT API ────────────────────────────────────────────────────────
+
+// Helper: get Mon–Fri week boundaries for a given date
+function getWeekBounds(refDate?: Date): { start: string; end: string; label: string } {
+  const d = refDate ? new Date(refDate) : new Date()
+  // Find most-recent Monday
+  const day = d.getUTCDay()                      // 0=Sun … 6=Sat
+  const diffToMon = day === 0 ? -6 : 1 - day    // days back to Monday
+  const mon = new Date(d)
+  mon.setUTCDate(d.getUTCDate() + diffToMon)
+  mon.setUTCHours(0, 0, 0, 0)
+  // Friday of same week
+  const fri = new Date(mon)
+  fri.setUTCDate(mon.getUTCDate() + 4)
+  fri.setUTCHours(23, 59, 59, 999)
+
+  const fmt = (dt: Date) => dt.toISOString().split('T')[0]
+  const label = `Week of ${fmt(mon)} to ${fmt(fri)}`
+  return { start: fmt(mon), end: fmt(fri), label }
+}
+
+// GET /api/export/weekly?week=YYYY-MM-DD   (week= is any date in the desired week)
+// Returns full JSON with sessions + GPS pings per worker
+app.get('/api/export/weekly', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const weekParam = c.req.query('week')
+  const bounds = getWeekBounds(weekParam ? new Date(weekParam) : undefined)
+
+  // All completed + active sessions in the week
+  const sessions = await db.prepare(`
+    SELECT s.*,
+           w.name  AS worker_name,
+           w.phone AS worker_phone,
+           w.hourly_rate
+    FROM sessions s
+    JOIN workers w ON s.worker_id = w.id
+    WHERE DATE(s.clock_in_time) >= ?
+      AND DATE(s.clock_in_time) <= ?
+    ORDER BY w.name, s.clock_in_time ASC
+  `).bind(bounds.start, bounds.end).all()
+
+  // GPS pings for every session in the week
+  const pings = await db.prepare(`
+    SELECT lp.*
+    FROM location_pings lp
+    JOIN sessions s ON lp.session_id = s.id
+    WHERE DATE(s.clock_in_time) >= ?
+      AND DATE(s.clock_in_time) <= ?
+    ORDER BY lp.session_id, lp.timestamp ASC
+  `).bind(bounds.start, bounds.end).all()
+
+  // Index pings by session_id
+  const pingsBySession: Record<number, any[]> = {}
+  ;(pings.results as any[]).forEach((p: any) => {
+    if (!pingsBySession[p.session_id]) pingsBySession[p.session_id] = []
+    pingsBySession[p.session_id].push(p)
+  })
+
+  // Group sessions by worker
+  const byWorker: Record<string, any> = {}
+  ;(sessions.results as any[]).forEach((s: any) => {
+    const wid = s.worker_id
+    if (!byWorker[wid]) {
+      byWorker[wid] = {
+        worker_id: wid,
+        worker_name: s.worker_name,
+        worker_phone: s.worker_phone,
+        hourly_rate: s.hourly_rate,
+        sessions: [],
+        total_hours: 0,
+        total_earnings: 0
+      }
+    }
+    const enriched = {
+      ...s,
+      gps_pings: pingsBySession[s.id] || []
+    }
+    byWorker[wid].sessions.push(enriched)
+    byWorker[wid].total_hours    += s.total_hours || 0
+    byWorker[wid].total_earnings += s.earnings    || 0
+  })
+
+  return c.json({
+    week: bounds,
+    generated_at: new Date().toISOString(),
+    workers: Object.values(byWorker)
+  })
+})
+
+// GET /api/export/weekly/html?week=YYYY-MM-DD
+// Returns a printable HTML proof report
+app.get('/api/export/weekly/html', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const weekParam = c.req.query('week')
+  const bounds    = getWeekBounds(weekParam ? new Date(weekParam) : undefined)
+
+  // Settings
+  const settingsRaw = await db.prepare('SELECT * FROM settings').all()
+  const settings: Record<string, string> = {}
+  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+
+  // Sessions
+  const sessions = await db.prepare(`
+    SELECT s.*,
+           w.name  AS worker_name,
+           w.phone AS worker_phone,
+           w.hourly_rate
+    FROM sessions s
+    JOIN workers w ON s.worker_id = w.id
+    WHERE DATE(s.clock_in_time) >= ?
+      AND DATE(s.clock_in_time) <= ?
+    ORDER BY w.name, s.clock_in_time ASC
+  `).bind(bounds.start, bounds.end).all()
+
+  // GPS pings
+  const pings = await db.prepare(`
+    SELECT lp.*
+    FROM location_pings lp
+    JOIN sessions s ON lp.session_id = s.id
+    WHERE DATE(s.clock_in_time) >= ?
+      AND DATE(s.clock_in_time) <= ?
+    ORDER BY lp.session_id, lp.timestamp ASC
+  `).bind(bounds.start, bounds.end).all()
+
+  const pingsBySession: Record<number, any[]> = {}
+  ;(pings.results as any[]).forEach((p: any) => {
+    if (!pingsBySession[p.session_id]) pingsBySession[p.session_id] = []
+    pingsBySession[p.session_id].push(p)
+  })
+
+  const byWorker: Record<string, any> = {}
+  ;(sessions.results as any[]).forEach((s: any) => {
+    const wid = s.worker_id
+    if (!byWorker[wid]) byWorker[wid] = {
+      worker_name: s.worker_name, worker_phone: s.worker_phone,
+      hourly_rate: s.hourly_rate, sessions: [], total_hours: 0, total_earnings: 0
+    }
+    byWorker[wid].sessions.push({ ...s, gps_pings: pingsBySession[s.id] || [] })
+    byWorker[wid].total_hours    += s.total_hours || 0
+    byWorker[wid].total_earnings += s.earnings    || 0
+  })
+
+  const html = buildWeeklyReportHTML(bounds, settings, Object.values(byWorker))
+  return c.html(html)
+})
+
+// POST /api/export/email  { week?: 'YYYY-MM-DD' }
+// Sends the weekly report to admin email via Resend (or falls back to log)
+app.post('/api/export/email', async (c) => {
+  const db  = c.env.DB
+  const env = c.env as any
+  await ensureSchema(db)
+
+  const body       = await c.req.json().catch(() => ({})) as any
+  const weekParam  = body.week
+  const bounds     = getWeekBounds(weekParam ? new Date(weekParam) : undefined)
+
+  const settingsRaw = await db.prepare('SELECT * FROM settings').all()
+  const settings: Record<string, string> = {}
+  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+
+  const adminEmail = settings.admin_email || ''
+  if (!adminEmail) {
+    return c.json({ error: 'No admin email configured. Go to Settings → General and add your email.' }, 400)
+  }
+
+  // Build sessions data
+  const sessions = await db.prepare(`
+    SELECT s.*, w.name AS worker_name, w.phone AS worker_phone, w.hourly_rate
+    FROM sessions s JOIN workers w ON s.worker_id = w.id
+    WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+    ORDER BY w.name, s.clock_in_time ASC
+  `).bind(bounds.start, bounds.end).all()
+
+  const pings = await db.prepare(`
+    SELECT lp.* FROM location_pings lp
+    JOIN sessions s ON lp.session_id = s.id
+    WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+    ORDER BY lp.session_id, lp.timestamp ASC
+  `).bind(bounds.start, bounds.end).all()
+
+  const pingsBySession: Record<number, any[]> = {}
+  ;(pings.results as any[]).forEach((p: any) => {
+    if (!pingsBySession[p.session_id]) pingsBySession[p.session_id] = []
+    pingsBySession[p.session_id].push(p)
+  })
+
+  const byWorker: Record<string, any> = {}
+  ;(sessions.results as any[]).forEach((s: any) => {
+    const wid = s.worker_id
+    if (!byWorker[wid]) byWorker[wid] = {
+      worker_name: s.worker_name, worker_phone: s.worker_phone,
+      hourly_rate: s.hourly_rate, sessions: [], total_hours: 0, total_earnings: 0
+    }
+    byWorker[wid].sessions.push({ ...s, gps_pings: pingsBySession[s.id] || [] })
+    byWorker[wid].total_hours    += s.total_hours || 0
+    byWorker[wid].total_earnings += s.earnings    || 0
+  })
+
+  const htmlBody = buildWeeklyReportHTML(bounds, settings, Object.values(byWorker))
+  const appName  = settings.app_name || 'WorkTracker'
+  const subject  = `${appName} — Weekly Report: ${bounds.label}`
+
+  // Try Resend API (set RESEND_API_KEY in Cloudflare secrets)
+  const resendKey = env.RESEND_API_KEY || ''
+  if (resendKey) {
+    try {
+      const resp = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${resendKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: `${appName} <reports@worktracker.app>`,
+          to: [adminEmail],
+          subject,
+          html: htmlBody
+        })
+      })
+      const result = await resp.json() as any
+      if (!resp.ok) {
+        return c.json({ error: 'Email service error', detail: result }, 500)
+      }
+      // Log the send
+      await db.prepare(
+        `INSERT OR IGNORE INTO settings (key, value) VALUES ('last_weekly_email_sent', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
+      ).bind(new Date().toISOString()).run()
+      return c.json({ success: true, message: `Weekly report sent to ${adminEmail}`, week: bounds.label, email_id: result.id })
+    } catch (e: any) {
+      return c.json({ error: 'Failed to send email', detail: e.message }, 500)
+    }
+  }
+
+  // No email key — return preview URL instead
+  return c.json({
+    success: false,
+    message: 'Email not configured. Add RESEND_API_KEY secret and admin_email in Settings.',
+    preview_url: `/api/export/weekly/html?week=${bounds.start}`,
+    week: bounds.label
+  }, 200)
+})
+
+// GET /api/export/csv?week=YYYY-MM-DD
+// Returns a CSV file attachment
+app.get('/api/export/csv', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const weekParam = c.req.query('week')
+  const bounds    = getWeekBounds(weekParam ? new Date(weekParam) : undefined)
+
+  const sessions = await db.prepare(`
+    SELECT s.*, w.name AS worker_name, w.phone AS worker_phone, w.hourly_rate
+    FROM sessions s JOIN workers w ON s.worker_id = w.id
+    WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+    ORDER BY w.name, s.clock_in_time ASC
+  `).bind(bounds.start, bounds.end).all()
+
+  const pings = await db.prepare(`
+    SELECT lp.* FROM location_pings lp
+    JOIN sessions s ON lp.session_id = s.id
+    WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+    ORDER BY lp.session_id, lp.timestamp ASC
+  `).bind(bounds.start, bounds.end).all()
+
+  const pingsBySession: Record<number, any[]> = {}
+  ;(pings.results as any[]).forEach((p: any) => {
+    if (!pingsBySession[p.session_id]) pingsBySession[p.session_id] = []
+    pingsBySession[p.session_id].push(p)
+  })
+
+  // Row: one per session, with GPS proof summary
+  const csvHeader = [
+    'Worker', 'Phone', 'Date', 'Day',
+    'Clock In', 'Clock Out', 'Hours', 'Rate/hr', 'Earnings',
+    'Job Location', 'Job Description',
+    'Clock-In GPS (Lat)', 'Clock-In GPS (Lng)', 'Clock-In Address',
+    'Clock-Out GPS (Lat)', 'Clock-Out GPS (Lng)', 'Clock-Out Address',
+    'GPS Pings Count', 'GPS Ping Times', 'GPS Ping Coords', 'Status'
+  ]
+
+  const escape = (v: any) => '"' + String(v ?? '').replace(/"/g, '""') + '"'
+
+  const rows = (sessions.results as any[]).map((s: any) => {
+    const sessionPings = pingsBySession[s.id] || []
+    const pingTimes  = sessionPings.map((p: any) => new Date(p.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })).join(' | ')
+    const pingCoords = sessionPings.map((p: any) => `${p.latitude},${p.longitude}`).join(' | ')
+    const clockInDate = new Date(s.clock_in_time)
+    const dayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][clockInDate.getUTCDay()]
+
+    return [
+      s.worker_name,
+      s.worker_phone,
+      clockInDate.toISOString().split('T')[0],
+      dayName,
+      new Date(s.clock_in_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      s.clock_out_time ? new Date(s.clock_out_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'ACTIVE',
+      (s.total_hours || 0).toFixed(2),
+      (s.hourly_rate || 0).toFixed(2),
+      (s.earnings || 0).toFixed(2),
+      s.job_location || '',
+      s.job_description || '',
+      s.clock_in_lat  || '',
+      s.clock_in_lng  || '',
+      s.clock_in_address  || '',
+      s.clock_out_lat || '',
+      s.clock_out_lng || '',
+      s.clock_out_address || '',
+      sessionPings.length,
+      pingTimes,
+      pingCoords,
+      s.status
+    ].map(escape).join(',')
+  })
+
+  const csv = [csvHeader.map(escape).join(','), ...rows].join('\n')
+  const filename = `worktracker-week-${bounds.start}.csv`
+
+  return new Response(csv, {
+    headers: {
+      'Content-Type': 'text/csv',
+      'Content-Disposition': `attachment; filename="${filename}"`
+    }
+  })
+})
+
+// ─── SCHEDULED WEEKLY EMAIL (Cloudflare Cron Trigger) ─────────────────────────
+// Configured in wrangler.jsonc as:  "triggers": { "crons": ["59 23 * * FRI"] }
+// Runs every Friday at 11:59 PM UTC → sends Mon–Fri weekly report
+async function runWeeklyEmailJob(db: D1Database, env: any) {
+  const settingsRaw = await db.prepare('SELECT * FROM settings').all()
+  const settings: Record<string, string> = {}
+  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+
+  const adminEmail = settings.admin_email || ''
+  if (!adminEmail || !env.RESEND_API_KEY) return  // silently skip if not configured
+
+  const bounds  = getWeekBounds()  // current week
+  const sessions = await db.prepare(`
+    SELECT s.*, w.name AS worker_name, w.phone AS worker_phone, w.hourly_rate
+    FROM sessions s JOIN workers w ON s.worker_id = w.id
+    WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+    ORDER BY w.name, s.clock_in_time ASC
+  `).bind(bounds.start, bounds.end).all()
+
+  const pings = await db.prepare(`
+    SELECT lp.* FROM location_pings lp
+    JOIN sessions s ON lp.session_id = s.id
+    WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+    ORDER BY lp.session_id, lp.timestamp ASC
+  `).bind(bounds.start, bounds.end).all()
+
+  const pingsBySession: Record<number, any[]> = {}
+  ;(pings.results as any[]).forEach((p: any) => {
+    if (!pingsBySession[p.session_id]) pingsBySession[p.session_id] = []
+    pingsBySession[p.session_id].push(p)
+  })
+
+  const byWorker: Record<string, any> = {}
+  ;(sessions.results as any[]).forEach((s: any) => {
+    const wid = s.worker_id
+    if (!byWorker[wid]) byWorker[wid] = {
+      worker_name: s.worker_name, worker_phone: s.worker_phone,
+      hourly_rate: s.hourly_rate, sessions: [], total_hours: 0, total_earnings: 0
+    }
+    byWorker[wid].sessions.push({ ...s, gps_pings: pingsBySession[s.id] || [] })
+    byWorker[wid].total_hours    += s.total_hours || 0
+    byWorker[wid].total_earnings += s.earnings    || 0
+  })
+
+  const htmlBody = buildWeeklyReportHTML(bounds, settings, Object.values(byWorker))
+  const appName  = settings.app_name || 'WorkTracker'
+  const subject  = `${appName} — Weekly Report: ${bounds.label}`
+
+  await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from: `${appName} <reports@worktracker.app>`,
+      to: [adminEmail],
+      subject,
+      html: htmlBody
+    })
+  })
+
+  await db.prepare(
+    `INSERT OR IGNORE INTO settings (key,value) VALUES('last_weekly_email_sent',?)
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP`
+  ).bind(new Date().toISOString()).run()
+}
+
+// ─── HTML REPORT BUILDER ──────────────────────────────────────────────────────
+function buildWeeklyReportHTML(
+  bounds: { start: string; end: string; label: string },
+  settings: Record<string, string>,
+  workers: any[]
+): string {
+  const appName = settings.app_name || 'WorkTracker'
+  const generatedAt = new Date().toLocaleString('en-CA', { dateStyle: 'full', timeStyle: 'short' })
+
+  const totalHours    = workers.reduce((s, w) => s + w.total_hours, 0)
+  const totalEarnings = workers.reduce((s, w) => s + w.total_earnings, 0)
+  const totalSessions = workers.reduce((s, w) => s + w.sessions.length, 0)
+
+  const workerSections = workers.map(w => {
+    const sessionRows = w.sessions.map((s: any) => {
+      const clockInDate  = new Date(s.clock_in_time)
+      const clockOutDate = s.clock_out_time ? new Date(s.clock_out_time) : null
+      const dayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][clockInDate.getUTCDay()]
+      const dateStr = clockInDate.toISOString().split('T')[0]
+
+      const pings: any[] = s.gps_pings || []
+
+      // GPS proof: clock-in, each ping, clock-out
+      const allGPSPoints: Array<{time:string, lat:number|null, lng:number|null, label:string, note:string}> = []
+
+      if (s.clock_in_lat) {
+        allGPSPoints.push({
+          time: clockInDate.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}),
+          lat: s.clock_in_lat, lng: s.clock_in_lng,
+          label: '🟢 Clock In',
+          note: s.clock_in_address || ''
+        })
+      }
+
+      pings.forEach((p: any, i: number) => {
+        allGPSPoints.push({
+          time: new Date(p.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}),
+          lat: p.latitude, lng: p.longitude,
+          label: `📍 Ping #${i+1}`,
+          note: `Accuracy ±${Math.round(p.accuracy || 0)}m`
+        })
+      })
+
+      if (s.clock_out_lat && clockOutDate) {
+        allGPSPoints.push({
+          time: clockOutDate.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}),
+          lat: s.clock_out_lat, lng: s.clock_out_lng,
+          label: '🔴 Clock Out',
+          note: s.clock_out_address || ''
+        })
+      }
+
+      const gpsProofHTML = allGPSPoints.length > 0
+        ? `<table style="width:100%;font-size:11px;border-collapse:collapse;margin-top:8px;">
+            <thead>
+              <tr style="background:#f1f5f9;text-align:left;">
+                <th style="padding:5px 8px;border:1px solid #e2e8f0;">Time</th>
+                <th style="padding:5px 8px;border:1px solid #e2e8f0;">Event</th>
+                <th style="padding:5px 8px;border:1px solid #e2e8f0;">GPS Coordinates</th>
+                <th style="padding:5px 8px;border:1px solid #e2e8f0;">Map Link</th>
+                <th style="padding:5px 8px;border:1px solid #e2e8f0;">Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${allGPSPoints.map(pt => `
+                <tr>
+                  <td style="padding:5px 8px;border:1px solid #e2e8f0;font-weight:600;white-space:nowrap;">${pt.time}</td>
+                  <td style="padding:5px 8px;border:1px solid #e2e8f0;">${pt.label}</td>
+                  <td style="padding:5px 8px;border:1px solid #e2e8f0;font-family:monospace;">${pt.lat !== null ? `${(pt.lat as number).toFixed(6)}, ${(pt.lng as number).toFixed(6)}` : '—'}</td>
+                  <td style="padding:5px 8px;border:1px solid #e2e8f0;">${pt.lat !== null ? `<a href="https://maps.google.com/?q=${pt.lat},${pt.lng}" style="color:#2563eb;">View Map</a>` : '—'}</td>
+                  <td style="padding:5px 8px;border:1px solid #e2e8f0;font-size:10px;color:#64748b;">${pt.note.substring(0, 60)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>`
+        : `<p style="font-size:11px;color:#94a3b8;margin-top:6px;font-style:italic;">⚠ No GPS data recorded for this shift</p>`
+
+      const gpsStatus = allGPSPoints.length > 0
+        ? `<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 7px;border-radius:999px;font-weight:600;">✓ GPS Verified (${allGPSPoints.length} point${allGPSPoints.length > 1 ? 's' : ''})</span>`
+        : `<span style="background:#fef9c3;color:#854d0e;font-size:10px;padding:2px 7px;border-radius:999px;font-weight:600;">⚠ No GPS</span>`
+
+      return `
+        <div style="margin-bottom:16px;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+          <!-- Shift header -->
+          <div style="background:#f8fafc;padding:10px 14px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+            <div>
+              <span style="font-weight:700;color:#1e293b;">${dayName}, ${dateStr}</span>
+              <span style="margin-left:12px;color:#64748b;font-size:12px;">
+                ${clockInDate.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}
+                →
+                ${clockOutDate ? clockOutDate.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '<span style="color:#16a34a;font-weight:600;">Still Active</span>'}
+              </span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              ${gpsStatus}
+              <span style="background:#ede9fe;color:#5b21b6;font-size:11px;padding:2px 8px;border-radius:999px;font-weight:600;">${(s.total_hours||0).toFixed(2)}h</span>
+              <span style="background:#dcfce7;color:#166534;font-size:11px;padding:2px 8px;border-radius:999px;font-weight:700;">$${(s.earnings||0).toFixed(2)}</span>
+              <span style="background:${s.status==='active'?'#bbf7d0':'#f1f5f9'};color:${s.status==='active'?'#065f46':'#64748b'};font-size:10px;padding:2px 8px;border-radius:999px;">${s.status.toUpperCase()}</span>
+            </div>
+          </div>
+          <!-- Job info -->
+          <div style="padding:10px 14px;border-bottom:1px solid #f1f5f9;">
+            ${s.job_location ? `<p style="margin:0 0 4px;font-size:12px;"><span style="color:#64748b;">📍 Location:</span> <strong>${s.job_location}</strong></p>` : ''}
+            ${s.job_description ? `<p style="margin:0;font-size:12px;color:#475569;"><span style="color:#64748b;">🔧 Tasks:</span> ${s.job_description}</p>` : ''}
+          </div>
+          <!-- GPS proof table -->
+          <div style="padding:10px 14px;">
+            <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:0.05em;">GPS Location Proof</p>
+            ${gpsProofHTML}
+          </div>
+        </div>`
+    }).join('')
+
+    return `
+      <div style="margin-bottom:32px;page-break-inside:avoid;">
+        <!-- Worker header -->
+        <div style="background:#1e40af;color:white;padding:12px 18px;border-radius:12px 12px 0 0;display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <p style="margin:0;font-size:16px;font-weight:700;">${w.worker_name}</p>
+            <p style="margin:2px 0 0;font-size:12px;opacity:0.8;">${w.worker_phone} · $${(w.hourly_rate||0).toFixed(2)}/hr</p>
+          </div>
+          <div style="text-align:right;">
+            <p style="margin:0;font-size:14px;font-weight:700;">${w.total_hours.toFixed(2)} hrs</p>
+            <p style="margin:2px 0 0;font-size:16px;font-weight:800;">$${w.total_earnings.toFixed(2)}</p>
+          </div>
+        </div>
+        <!-- Sessions -->
+        <div style="border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;padding:14px;">
+          <p style="margin:0 0 10px;font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;">${w.sessions.length} shift${w.sessions.length !== 1 ? 's' : ''} this week</p>
+          ${sessionRows}
+        </div>
+      </div>`
+  }).join('')
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>${appName} — ${bounds.label}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; color: #1e293b; background: #f8fafc; margin: 0; padding: 0; }
+    .page { max-width: 900px; margin: 0 auto; padding: 32px 24px; background: white; }
+    @media print {
+      body { background: white; }
+      .no-print { display: none !important; }
+      .page { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Letterhead -->
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;padding-bottom:20px;border-bottom:3px solid #1e40af;">
+    <div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+        <div style="width:40px;height:40px;background:#1e40af;border-radius:10px;display:flex;align-items:center;justify-content:center;">
+          <span style="color:white;font-size:18px;">⏱</span>
+        </div>
+        <span style="font-size:22px;font-weight:800;color:#1e40af;">${appName}</span>
+      </div>
+      <p style="margin:0;color:#64748b;font-size:12px;">Weekly Work Hours & GPS Location Report</p>
+    </div>
+    <div style="text-align:right;">
+      <p style="margin:0;font-size:11px;color:#94a3b8;">Generated: ${generatedAt}</p>
+      <p style="margin:4px 0 0;font-size:12px;color:#64748b;font-weight:600;">${bounds.label}</p>
+      ${settings.city ? `<p style="margin:2px 0 0;font-size:11px;color:#94a3b8;">${settings.city}, ${settings.province_code || ''} ${settings.country_code || ''}</p>` : ''}
+    </div>
+  </div>
+
+  <!-- Summary Banner -->
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:28px;">
+    <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px;text-align:center;">
+      <p style="margin:0;font-size:22px;font-weight:800;color:#1e40af;">${workers.length}</p>
+      <p style="margin:3px 0 0;font-size:11px;color:#3b82f6;">Workers</p>
+    </div>
+    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px;text-align:center;">
+      <p style="margin:0;font-size:22px;font-weight:800;color:#166534;">${totalSessions}</p>
+      <p style="margin:3px 0 0;font-size:11px;color:#22c55e;">Shifts</p>
+    </div>
+    <div style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:10px;padding:12px;text-align:center;">
+      <p style="margin:0;font-size:22px;font-weight:800;color:#6b21a8;">${totalHours.toFixed(1)}h</p>
+      <p style="margin:3px 0 0;font-size:11px;color:#a855f7;">Total Hours</p>
+    </div>
+    <div style="background:#fefce8;border:1px solid #fde68a;border-radius:10px;padding:12px;text-align:center;">
+      <p style="margin:0;font-size:22px;font-weight:800;color:#854d0e;">$${totalEarnings.toFixed(2)}</p>
+      <p style="margin:3px 0 0;font-size:11px;color:#eab308;">Total Payroll</p>
+    </div>
+  </div>
+
+  <!-- Print / Download buttons -->
+  <div class="no-print" style="margin-bottom:20px;display:flex;gap:10px;">
+    <button onclick="window.print()" style="background:#1e40af;color:white;border:none;padding:10px 20px;border-radius:8px;font-size:13px;cursor:pointer;font-weight:600;">🖨 Print / Save as PDF</button>
+    <a href="/api/export/csv?week=${bounds.start}" style="background:#166534;color:white;text-decoration:none;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;display:inline-block;">📥 Download CSV</a>
+  </div>
+
+  <!-- GPS Legend -->
+  <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 16px;margin-bottom:24px;font-size:11px;color:#64748b;">
+    <strong style="color:#374151;">GPS Proof Guide:</strong>
+    &nbsp;🟢 Clock In = GPS when worker started &nbsp;|&nbsp;
+    📍 Ping = Auto GPS recorded every 5 min during shift &nbsp;|&nbsp;
+    🔴 Clock Out = GPS when worker finished &nbsp;|&nbsp;
+    Each coordinate links directly to Google Maps
+  </div>
+
+  ${workers.length === 0
+    ? `<div style="text-align:center;padding:48px;color:#94a3b8;">
+        <p style="font-size:48px;margin:0;">📭</p>
+        <p style="margin:12px 0 0;font-size:16px;font-weight:600;">No shifts recorded this week</p>
+       </div>`
+    : workerSections
+  }
+
+  <!-- Footer -->
+  <div style="margin-top:32px;padding-top:16px;border-top:1px solid #e2e8f0;text-align:center;font-size:10px;color:#94a3b8;">
+    <p style="margin:0;">${appName} · Auto-generated weekly report · ${bounds.label}</p>
+    <p style="margin:4px 0 0;">GPS coordinates are timestamped and verifiable via Google Maps links above.</p>
+  </div>
+
+</div>
+</body>
+</html>`
+}
 
 // ─── MAIN PAGES ───────────────────────────────────────────────────────────────
 
@@ -1734,6 +2355,9 @@ function getAdminHTML(): string {
       <button onclick="showTab('settings')" class="tab-btn px-6 py-4 text-sm font-medium text-gray-600" data-tab="settings">
         <i class="fas fa-cog mr-1"></i>Settings
       </button>
+      <button onclick="showTab('export')" class="tab-btn px-5 py-4 text-sm font-medium text-gray-600" data-tab="export">
+        <i class="fas fa-file-export mr-1"></i>Export
+      </button>
     </div>
 
     <!-- Tab: Live -->
@@ -1880,6 +2504,14 @@ function getAdminHTML(): string {
             <label class="block text-sm font-medium text-gray-700 mb-1">Admin PIN</label>
             <input id="s-admin-pin" type="text" maxlength="6" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
           </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">
+              Admin Email <span class="text-xs text-indigo-600 font-normal">(weekly reports sent here)</span>
+            </label>
+            <input id="s-admin-email" type="email" placeholder="admin@example.com"
+              class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+            <p class="text-xs text-gray-400 mt-1">Reports auto-emailed every Friday night when Resend key is set</p>
+          </div>
         </div>
 
         <!-- Jurisdiction -->
@@ -1999,6 +2631,119 @@ function getAdminHTML(): string {
         <button onclick="loadSettings()" class="px-6 border border-gray-300 text-gray-700 font-medium py-3 rounded-xl hover:bg-gray-50">
           <i class="fas fa-undo mr-1"></i>Reset
         </button>
+      </div>
+    </div>
+
+    <!-- Tab: Export -->
+    <div id="tab-export" class="tab-content hidden bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
+      <h3 class="font-bold text-gray-700 mb-5 flex items-center gap-2">
+        <i class="fas fa-file-export text-indigo-500"></i> Weekly Export & Email Report
+      </h3>
+
+      <!-- Week selector -->
+      <div class="bg-indigo-50 border border-indigo-200 rounded-2xl p-5 mb-5">
+        <div class="flex items-center gap-3 flex-wrap">
+          <div>
+            <label class="block text-sm font-semibold text-gray-700 mb-1">Select Week</label>
+            <input type="date" id="export-week-date"
+              class="border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
+          </div>
+          <div class="flex-1 min-w-[200px]">
+            <label class="block text-sm font-semibold text-gray-700 mb-1">Week Range</label>
+            <p id="export-week-label" class="text-sm font-bold text-indigo-700 mt-1 py-2.5">—</p>
+          </div>
+        </div>
+        <div class="flex gap-3 mt-4 flex-wrap">
+          <button onclick="setExportWeek(-1)" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50">
+            <i class="fas fa-chevron-left mr-1"></i>Previous Week
+          </button>
+          <button onclick="setExportWeek(0)" class="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700">
+            <i class="fas fa-calendar-check mr-1"></i>This Week
+          </button>
+          <button onclick="setExportWeek(1)" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50">
+            Next Week<i class="fas fa-chevron-right ml-1"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Export actions -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+
+        <!-- View HTML Report -->
+        <div class="border-2 border-indigo-100 rounded-2xl p-5 hover:border-indigo-300 transition-colors">
+          <div class="w-12 h-12 bg-indigo-100 rounded-xl flex items-center justify-center mb-3">
+            <i class="fas fa-eye text-indigo-600 text-xl"></i>
+          </div>
+          <h4 class="font-bold text-gray-800 mb-1">View Report</h4>
+          <p class="text-xs text-gray-500 mb-4">Full proof report with GPS timeline. Print or save as PDF directly from browser.</p>
+          <button onclick="viewWeeklyReport()"
+            class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl text-sm">
+            <i class="fas fa-external-link-alt mr-1"></i>Open Report
+          </button>
+        </div>
+
+        <!-- Download CSV -->
+        <div class="border-2 border-green-100 rounded-2xl p-5 hover:border-green-300 transition-colors">
+          <div class="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center mb-3">
+            <i class="fas fa-file-csv text-green-600 text-xl"></i>
+          </div>
+          <h4 class="font-bold text-gray-800 mb-1">Download CSV</h4>
+          <p class="text-xs text-gray-500 mb-4">Spreadsheet with all sessions, GPS coordinates, hours and earnings. Opens in Excel.</p>
+          <button onclick="downloadCSV()"
+            class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 rounded-xl text-sm">
+            <i class="fas fa-download mr-1"></i>Download .CSV
+          </button>
+        </div>
+
+        <!-- Email Report -->
+        <div class="border-2 border-amber-100 rounded-2xl p-5 hover:border-amber-300 transition-colors">
+          <div class="w-12 h-12 bg-amber-100 rounded-xl flex items-center justify-center mb-3">
+            <i class="fas fa-envelope text-amber-600 text-xl"></i>
+          </div>
+          <h4 class="font-bold text-gray-800 mb-1">Email Report</h4>
+          <p class="text-xs text-gray-500 mb-4">Send the full HTML report to admin email. Requires RESEND_API_KEY secret.</p>
+          <button onclick="emailWeeklyReport()" id="email-report-btn"
+            class="w-full bg-amber-500 hover:bg-amber-600 text-white font-semibold py-2.5 rounded-xl text-sm">
+            <i class="fas fa-paper-plane mr-1"></i>Send Email
+          </button>
+        </div>
+      </div>
+
+      <!-- Email config status -->
+      <div id="export-email-status" class="hidden rounded-xl p-4 mb-4 text-sm"></div>
+
+      <!-- Auto schedule info -->
+      <div class="bg-gray-50 border border-gray-200 rounded-2xl p-5">
+        <h4 class="font-semibold text-gray-700 mb-3 flex items-center gap-2">
+          <i class="fas fa-robot text-indigo-500"></i> Automatic Weekly Email Schedule
+        </h4>
+        <div class="space-y-2 text-sm text-gray-600">
+          <div class="flex items-start gap-2">
+            <i class="fas fa-check-circle text-green-500 mt-0.5 flex-shrink-0"></i>
+            <span><strong>Schedule:</strong> Every Friday at 11:59 PM (end of workweek) — covers Monday 12:00 AM to Friday 11:59 PM</span>
+          </div>
+          <div class="flex items-start gap-2">
+            <i class="fas fa-check-circle text-green-500 mt-0.5 flex-shrink-0"></i>
+            <span><strong>Content:</strong> Full GPS proof for every shift + hours + earnings per worker</span>
+          </div>
+          <div class="flex items-start gap-2" id="auto-email-config-status">
+            <i class="fas fa-exclamation-circle text-yellow-500 mt-0.5 flex-shrink-0"></i>
+            <span><strong>Setup required:</strong> Add your admin email in Settings, then add <code class="bg-gray-100 px-1 rounded">RESEND_API_KEY</code> as a Cloudflare secret</span>
+          </div>
+          <div class="flex items-start gap-2">
+            <i class="fas fa-clock text-blue-500 mt-0.5 flex-shrink-0"></i>
+            <span id="last-email-sent-info" class="text-gray-500">Last sent: —</span>
+          </div>
+        </div>
+        <div class="mt-4 bg-white border border-gray-200 rounded-xl p-3">
+          <p class="text-xs font-semibold text-gray-500 mb-2">To enable automatic emails:</p>
+          <ol class="text-xs text-gray-600 space-y-1 list-decimal list-inside">
+            <li>Go to <strong>Settings</strong> tab → General → enter your admin email</li>
+            <li>In Cloudflare dashboard → Workers → your app → Settings → Variables → add <code class="bg-gray-100 px-1 rounded">RESEND_API_KEY</code></li>
+            <li>Get a free API key at <a href="https://resend.com" target="_blank" class="text-blue-500 hover:underline">resend.com</a> (free tier: 100 emails/day)</li>
+            <li>Deploy app to Cloudflare Workers (cron triggers require Workers, not Pages)</li>
+          </ol>
+        </div>
       </div>
     </div>
 
@@ -2453,6 +3198,7 @@ function showTab(name) {
   if (name === 'map') loadMap()
   if (name === 'calendar') loadCalendar()
   if (name === 'settings') loadSettings()
+  if (name === 'export') initExportTab()
 }
 
 function changePeriod(period) {
@@ -2729,6 +3475,7 @@ async function loadSettings() {
     document.getElementById('s-app-name').value = currentSettings.app_name || 'WorkTracker'
     document.getElementById('s-hourly-rate').value = currentSettings.default_hourly_rate || '15.00'
     document.getElementById('s-admin-pin').value = currentSettings.admin_pin || '1234'
+    document.getElementById('s-admin-email').value = currentSettings.admin_email || ''
     document.getElementById('s-city').value = currentSettings.city || ''
     document.getElementById('s-work-start').value = currentSettings.work_start || '08:00'
     document.getElementById('s-work-end').value = currentSettings.work_end || '16:00'
@@ -2813,6 +3560,7 @@ async function saveSettings() {
     app_name: document.getElementById('s-app-name').value.trim(),
     default_hourly_rate: document.getElementById('s-hourly-rate').value,
     admin_pin: document.getElementById('s-admin-pin').value.trim(),
+    admin_email: document.getElementById('s-admin-email').value.trim(),
     country_code: country,
     province_code: province,
     city: document.getElementById('s-city').value.trim(),
@@ -2843,6 +3591,112 @@ async function saveSettings() {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// ── Export Tab ────────────────────────────────────────────────────────────────
+function getMonWeekStart(offsetWeeks = 0) {
+  const d = new Date()
+  const day = d.getDay()
+  const diffToMon = day === 0 ? -6 : 1 - day
+  d.setDate(d.getDate() + diffToMon + offsetWeeks * 7)
+  return d.toISOString().split('T')[0]
+}
+
+function setExportWeek(offset) {
+  const monDate = getMonWeekStart(offset)
+  document.getElementById('export-week-date').value = monDate
+  updateExportWeekLabel()
+}
+
+function updateExportWeekLabel() {
+  const dateVal = document.getElementById('export-week-date').value
+  if (!dateVal) { document.getElementById('export-week-label').textContent = '—'; return }
+  const d = new Date(dateVal + 'T12:00:00')
+  const day = d.getDay()
+  const diffToMon = day === 0 ? -6 : 1 - day
+  const mon = new Date(d); mon.setDate(d.getDate() + diffToMon)
+  const fri = new Date(mon); fri.setDate(mon.getDate() + 4)
+  const fmt = dt => dt.toLocaleDateString('en-CA', { weekday:'short', month:'short', day:'numeric' })
+  document.getElementById('export-week-label').textContent = fmt(mon) + ' → ' + fmt(fri)
+}
+
+async function initExportTab() {
+  setExportWeek(0)  // default to current week
+  document.getElementById('export-week-date').addEventListener('change', updateExportWeekLabel)
+
+  // Load last email sent time
+  try {
+    const res = await fetch('/api/settings')
+    const data = await res.json()
+    const s = data.settings || {}
+    if (s.last_weekly_email_sent) {
+      document.getElementById('last-email-sent-info').textContent =
+        'Last sent: ' + new Date(s.last_weekly_email_sent).toLocaleString()
+    }
+    if (s.admin_email) {
+      document.getElementById('auto-email-config-status').innerHTML = \`
+        <i class="fas fa-check-circle text-green-500 mt-0.5 flex-shrink-0"></i>
+        <span><strong>Email configured:</strong> Reports will be sent to <strong>\${s.admin_email}</strong> every Friday night</span>
+      \`
+    }
+  } catch(e) {}
+}
+
+function viewWeeklyReport() {
+  const week = document.getElementById('export-week-date').value
+  if (!week) { showAdminToast('Select a week first', 'error'); return }
+  window.open('/api/export/weekly/html?week=' + week, '_blank')
+}
+
+function downloadCSV() {
+  const week = document.getElementById('export-week-date').value
+  if (!week) { showAdminToast('Select a week first', 'error'); return }
+  window.location.href = '/api/export/csv?week=' + week
+  showAdminToast('CSV download started!', 'success')
+}
+
+async function emailWeeklyReport() {
+  const week = document.getElementById('export-week-date').value
+  if (!week) { showAdminToast('Select a week first', 'error'); return }
+
+  const btn = document.getElementById('email-report-btn')
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>Sending...'
+
+  const statusEl = document.getElementById('export-email-status')
+  statusEl.className = 'rounded-xl p-4 mb-4 text-sm bg-blue-50 border border-blue-200 text-blue-700'
+  statusEl.classList.remove('hidden')
+  statusEl.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Sending email report...'
+
+  try {
+    const res = await fetch('/api/export/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week })
+    })
+    const data = await res.json()
+
+    if (data.success) {
+      statusEl.className = 'rounded-xl p-4 mb-4 text-sm bg-green-50 border border-green-200 text-green-800'
+      statusEl.innerHTML = \`<i class="fas fa-check-circle mr-2"></i><strong>Report sent!</strong> \${data.message}\`
+      showAdminToast('Weekly report emailed! ✅', 'success')
+      document.getElementById('last-email-sent-info').textContent = 'Last sent: ' + new Date().toLocaleString()
+    } else {
+      statusEl.className = 'rounded-xl p-4 mb-4 text-sm bg-amber-50 border border-amber-200 text-amber-800'
+      statusEl.innerHTML = \`
+        <p class="font-semibold mb-1"><i class="fas fa-exclamation-triangle mr-2"></i>Email not yet configured</p>
+        <p class="text-xs mb-2">\${data.message || ''}</p>
+        \${data.preview_url ? \`<a href="\${data.preview_url}" target="_blank" class="text-blue-600 underline text-xs font-medium"><i class="fas fa-external-link-alt mr-1"></i>View report in browser instead</a>\` : ''}
+      \`
+    }
+  } catch(e) {
+    statusEl.className = 'rounded-xl p-4 mb-4 text-sm bg-red-50 border border-red-200 text-red-700'
+    statusEl.innerHTML = '<i class="fas fa-times-circle mr-2"></i>Failed to send. Check console for details.'
+  }
+
+  btn.disabled = false
+  btn.innerHTML = '<i class="fas fa-paper-plane mr-1"></i>Send Email'
+}
+
 function showAdminToast(msg, type = 'info') {
   const t = document.getElementById('admin-toast')
   t.textContent = msg
@@ -2856,4 +3710,11 @@ function showAdminToast(msg, type = 'info') {
 </html>`
 }
 
-export default app
+// ─── CLOUDFLARE SCHEDULED TRIGGER ────────────────────────────────────────────
+// Fires every Friday at 23:59 UTC  →  cron: "59 23 * * 5"
+export default {
+  fetch: app.fetch,
+  async scheduled(_event: any, env: any, _ctx: any) {
+    await runWeeklyEmailJob(env.DB as D1Database, env)
+  }
+}

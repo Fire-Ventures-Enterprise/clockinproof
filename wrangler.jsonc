@@ -13,4 +13,8 @@
       "database_id": "local-dev-placeholder"
     }
   ]
+  // Uncomment below after deploying to Cloudflare Workers (not Pages) for cron support:
+  // "triggers": {
+  //   "crons": ["59 23 * * 5"]   // Every Friday 23:59 UTC → sends weekly email
+  // }
 }
