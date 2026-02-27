@@ -46,9 +46,24 @@ async function ensureSchema(db: D1Database) {
       job_location TEXT,
       job_description TEXT,
       status TEXT DEFAULT 'active',
+      drift_flag INTEGER DEFAULT 0,
+      drift_distance_meters REAL,
+      drift_detected_at DATETIME,
+      away_flag INTEGER DEFAULT 0,
+      away_since DATETIME,
+      auto_clockout INTEGER DEFAULT 0,
+      auto_clockout_reason TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (worker_id) REFERENCES workers(id)
     )`,
+    // ALTER TABLE is safe to run repeatedly — D1 ignores if column already exists via try/catch in ensureSchema
+    `ALTER TABLE sessions ADD COLUMN drift_flag INTEGER DEFAULT 0`,
+    `ALTER TABLE sessions ADD COLUMN drift_distance_meters REAL`,
+    `ALTER TABLE sessions ADD COLUMN drift_detected_at DATETIME`,
+    `ALTER TABLE sessions ADD COLUMN away_flag INTEGER DEFAULT 0`,
+    `ALTER TABLE sessions ADD COLUMN away_since DATETIME`,
+    `ALTER TABLE sessions ADD COLUMN auto_clockout INTEGER DEFAULT 0`,
+    `ALTER TABLE sessions ADD COLUMN auto_clockout_reason TEXT`,
     `CREATE TABLE IF NOT EXISTS location_pings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id INTEGER NOT NULL,
@@ -111,9 +126,19 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('twilio_auth_token', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('twilio_from_number', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('app_host', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('max_shift_hours', '10')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('away_warning_min', '30')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_clockout_enabled', '1')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('drift_check_enabled', '1')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('drift_radius_meters', '500')`,
   ]
   for (const sql of statements) {
-    await db.prepare(sql).run()
+    try {
+      await db.prepare(sql).run()
+    } catch(e: any) {
+      // Ignore "duplicate column" errors from ALTER TABLE on re-runs
+      if (!e?.message?.includes('duplicate column')) throw e
+    }
   }
 }
 
@@ -785,19 +810,223 @@ app.get('/api/sessions', async (c) => {
 // ─── LOCATION PINGS API ───────────────────────────────────────────────────────
 
 app.post('/api/location/ping', async (c) => {
-  const db = c.env.DB
+  const db  = c.env.DB
+  const env = c.env as any
   const { session_id, worker_id, latitude, longitude, accuracy } = await c.req.json()
 
   if (!session_id || !worker_id || !latitude || !longitude) {
     return c.json({ error: 'Missing required fields' }, 400)
   }
 
+  // Record the ping
   await db.prepare(
     `INSERT INTO location_pings (session_id, worker_id, latitude, longitude, accuracy)
      VALUES (?, ?, ?, ?, ?)`
   ).bind(session_id, worker_id, latitude, longitude, accuracy || null).run()
 
-  return c.json({ success: true })
+  // ── DRIFT CHECK ──────────────────────────────────────────────────────────────
+  // Compare current GPS against the job site — flag if worker has left
+  const settingsRaw = await db.prepare('SELECT * FROM settings').all()
+  const settings: Record<string, string> = {}
+  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+
+  const driftCheckEnabled = settings.drift_check_enabled !== '0'
+  const driftRadius = parseFloat(settings.drift_radius_meters || '500')
+
+  let driftDetected = false
+  let driftDistanceM = 0
+
+  if (driftCheckEnabled) {
+    const session = await db.prepare(
+      'SELECT * FROM sessions WHERE id = ?'
+    ).bind(session_id).first<any>()
+
+    if (session && session.job_location && !session.drift_flag) {
+      // Geocode the job site (we stored job_lat/lng in clock_in if fraud-checked,
+      // so try those first before calling Nominatim again)
+      let jobLat = session.clock_in_lat
+      let jobLng = session.clock_in_lng
+
+      // If clock-in coords are the worker's GPS (not job coords), geocode the address
+      if (!jobLat || !jobLng) {
+        const jobCoords = await geocodeAddress(session.job_location)
+        if (jobCoords) { jobLat = jobCoords.lat; jobLng = jobCoords.lng }
+      }
+
+      if (jobLat && jobLng) {
+        driftDistanceM = haversineMeters(latitude, longitude, jobLat, jobLng)
+        if (driftDistanceM > driftRadius) {
+          driftDetected = true
+          const now = new Date().toISOString()
+          await db.prepare(
+            `UPDATE sessions SET drift_flag=1, drift_distance_meters=?, drift_detected_at=? WHERE id=?`
+          ).bind(Math.round(driftDistanceM), now, session_id).run()
+
+          // Send admin notification about drift
+          const worker = await db.prepare('SELECT * FROM workers WHERE id = ?').bind(worker_id).first<any>()
+          sendOverrideNotification(settings, env, {
+            id: session_id as number,
+            worker_name: worker?.name || 'Worker',
+            worker_phone: worker?.phone || '',
+            job_location: session.job_location,
+            job_description: `⚠️ LOCATION DRIFT: Worker has left the job site during their shift. Currently ${Math.round(driftDistanceM)}m away from "${session.job_location}". Original task: ${session.job_description || 'N/A'}`,
+            distance_meters: Math.round(driftDistanceM),
+            worker_address: null,
+            worker_lat: latitude,
+            worker_lng: longitude
+          }).catch(() => {})
+        }
+      }
+    }
+  }
+
+  return c.json({
+    success: true,
+    drift_detected: driftDetected,
+    drift_distance_meters: driftDetected ? Math.round(driftDistanceM) : null
+  })
+})
+
+// ── WATCHDOG: check all active sessions for away + auto-clockout ───────────────
+// Called by worker app every minute AND can be triggered server-side
+app.get('/api/sessions/watchdog', async (c) => {
+  const db  = c.env.DB
+  const env = c.env as any
+  await ensureSchema(db)
+
+  const settingsRaw = await db.prepare('SELECT * FROM settings').all()
+  const settings: Record<string, string> = {}
+  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+
+  const maxShiftHours    = parseFloat(settings.max_shift_hours    || '10')
+  const awayWarningMin   = parseFloat(settings.away_warning_min   || '30')
+  const autoClockoutOn   = settings.auto_clockout_enabled !== '0'
+  const workEnd          = settings.work_end || '16:00'
+
+  const activeSessions = await db.prepare(`
+    SELECT s.*, w.name as worker_name, w.phone as worker_phone, w.hourly_rate
+    FROM sessions s JOIN workers w ON s.worker_id = w.id
+    WHERE s.status = 'active'
+  `).all()
+
+  const now     = new Date()
+  const nowMs   = now.getTime()
+  const results: any[] = []
+
+  for (const s of activeSessions.results as any[]) {
+    const clockInMs   = new Date(s.clock_in_time).getTime()
+    const hoursWorked = (nowMs - clockInMs) / (1000 * 60 * 60)
+    const item: any   = { session_id: s.id, worker_name: s.worker_name, worker_phone: s.worker_phone }
+
+    // ── 1. MAX SHIFT AUTO-CLOCKOUT ───────────────────────────────────────────
+    if (autoClockoutOn && hoursWorked >= maxShiftHours && !s.auto_clockout) {
+      const reason = `Auto clocked out after ${maxShiftHours}h max shift limit`
+      const earnings = hoursWorked * (s.hourly_rate || 0)
+      await db.prepare(`
+        UPDATE sessions SET
+          clock_out_time=?, total_hours=?, earnings=?,
+          status='completed', auto_clockout=1, auto_clockout_reason=?
+        WHERE id=?
+      `).bind(now.toISOString(), Math.round(hoursWorked*100)/100, Math.round(earnings*100)/100, reason, s.id).run()
+      item.action = 'auto_clocked_out'
+      item.reason = reason
+      item.hours  = Math.round(hoursWorked*10)/10
+
+      // Notify admin
+      const worker = await db.prepare('SELECT * FROM workers WHERE id=?').bind(s.worker_id).first<any>()
+      sendOverrideNotification(settings, env, {
+        id: s.id,
+        worker_name: s.worker_name,
+        worker_phone: s.worker_phone,
+        job_location: s.job_location || 'Unknown',
+        job_description: `🕐 AUTO CLOCK-OUT: Worker exceeded ${maxShiftHours}h max shift. Session automatically closed at ${now.toLocaleTimeString()}. Hours recorded: ${item.hours}h. Original task: ${s.job_description || 'N/A'}`,
+        distance_meters: 0,
+        worker_address: null,
+        worker_lat: null,
+        worker_lng: null
+      }).catch(() => {})
+
+      results.push(item)
+      continue
+    }
+
+    // ── 2. END-OF-DAY AUTO-CLOCKOUT ──────────────────────────────────────────
+    // If still clocked in 30 min after work_end, auto clock out at work_end time
+    if (autoClockoutOn && !s.auto_clockout) {
+      const [endH, endM] = workEnd.split(':').map(Number)
+      const todayEnd = new Date(now)
+      todayEnd.setHours(endH, endM, 0, 0)
+      const graceMs = 30 * 60 * 1000  // 30-minute grace
+      if (nowMs > todayEnd.getTime() + graceMs && clockInMs < todayEnd.getTime()) {
+        // Clock out AT work_end, not now (to be fair to the worker)
+        const workHours = (todayEnd.getTime() - clockInMs) / (1000 * 60 * 60)
+        const earnings  = workHours * (s.hourly_rate || 0)
+        const reason    = `Auto clocked out at end of day (${workEnd}) — no clock-out recorded`
+        await db.prepare(`
+          UPDATE sessions SET
+            clock_out_time=?, total_hours=?, earnings=?,
+            status='completed', auto_clockout=1, auto_clockout_reason=?
+          WHERE id=?
+        `).bind(todayEnd.toISOString(), Math.round(workHours*100)/100, Math.round(earnings*100)/100, reason, s.id).run()
+        item.action = 'auto_clocked_out_eod'
+        item.reason = reason
+        item.hours  = Math.round(workHours*10)/10
+
+        sendOverrideNotification(settings, env, {
+          id: s.id,
+          worker_name: s.worker_name,
+          worker_phone: s.worker_phone,
+          job_location: s.job_location || 'Unknown',
+          job_description: `🌙 END-OF-DAY AUTO CLOCK-OUT: Worker forgot to clock out. Session closed at ${workEnd}. Hours recorded: ${item.hours}h. Task: ${s.job_description || 'N/A'}`,
+          distance_meters: 0,
+          worker_address: null,
+          worker_lat: null,
+          worker_lng: null
+        }).catch(() => {})
+
+        results.push(item)
+        continue
+      }
+    }
+
+    // ── 3. AWAY/IDLE FLAG ────────────────────────────────────────────────────
+    // Check when last ping was received — if too long ago, flag as away
+    const lastPing = await db.prepare(
+      'SELECT timestamp FROM location_pings WHERE session_id=? ORDER BY timestamp DESC LIMIT 1'
+    ).bind(s.id).first<any>()
+
+    const lastPingMs = lastPing
+      ? new Date(lastPing.timestamp).getTime()
+      : clockInMs   // no pings yet: use clock-in time
+
+    const minsSincePing = (nowMs - lastPingMs) / (1000 * 60)
+
+    if (minsSincePing >= awayWarningMin && !s.away_flag) {
+      await db.prepare(
+        `UPDATE sessions SET away_flag=1, away_since=? WHERE id=?`
+      ).bind(new Date(lastPingMs).toISOString(), s.id).run()
+      item.action = 'away_flagged'
+      item.mins_away = Math.round(minsSincePing)
+      results.push(item)
+    } else if (minsSincePing < awayWarningMin && s.away_flag) {
+      // Worker came back — clear the flag
+      await db.prepare(
+        `UPDATE sessions SET away_flag=0, away_since=NULL WHERE id=?`
+      ).bind(s.id).run()
+      item.action = 'away_cleared'
+      results.push(item)
+    }
+
+    // Provide current status for the calling worker app
+    item.hours_worked    = Math.round(hoursWorked * 10) / 10
+    item.max_shift_hours = maxShiftHours
+    item.away_flag       = s.away_flag
+    item.drift_flag      = s.drift_flag
+    item.auto_clockout   = s.auto_clockout
+    if (!item.action) results.push(item)
+  }
+
+  return c.json({ checked: activeSessions.results.length, results })
 })
 
 app.get('/api/location/session/:session_id', async (c) => {
@@ -1850,7 +2079,61 @@ function getWorkerHTML(): string {
       </div>
     </div>
 
-    <!-- GPS Location Card -->
+    <!-- ── GUARDRAIL WARNING BANNERS ─────────────────────────────── -->
+    <!-- Drift warning: worker has left the job site -->
+    <div id="banner-drift" class="hidden bg-orange-50 border-2 border-orange-400 rounded-2xl p-4 shadow-sm">
+      <div class="flex items-start gap-3">
+        <div class="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center flex-shrink-0">
+          <i class="fas fa-walking text-orange-500 text-lg"></i>
+        </div>
+        <div class="flex-1">
+          <p class="text-sm font-bold text-orange-700">You have left the job site</p>
+          <p id="banner-drift-msg" class="text-xs text-orange-600 mt-0.5"></p>
+          <p class="text-xs text-orange-500 mt-1">Your admin has been notified. Please return or clock out.</p>
+        </div>
+        <button onclick="clockOut()" class="bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold px-3 py-2 rounded-xl flex-shrink-0">
+          Clock Out
+        </button>
+      </div>
+    </div>
+
+    <!-- Away warning: GPS not updating — phone likely left behind or off -->
+    <div id="banner-away" class="hidden bg-yellow-50 border-2 border-yellow-400 rounded-2xl p-4 shadow-sm">
+      <div class="flex items-start gap-3">
+        <div class="w-10 h-10 bg-yellow-100 rounded-xl flex items-center justify-center flex-shrink-0">
+          <i class="fas fa-satellite-dish text-yellow-500 text-lg animate-pulse"></i>
+        </div>
+        <div class="flex-1">
+          <p class="text-sm font-bold text-yellow-700">GPS signal lost</p>
+          <p id="banner-away-msg" class="text-xs text-yellow-600 mt-0.5">Your location hasn't updated in a while. Are you still at work?</p>
+          <div class="flex gap-2 mt-2">
+            <button onclick="confirmStillWorking()" class="bg-yellow-500 hover:bg-yellow-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg">
+              Yes, still here
+            </button>
+            <button onclick="clockOut()" class="bg-white border border-yellow-400 text-yellow-700 text-xs font-medium px-3 py-1.5 rounded-lg">
+              Clock Out
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Max shift warning: approaching shift limit -->
+    <div id="banner-maxshift" class="hidden bg-red-50 border-2 border-red-400 rounded-2xl p-4 shadow-sm">
+      <div class="flex items-start gap-3">
+        <div class="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center flex-shrink-0">
+          <i class="fas fa-clock text-red-500 text-lg"></i>
+        </div>
+        <div class="flex-1">
+          <p class="text-sm font-bold text-red-700">Shift limit approaching</p>
+          <p id="banner-maxshift-msg" class="text-xs text-red-600 mt-0.5"></p>
+          <p class="text-xs text-red-400 mt-1">You will be automatically clocked out when the limit is reached.</p>
+        </div>
+        <button onclick="clockOut()" class="bg-red-500 hover:bg-red-600 text-white text-xs font-bold px-3 py-2 rounded-xl flex-shrink-0">
+          Clock Out Now
+        </button>
+      </div>
+    </div>
     <div class="bg-white rounded-2xl shadow-sm p-4">
       <div class="flex items-center justify-between mb-3">
         <h3 class="font-semibold text-gray-700 flex items-center gap-2">
@@ -2208,6 +2491,7 @@ function logout() {
   localStorage.removeItem('wt_worker')
   currentWorker = null; activeSession = null
   clearInterval(durationTimer); clearInterval(pingInterval)
+  stopWatchdog(); hideAllBanners()
   showScreen('register')
 }
 
@@ -2231,6 +2515,7 @@ async function checkStatus() {
       setClockedInUI(true)
       startDurationTimer()
       startPingInterval()
+      startWatchdog()
     } else {
       setClockedInUI(false)
     }
@@ -2392,6 +2677,7 @@ async function confirmClockIn() {
       setClockedInUI(true)
       startDurationTimer()
       startPingInterval()
+      startWatchdog()
       showToast('Clocked in! Have a great shift \u{1F4AA}', 'success')
       await loadStats()
       await loadWorkLog()
@@ -2499,6 +2785,7 @@ async function pollOverrideStatus() {
         setClockedInUI(true)
         startDurationTimer()
         startPingInterval()
+        startWatchdog()
         showToast('\u2705 Admin approved! You are now clocked in.', 'success')
         await loadStats()
         await loadWorkLog()
@@ -2533,6 +2820,10 @@ async function clockOut() {
       const hrs = (data.total_hours || 0).toFixed(2)
       const earned = '$' + (data.earnings || 0).toFixed(2)
       activeSession = null
+      stopWatchdog()
+      clearInterval(durationTimer)
+      clearInterval(pingInterval)
+      hideAllBanners()
       setClockedInUI(false)
       showToast(\`Clocked out! \${hrs}h worked · \${earned} earned 🎉\`, 'success')
       await loadStats()
@@ -2640,13 +2931,106 @@ function startPingInterval() {
   pingInterval = setInterval(async () => {
     if (!activeSession || !currentLat) return
     try {
-      await fetch('/api/location/ping', {
+      const res = await fetch('/api/location/ping', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: activeSession.id, worker_id: currentWorker.id, latitude: currentLat, longitude: currentLng })
       })
+      const pingData = await res.json()
+      // Show drift banner if server detected worker has left the job site
+      if (pingData.drift_detected) {
+        const distTxt = pingData.drift_distance_meters >= 1000
+          ? (pingData.drift_distance_meters / 1000).toFixed(1) + ' km'
+          : pingData.drift_distance_meters + ' m'
+        showGuardrailBanner('drift', 'You are ' + distTxt + ' away from "' + (activeSession.job_location || 'the job site') + '".')
+      }
       getLocation()
     } catch(e) {}
-  }, 5 * 60 * 1000)
+  }, 5 * 60 * 1000)  // ping every 5 min
+}
+
+// ── Guardrail Watchdog (runs every 60s while clocked in) ──────────────────────
+let watchdogTimer = null
+let lastPingTime  = Date.now()
+
+function startWatchdog() {
+  stopWatchdog()
+  lastPingTime = Date.now()
+  watchdogTimer = setInterval(async () => {
+    if (!activeSession || !currentWorker) return
+    try {
+      const res = await fetch('/api/sessions/watchdog')
+      const data = await res.json()
+      const myResult = (data.results || []).find(r => r.session_id === activeSession?.id)
+
+      if (!myResult) {
+        // Session no longer active — was auto-clocked out by server
+        clearInterval(watchdogTimer)
+        clearInterval(durationTimer)
+        clearInterval(pingInterval)
+        activeSession = null
+        setClockedInUI(false)
+        hideAllBanners()
+        showToast('You have been automatically clocked out by the system.', 'info')
+        await loadStats()
+        await loadWorkLog()
+        return
+      }
+
+      const hoursWorked   = myResult.hours_worked || 0
+      const maxShiftHours = myResult.max_shift_hours || 10
+      const hoursLeft     = maxShiftHours - hoursWorked
+
+      // Max shift warning — show 30 min before limit
+      if (hoursLeft <= 0.5 && hoursLeft > 0) {
+        const minsLeft = Math.round(hoursLeft * 60)
+        showGuardrailBanner('maxshift', 'You have worked ' + hoursWorked.toFixed(1) + 'h. Auto clock-out in ' + minsLeft + ' minutes.')
+      } else {
+        hideBanner('maxshift')
+      }
+
+      // Away detection — based on time since last ping from this device
+      const minsSinceDevicePing = (Date.now() - lastPingTime) / (1000 * 60)
+      const awayThreshold = 30  // matches server setting
+      if (minsSinceDevicePing >= awayThreshold) {
+        showGuardrailBanner('away', 'No GPS update for ' + Math.round(minsSinceDevicePing) + ' minutes.')
+      } else {
+        hideBanner('away')
+      }
+
+      // Drift banner (set by ping response, kept visible)
+      if (!myResult.drift_flag) hideBanner('drift')
+
+    } catch(e) {}
+  }, 60 * 1000)  // check every 60s
+}
+
+function stopWatchdog() {
+  if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null }
+}
+
+function showGuardrailBanner(type, msg) {
+  const banner = document.getElementById('banner-' + type)
+  const msgEl  = document.getElementById('banner-' + type + '-msg')
+  if (!banner) return
+  if (msgEl && msg) msgEl.textContent = msg
+  banner.classList.remove('hidden')
+}
+
+function hideBanner(type) {
+  const banner = document.getElementById('banner-' + type)
+  if (banner) banner.classList.add('hidden')
+}
+
+function hideAllBanners() {
+  ['drift','away','maxshift'].forEach(t => hideBanner(t))
+}
+
+async function confirmStillWorking() {
+  // Worker tapped "Yes, still here" — refresh location to reset the away timer
+  lastPingTime = Date.now()
+  hideBanner('away')
+  getLocation()
+  showToast('Got it — refreshing your location', 'success')
 }
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
@@ -3359,6 +3743,67 @@ function getAdminHTML(): string {
         </div>
       </div>
 
+      <!-- Shift Guardrails -->
+      <div class="space-y-4">
+        <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2 flex items-center gap-2">
+          <i class="fas fa-user-clock text-purple-500"></i> Shift Guardrails
+          <span class="text-xs font-normal text-gray-400 normal-case tracking-normal">Prevent workers forgetting to sign out or leaving the site</span>
+        </h4>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Auto Clock-Out -->
+          <div class="bg-purple-50 border border-purple-200 rounded-2xl p-4">
+            <div class="flex items-center justify-between mb-3">
+              <div class="flex items-center gap-2">
+                <i class="fas fa-clock text-purple-500"></i>
+                <span class="text-sm font-semibold text-gray-700">Auto Clock-Out</span>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="s-auto-clockout" class="sr-only peer" checked/>
+                <div class="w-10 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-500"></div>
+              </label>
+            </div>
+            <p class="text-xs text-gray-500 mb-3">Automatically clock out a worker who has been signed in too long (max shift) or past the scheduled work end time.</p>
+            <label class="text-xs font-medium text-gray-600 block mb-1">Max Shift Length</label>
+            <div class="flex items-center gap-2">
+              <input id="s-max-shift-hours" type="number" min="4" max="24" step="0.5" value="10"
+                class="flex-1 border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"/>
+              <span class="text-xs text-gray-500">hours</span>
+            </div>
+            <div class="flex gap-1 mt-2 flex-wrap">
+              <button onclick="document.getElementById('s-max-shift-hours').value='8'"  class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">8h</button>
+              <button onclick="document.getElementById('s-max-shift-hours').value='10'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">10h</button>
+              <button onclick="document.getElementById('s-max-shift-hours').value='12'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">12h</button>
+            </div>
+          </div>
+
+          <!-- Away / Idle Warning -->
+          <div class="bg-yellow-50 border border-yellow-200 rounded-2xl p-4">
+            <div class="flex items-center gap-2 mb-3">
+              <i class="fas fa-wifi text-yellow-500"></i>
+              <span class="text-sm font-semibold text-gray-700">Idle / Away Warning</span>
+            </div>
+            <p class="text-xs text-gray-500 mb-3">Alert the worker (and flag the session) if no GPS ping is received — means the app is closed or the phone is off-site.</p>
+            <label class="text-xs font-medium text-gray-600 block mb-1">Warn after no GPS update for</label>
+            <div class="flex items-center gap-2">
+              <input id="s-away-warning-min" type="number" min="5" max="120" step="5" value="30"
+                class="flex-1 border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"/>
+              <span class="text-xs text-gray-500">minutes</span>
+            </div>
+            <div class="flex gap-1 mt-2 flex-wrap">
+              <button onclick="document.getElementById('s-away-warning-min').value='15'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">15m</button>
+              <button onclick="document.getElementById('s-away-warning-min').value='30'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">30m</button>
+              <button onclick="document.getElementById('s-away-warning-min').value='60'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">60m</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="text-xs text-gray-500 flex items-start gap-2 bg-gray-50 rounded-xl p-3">
+          <i class="fas fa-info-circle text-purple-400 mt-0.5 flex-shrink-0"></i>
+          <span>Workers see a coloured warning banner before auto clock-out. The admin Live tab shows <span class="font-medium text-orange-600">⚠ Drifted</span>, <span class="font-medium text-yellow-600">⏰ Away</span>, and <span class="font-medium text-red-600">🔴 Auto clocked-out</span> badges. All guardrail events are recorded on the session for your records.</span>
+        </div>
+      </div>
+
       <!-- Override Notifications -->
       <div class="space-y-4">
         <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2 flex items-center gap-2">
@@ -3747,17 +4192,40 @@ async function loadLive() {
       const hoursWorked = ((now - start) / 3600000).toFixed(1)
       const estimatedEarnings = (parseFloat(hoursWorked) * (s.hourly_rate || 0)).toFixed(2)
       const hasLocation = s.clock_in_lat && s.clock_in_lng
+
+      // Guardrail badges
+      const badges = []
+      if (s.drift_flag)    badges.push(\`<span class="bg-orange-100 text-orange-700 text-xs px-2 py-0.5 rounded-full font-medium"><i class="fas fa-exclamation-triangle mr-1"></i>Left Site</span>\`)
+      if (s.away_flag)     badges.push(\`<span class="bg-yellow-100 text-yellow-700 text-xs px-2 py-0.5 rounded-full font-medium"><i class="fas fa-wifi mr-1"></i>No GPS</span>\`)
+      if (s.auto_clockout) badges.push(\`<span class="bg-red-100 text-red-700 text-xs px-2 py-0.5 rounded-full font-medium"><i class="fas fa-clock mr-1"></i>Auto Out</span>\`)
+
+      // Status badge
+      const statusBadge = s.auto_clockout
+        ? \`<span class="bg-red-100 text-red-600 text-xs px-2 py-1 rounded-full font-medium"><i class="fas fa-stop-circle mr-1"></i>AUTO OUT</span>\`
+        : \`<span class="bg-green-100 text-green-700 text-xs px-2 py-1 rounded-full font-medium pulse"><i class="fas fa-circle mr-1" style="font-size:6px"></i>LIVE</span>\`
+
+      const jobRow = s.job_location
+        ? \`<p class="text-xs text-gray-500 mt-1 truncate"><i class="fas fa-map-pin mr-1 text-gray-400"></i>\${s.job_location}</p>\`
+        : ''
+
+      const driftRow = s.drift_flag && s.drift_distance_meters
+        ? \`<p class="text-xs text-orange-600 mt-1"><i class="fas fa-route mr-1"></i>\${s.drift_distance_meters >= 1000 ? (s.drift_distance_meters/1000).toFixed(1)+'km' : Math.round(s.drift_distance_meters)+'m'} from job site</p>\`
+        : ''
+
+      const autoReason = s.auto_clockout && s.auto_clockout_reason
+        ? \`<p class="text-xs text-red-600 mt-1 italic"><i class="fas fa-info-circle mr-1"></i>\${s.auto_clockout_reason}</p>\`
+        : ''
       
-      return \`<div class="border border-gray-100 rounded-xl p-4 hover:shadow-md transition-shadow">
-        <div class="flex items-start justify-between mb-3">
-          <div>
+      return \`<div class="border \${s.drift_flag ? 'border-orange-300' : s.away_flag ? 'border-yellow-300' : 'border-gray-100'} rounded-xl p-4 hover:shadow-md transition-shadow \${s.auto_clockout ? 'opacity-60' : ''}">
+        <div class="flex items-start justify-between mb-2">
+          <div class="flex-1 min-w-0">
             <h4 class="font-bold text-gray-800">\${s.worker_name}</h4>
             <p class="text-gray-500 text-xs">\${s.worker_phone}</p>
+            \${jobRow}\${driftRow}\${autoReason}
           </div>
-          <span class="bg-green-100 text-green-700 text-xs px-2 py-1 rounded-full font-medium pulse">
-            <i class="fas fa-circle mr-1" style="font-size:6px"></i>LIVE
-          </span>
+          \${statusBadge}
         </div>
+        \${badges.length ? \`<div class="flex flex-wrap gap-1 mb-2">\${badges.join('')}</div>\` : ''}
         <div class="grid grid-cols-2 gap-2 mb-3">
           <div class="bg-blue-50 rounded-lg p-2 text-center">
             <p class="text-xs text-blue-500">Clock In</p>
@@ -4372,6 +4840,14 @@ async function loadSettings() {
     const geofenceEl = document.getElementById('s-geofence-radius')
     if (geofenceEl) geofenceEl.value = currentSettings.geofence_radius_meters || '300'
 
+    // Shift Guardrails
+    const autoClockoutEl = document.getElementById('s-auto-clockout')
+    if (autoClockoutEl) autoClockoutEl.checked = currentSettings.auto_clockout_enabled !== '0'
+    const maxShiftEl = document.getElementById('s-max-shift-hours')
+    if (maxShiftEl) maxShiftEl.value = currentSettings.max_shift_hours || '10'
+    const awayWarnEl = document.getElementById('s-away-warning-min')
+    if (awayWarnEl) awayWarnEl.value = currentSettings.away_warning_min || '30'
+
     // Notification settings
     const notifyEmailEl = document.getElementById('s-notify-email')
     if (notifyEmailEl) notifyEmailEl.checked = currentSettings.notify_email !== '0'
@@ -4478,6 +4954,9 @@ async function saveSettings() {
     work_days: activeDays.join(','),
     gps_fraud_check: document.getElementById('s-gps-fraud-check')?.checked ? '1' : '0',
     geofence_radius_meters: document.getElementById('s-geofence-radius')?.value || '300',
+    auto_clockout_enabled: document.getElementById('s-auto-clockout')?.checked ? '1' : '0',
+    max_shift_hours: document.getElementById('s-max-shift-hours')?.value || '10',
+    away_warning_min: document.getElementById('s-away-warning-min')?.value || '30',
     notify_email: document.getElementById('s-notify-email')?.checked ? '1' : '0',
     notify_sms: document.getElementById('s-notify-sms')?.checked ? '1' : '0',
     admin_phone: document.getElementById('s-admin-phone')?.value?.trim() || '',
