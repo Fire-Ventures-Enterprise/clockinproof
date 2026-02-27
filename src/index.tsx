@@ -2768,12 +2768,14 @@ function filterLocationSuggestions(val) {
   if (!val || recentLocations.length === 0) { box.classList.add('hidden'); return }
   const filtered = recentLocations.filter(l => l.toLowerCase().includes(val.toLowerCase()))
   if (filtered.length === 0) { box.classList.add('hidden'); return }
-  box.innerHTML = filtered.map(l =>
-    \`<button onclick="selectLocation('\${l.replace(/'/g,"&#39;")}')"
-      class="w-full text-left px-4 py-3 hover:bg-blue-50 text-sm text-gray-700 border-b border-gray-100 last:border-0">
+  box.innerHTML = filtered.map((l, i) => {
+    const safeId = 'loc-sug-' + i
+    return \`<button id="\${safeId}" data-loc="\${l.replace(/"/g,'&quot;')}"
+      class="w-full text-left px-4 py-3 hover:bg-blue-50 text-sm text-gray-700 border-b border-gray-100 last:border-0"
+      onclick="selectLocation(this.dataset.loc)">
       <i class="fas fa-history text-gray-400 mr-2 text-xs"></i>\${l}
     </button>\`
-  ).join('')
+  }).join('')
   box.classList.remove('hidden')
 }
 
@@ -4013,10 +4015,10 @@ function getAdminHTML(): string {
               <input id="s-geofence-radius" type="number" min="50" max="5000" step="50" value="300"
                 class="flex-1 px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-red-400 text-sm"/>
               <div class="flex gap-1">
-                <button onclick="document.getElementById('s-geofence-radius').value='100'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">100m</button>
-                <button onclick="document.getElementById('s-geofence-radius').value='300'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">300m</button>
-                <button onclick="document.getElementById('s-geofence-radius').value='500'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">500m</button>
-                <button onclick="document.getElementById('s-geofence-radius').value='1000'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">1km</button>
+                <button onclick="setVal('s-geofence-radius','100')" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">100m</button>
+                <button onclick="setVal('s-geofence-radius','300')" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">300m</button>
+                <button onclick="setVal('s-geofence-radius','500')" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">500m</button>
+                <button onclick="setVal('s-geofence-radius','1000')" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">1km</button>
               </div>
             </div>
             <p class="text-xs text-gray-400 mt-1">
@@ -4058,9 +4060,9 @@ function getAdminHTML(): string {
               <span class="text-xs text-gray-500">hours</span>
             </div>
             <div class="flex gap-1 mt-2 flex-wrap">
-              <button onclick="document.getElementById('s-max-shift-hours').value='8'"  class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">8h</button>
-              <button onclick="document.getElementById('s-max-shift-hours').value='10'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">10h</button>
-              <button onclick="document.getElementById('s-max-shift-hours').value='12'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">12h</button>
+              <button onclick="setVal('s-max-shift-hours','8')"  class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">8h</button>
+              <button onclick="setVal('s-max-shift-hours','10')" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">10h</button>
+              <button onclick="setVal('s-max-shift-hours','12')" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">12h</button>
             </div>
           </div>
 
@@ -4078,9 +4080,9 @@ function getAdminHTML(): string {
               <span class="text-xs text-gray-500">minutes</span>
             </div>
             <div class="flex gap-1 mt-2 flex-wrap">
-              <button onclick="document.getElementById('s-away-warning-min').value='15'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">15m</button>
-              <button onclick="document.getElementById('s-away-warning-min').value='30'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">30m</button>
-              <button onclick="document.getElementById('s-away-warning-min').value='60'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">60m</button>
+              <button onclick="setVal('s-away-warning-min','15')" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">15m</button>
+              <button onclick="setVal('s-away-warning-min','30')" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">30m</button>
+              <button onclick="setVal('s-away-warning-min','60')" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">60m</button>
             </div>
           </div>
 
@@ -4098,10 +4100,10 @@ function getAdminHTML(): string {
               <span class="text-xs text-gray-500">minutes (0 = manual only)</span>
             </div>
             <div class="flex gap-1 mt-2 flex-wrap">
-              <button onclick="document.getElementById('s-geofence-exit-min').value='0'"  class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">Off</button>
-              <button onclick="document.getElementById('s-geofence-exit-min').value='15'" class="px-2 py-1 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg">15m</button>
-              <button onclick="document.getElementById('s-geofence-exit-min').value='30'" class="px-2 py-1 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg">30m</button>
-              <button onclick="document.getElementById('s-geofence-exit-min').value='60'" class="px-2 py-1 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg">60m</button>
+              <button onclick="setVal('s-geofence-exit-min','0')"  class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">Off</button>
+              <button onclick="setVal('s-geofence-exit-min','15')" class="px-2 py-1 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg">15m</button>
+              <button onclick="setVal('s-geofence-exit-min','30')" class="px-2 py-1 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg">30m</button>
+              <button onclick="setVal('s-geofence-exit-min','60')" class="px-2 py-1 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg">60m</button>
             </div>
           </div>
         </div>
@@ -4634,10 +4636,10 @@ function getAdminHTML(): string {
           class="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"></textarea>
         <!-- Quick reasons -->
         <div class="flex flex-wrap gap-1.5 mt-2">
-          <button onclick="document.getElementById('aco-note').value='Worker left the job site'" class="text-xs bg-orange-50 text-orange-600 border border-orange-200 px-2 py-1 rounded-lg hover:bg-orange-100">Left site</button>
-          <button onclick="document.getElementById('aco-note').value='Worker forgot to clock out'" class="text-xs bg-yellow-50 text-yellow-600 border border-yellow-200 px-2 py-1 rounded-lg hover:bg-yellow-100">Forgot to clock out</button>
-          <button onclick="document.getElementById('aco-note').value='No GPS signal — admin action'" class="text-xs bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded-lg hover:bg-blue-100">No GPS</button>
-          <button onclick="document.getElementById('aco-note').value='End of work day'" class="text-xs bg-gray-100 text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-200">End of day</button>
+          <button onclick="setVal('aco-note','Worker left the job site')" class="text-xs bg-orange-50 text-orange-600 border border-orange-200 px-2 py-1 rounded-lg hover:bg-orange-100">Left site</button>
+          <button onclick="setVal('aco-note','Worker forgot to clock out')" class="text-xs bg-yellow-50 text-yellow-600 border border-yellow-200 px-2 py-1 rounded-lg hover:bg-yellow-100">Forgot to clock out</button>
+          <button onclick="setVal('aco-note','No GPS signal — admin action')" class="text-xs bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded-lg hover:bg-blue-100">No GPS</button>
+          <button onclick="setVal('aco-note','End of work day')" class="text-xs bg-gray-100 text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-200">End of day</button>
         </div>
       </div>
       <!-- Action buttons -->
@@ -4802,12 +4804,12 @@ async function openWorkerDrawer(workerId) {
       if (wdActionBar) {
         const activeSession = sessions.find(s => s.status === 'active')
         if (worker.currently_clocked_in > 0 && activeSession) {
-          wdActionBar.innerHTML = \`<button
-            onclick="closeWorkerDrawer();openAdminClockoutModal(\${activeSession.id})"
-            class="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-2xl text-sm transition-all shadow-lg shadow-red-200 active:scale-95">
-            <i class="fas fa-stop-circle"></i>
-            Force Clock-Out — \${worker.name}
-          </button>\`
+          wdActionBar.innerHTML = '<button'
+            + ' onclick="closeWorkerDrawer();openAdminClockoutModal(' + activeSession.id + ')"'
+            + ' class="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-2xl text-sm transition-all shadow-lg shadow-red-200 active:scale-95">'
+            + '<i class="fas fa-stop-circle"></i>'
+            + ' Force Clock-Out \u2014 ' + worker.name
+            + '</button>'
           wdActionBar.classList.remove('hidden')
         } else {
           wdActionBar.classList.add('hidden')
@@ -4874,6 +4876,17 @@ function filterSessionsByWorker() {
   setTimeout(() => {
     const sel = document.getElementById('filter-worker')
     if (sel) { sel.value = workerId; loadSessions() }
+  }, 100)
+}
+
+function filterSessionsByDate(workerId, dateStr) {
+  showTab('sessions')
+  setTimeout(() => {
+    const dateEl = document.getElementById('filter-date')
+    const workerEl = document.getElementById('filter-worker')
+    if (dateEl) dateEl.value = dateStr
+    if (workerEl) workerEl.value = workerId
+    loadSessions()
   }, 100)
 }
 
@@ -4975,7 +4988,7 @@ function openSessionModal(s) {
       <button onclick="closeSessionModal();openWorkerDrawer(\${s.worker_id})" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-medium py-2.5 rounded-xl text-sm transition-colors">
         <i class="fas fa-user mr-1"></i>View Worker
       </button>
-      <button onclick="closeSessionModal();document.getElementById('filter-date').value='\${new Date(s.clock_in_time).toISOString().split('T')[0]}';document.getElementById('filter-worker').value=\${s.worker_id};showTab('sessions');setTimeout(loadSessions,100)" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2.5 rounded-xl text-sm transition-colors">
+      <button onclick="closeSessionModal();filterSessionsByDateFromSession(\${s.id})" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2.5 rounded-xl text-sm transition-colors">
         <i class="fas fa-list mr-1"></i>Filter Sessions
       </button>
       \${isActive ? \`<button onclick="closeSessionModal();openAdminClockoutModal(\${s.id})" class="w-full bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2.5 rounded-xl text-sm transition-colors border border-red-200"><i class="fas fa-stop-circle mr-1.5"></i>Admin Clock-Out</button>\` : ''}
@@ -5356,10 +5369,14 @@ async function loadWorkers() {
         <td class="py-3 text-right font-bold text-gray-800">$\${(w.total_earnings_all_time||0).toFixed(2)}</td>
         <td class="py-3 text-center">\${status}</td>
         <td class="py-3 text-right" onclick="event.stopPropagation()">
-          <button onclick="editWorkerRate(\${w.id}, '\${w.name}', \${w.hourly_rate})" class="text-indigo-600 hover:text-indigo-800 text-xs mr-2">
+          <button data-id="\${w.id}" data-name="\${w.name.replace(/"/g,'&quot;')}" data-rate="\${w.hourly_rate}"
+            onclick="editWorkerRate(+this.dataset.id, this.dataset.name, +this.dataset.rate)"
+            class="text-indigo-600 hover:text-indigo-800 text-xs mr-2">
             <i class="fas fa-edit"></i>
           </button>
-          <button onclick="deleteWorker(\${w.id}, '\${w.name}')" class="text-red-500 hover:text-red-700 text-xs">
+          <button data-id="\${w.id}" data-name="\${w.name.replace(/"/g,'&quot;')}"
+            onclick="deleteWorker(+this.dataset.id, this.dataset.name)"
+            class="text-red-500 hover:text-red-700 text-xs">
             <i class="fas fa-trash"></i>
           </button>
         </td>
@@ -5521,9 +5538,10 @@ async function loadMap() {
     if (sessions.length === 0) {
       // No sessions today — show world view, no pin
       adminMap.setView([20, 0], 2)
-      document.getElementById('admin-map').insertAdjacentHTML('beforeend',
-        '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,0.9);padding:12px 20px;border-radius:12px;font-size:13px;color:#6b7280;pointer-events:none;z-index:999;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.1)"><i class=\'fas fa-map-marker-slash\' style=\'color:#9ca3af;margin-right:6px\'></i>No clock-ins recorded today</div>'
-      )
+      const overlay = document.createElement('div')
+      overlay.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,0.9);padding:12px 20px;border-radius:12px;font-size:13px;color:#6b7280;pointer-events:none;z-index:999;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.1)'
+      overlay.innerHTML = '<i class="fas fa-map-marker-slash" style="color:#9ca3af;margin-right:6px"></i>No clock-ins recorded today'
+      document.getElementById('admin-map').appendChild(overlay)
       return
     }
     
@@ -6412,8 +6430,6 @@ setInterval(async () => {
   } catch(e) {}
 }, 60000)
 
-function showAdminToast(msg, type = 'info') {
-
 // ── Payroll Totals Tab ────────────────────────────────────────────────────────
 async function loadPayrollTab() {
   const listEl = document.getElementById('payroll-workers-list')
@@ -6605,6 +6621,27 @@ async function sendAcctSummary() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Helper: set an input value by id (avoids single-quote issues in onclick attrs)
+function setVal(id, val) {
+  const el = document.getElementById(id)
+  if (el) el.value = val
+}
+
+// Helper: filter sessions tab to a specific session's date + worker
+function filterSessionsByDateFromSession(sessionId) {
+  const sess = sessionStore[sessionId]
+  if (!sess) return
+  const dateStr = new Date(sess.clock_in_time).toISOString().split('T')[0]
+  showTab('sessions')
+  setTimeout(() => {
+    const dateEl = document.getElementById('filter-date')
+    const workerEl = document.getElementById('filter-worker')
+    if (dateEl) dateEl.value = dateStr
+    if (workerEl) workerEl.value = sess.worker_id
+    loadSessions()
+  }, 100)
+}
 
 function showAdminToast(msg, type = 'info') {
   const t = document.getElementById('admin-toast')
