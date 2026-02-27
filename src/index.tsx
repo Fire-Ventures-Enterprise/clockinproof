@@ -3456,7 +3456,9 @@ function getAdminHTML(): string {
   <style>
     body { font-family: 'Segoe UI', system-ui, sans-serif; }
     #admin-map { height: 400px; }
-    .tab-active { border-bottom: 3px solid #2563eb; color: #2563eb; }
+    .tab-active { background-color: #eef2ff; color: #4338ca; font-weight: 600; }
+    .tab-active .w-8 { background-color: #4338ca !important; color: white !important; }
+    .sidebar-btn { border: none; text-align: left; }
     .pulse { animation: pulse 2s infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
     .spinner { animation: spin 1s linear infinite; }
@@ -3489,112 +3491,230 @@ function getAdminHTML(): string {
 </div>
 
 <!-- Admin Dashboard -->
-<div id="admin-dashboard" class="hidden">
-  <!-- Header -->
-  <div class="bg-indigo-700 text-white shadow-lg">
-    <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+<div id="admin-dashboard" class="hidden min-h-screen bg-gray-100 flex flex-col">
+
+  <!-- ── Top Navbar ─────────────────────────────────────────────────────────── -->
+  <div class="bg-indigo-700 text-white shadow-lg flex-shrink-0">
+    <div class="px-4 py-3 flex items-center justify-between">
+      <!-- Left: hamburger + logo -->
       <div class="flex items-center gap-3">
-        <i class="fas fa-clock text-2xl"></i>
-        <div>
-          <h1 class="text-xl font-bold">WorkTracker Admin</h1>
-          <p class="text-indigo-300 text-xs" id="admin-last-updated"></p>
+        <button onclick="toggleSidebar()" class="w-9 h-9 flex items-center justify-center rounded-xl hover:bg-indigo-600 transition-colors lg:hidden" id="sidebar-hamburger">
+          <i class="fas fa-bars text-lg"></i>
+        </button>
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 bg-white bg-opacity-20 rounded-lg flex items-center justify-center">
+            <i class="fas fa-clock text-sm"></i>
+          </div>
+          <div>
+            <h1 class="text-base font-bold leading-tight">WorkTracker</h1>
+            <p class="text-indigo-300 text-[10px] leading-tight" id="admin-last-updated"></p>
+          </div>
         </div>
       </div>
-      <div class="flex items-center gap-3">
-        <button onclick="refreshAll()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-xl text-sm font-medium">
-          <i class="fas fa-sync-alt mr-1"></i>Refresh
+      <!-- Right: stat pills + actions -->
+      <div class="flex items-center gap-2">
+        <!-- Mini stat pills (always visible) -->
+        <div class="hidden sm:flex items-center gap-2">
+          <div onclick="showTab('live')" class="flex items-center gap-1.5 bg-green-500 bg-opacity-30 hover:bg-opacity-50 cursor-pointer px-3 py-1.5 rounded-full transition-colors">
+            <span class="w-2 h-2 bg-green-400 rounded-full pulse"></span>
+            <span class="text-xs font-bold" id="stat-working-now">–</span>
+            <span class="text-xs text-indigo-200">live</span>
+          </div>
+          <div onclick="showTab('payroll')" class="flex items-center gap-1.5 bg-white bg-opacity-10 hover:bg-opacity-20 cursor-pointer px-3 py-1.5 rounded-full transition-colors">
+            <i class="fas fa-dollar-sign text-indigo-200 text-xs"></i>
+            <span class="text-xs font-bold" id="stat-total-payroll">–</span>
+          </div>
+          <div onclick="showTab('sessions')" class="flex items-center gap-1.5 bg-white bg-opacity-10 hover:bg-opacity-20 cursor-pointer px-3 py-1.5 rounded-full transition-colors">
+            <i class="fas fa-clock text-indigo-200 text-xs"></i>
+            <span class="text-xs font-bold" id="stat-total-hours">–</span>
+            <span class="text-xs text-indigo-200">hrs</span>
+          </div>
+        </div>
+        <!-- Period selector compact -->
+        <select onchange="changePeriod(this.value)" id="period-select" class="hidden sm:block bg-indigo-600 border border-indigo-500 text-white text-xs rounded-xl px-2 py-1.5 focus:outline-none">
+          <option value="today">Today</option>
+          <option value="week">This Week</option>
+          <option value="month">This Month</option>
+          <option value="all">All Time</option>
+        </select>
+        <button onclick="refreshAll()" class="w-9 h-9 flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-colors">
+          <i class="fas fa-sync-alt text-sm"></i>
         </button>
-        <button onclick="adminLogout()" class="bg-indigo-800 hover:bg-indigo-900 px-4 py-2 rounded-xl text-sm font-medium">
-          <i class="fas fa-sign-out-alt mr-1"></i>Logout
+        <button onclick="adminLogout()" class="w-9 h-9 flex items-center justify-center bg-indigo-800 hover:bg-indigo-900 rounded-xl transition-colors">
+          <i class="fas fa-sign-out-alt text-sm"></i>
         </button>
       </div>
     </div>
   </div>
 
-  <!-- Stats Row -->
-  <div class="max-w-7xl mx-auto px-4 py-6">
-    <!-- Period Selector -->
-    <div class="flex gap-2 mb-6">
-      <button onclick="changePeriod('today')" class="period-btn px-4 py-2 rounded-xl text-sm font-medium bg-indigo-600 text-white" data-period="today">Today</button>
-      <button onclick="changePeriod('week')" class="period-btn px-4 py-2 rounded-xl text-sm font-medium bg-white text-gray-600 shadow-sm" data-period="week">This Week</button>
-      <button onclick="changePeriod('month')" class="period-btn px-4 py-2 rounded-xl text-sm font-medium bg-white text-gray-600 shadow-sm" data-period="month">This Month</button>
-      <button onclick="changePeriod('all')" class="period-btn px-4 py-2 rounded-xl text-sm font-medium bg-white text-gray-600 shadow-sm" data-period="all">All Time</button>
-    </div>
+  <!-- ── Body: sidebar + content ────────────────────────────────────────────── -->
+  <div class="flex flex-1 overflow-hidden relative">
 
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-      <div onclick="showTab('workers')" class="bg-white rounded-2xl shadow-sm p-5 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-blue-300 transition-all group">
-        <div class="flex items-center gap-3 mb-2">
-          <div class="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center group-hover:bg-blue-200 transition-colors">
-            <i class="fas fa-users text-blue-600"></i>
-          </div>
-          <span class="text-gray-500 text-sm">Total Workers</span>
-        </div>
-        <p class="text-3xl font-bold text-gray-800" id="stat-total-workers">–</p>
-        <p class="text-xs text-blue-400 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">View all workers →</p>
-      </div>
-      <div onclick="showTab('live')" class="bg-white rounded-2xl shadow-sm p-5 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-green-300 transition-all group">
-        <div class="flex items-center gap-3 mb-2">
-          <div class="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center group-hover:bg-green-200 transition-colors">
-            <i class="fas fa-user-clock text-green-600"></i>
-          </div>
-          <span class="text-gray-500 text-sm">Working Now</span>
-        </div>
-        <p class="text-3xl font-bold text-green-600" id="stat-working-now">–</p>
-        <p class="text-xs text-green-400 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">View live workers →</p>
-      </div>
-      <div onclick="showTab('sessions')" class="bg-white rounded-2xl shadow-sm p-5 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-yellow-300 transition-all group">
-        <div class="flex items-center gap-3 mb-2">
-          <div class="w-10 h-10 bg-yellow-100 rounded-xl flex items-center justify-center group-hover:bg-yellow-200 transition-colors">
-            <i class="fas fa-clock text-yellow-600"></i>
-          </div>
-          <span class="text-gray-500 text-sm">Total Hours</span>
-        </div>
-        <p class="text-3xl font-bold text-gray-800" id="stat-total-hours">–</p>
-        <p class="text-xs text-yellow-500 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">View all sessions →</p>
-      </div>
-      <div onclick="showTab('export')" class="bg-white rounded-2xl shadow-sm p-5 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-purple-300 transition-all group">
-        <div class="flex items-center gap-3 mb-2">
-          <div class="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center group-hover:bg-purple-200 transition-colors">
-            <i class="fas fa-dollar-sign text-purple-600"></i>
-          </div>
-          <span class="text-gray-500 text-sm">Total Payroll</span>
-        </div>
-        <p class="text-3xl font-bold text-gray-800" id="stat-total-payroll">–</p>
-        <p class="text-xs text-purple-400 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">Export payroll report →</p>
-      </div>
-    </div>
+    <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+    <aside id="admin-sidebar" class="w-64 bg-white border-r border-gray-200 flex-shrink-0 flex flex-col shadow-sm
+      fixed lg:static inset-y-0 left-0 z-40 transform -translate-x-full lg:translate-x-0 transition-transform duration-200"
+      style="top:56px;height:calc(100vh - 56px)">
 
-    <!-- Tabs -->
-    <div class="flex gap-0 border-b border-gray-200 mb-6 bg-white rounded-t-2xl px-2">
-      <button onclick="showTab('live')" class="tab-btn px-6 py-4 text-sm font-medium text-gray-600 tab-active" data-tab="live">
-        <i class="fas fa-satellite-dish mr-1"></i>Live View
-      </button>
-      <button onclick="showTab('workers')" class="tab-btn px-6 py-4 text-sm font-medium text-gray-600" data-tab="workers">
-        <i class="fas fa-users mr-1"></i>Workers
-      </button>
-      <button onclick="showTab('sessions')" class="tab-btn px-6 py-4 text-sm font-medium text-gray-600" data-tab="sessions">
-        <i class="fas fa-list mr-1"></i>Sessions
-      </button>
-      <button onclick="showTab('map')" class="tab-btn px-6 py-4 text-sm font-medium text-gray-600" data-tab="map">
-        <i class="fas fa-map mr-1"></i>Map
-      </button>
-      <button onclick="showTab('calendar')" class="tab-btn px-6 py-4 text-sm font-medium text-gray-600" data-tab="calendar">
-        <i class="fas fa-calendar-alt mr-1"></i>Calendar
-      </button>
-      <button onclick="showTab('settings')" class="tab-btn px-6 py-4 text-sm font-medium text-gray-600" data-tab="settings">
-        <i class="fas fa-cog mr-1"></i>Settings
-      </button>
-      <button onclick="showTab('export')" class="tab-btn px-5 py-4 text-sm font-medium text-gray-600" data-tab="export">
-        <i class="fas fa-file-export mr-1"></i>Export
-      </button>
-      <button onclick="showTab('overrides')" class="tab-btn px-5 py-4 text-sm font-medium text-gray-600 relative" data-tab="overrides">
-        <i class="fas fa-shield-alt mr-1"></i>Overrides
-        <span id="override-badge" class="hidden absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center">0</span>
-      </button>
-    </div>
+      <!-- Sidebar scroll area -->
+      <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1">
+
+        <!-- OVERVIEW -->
+        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2 mt-1">Overview</p>
+
+        <button onclick="showTab('live')" data-tab="live"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors tab-active">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-green-100 text-green-600 flex-shrink-0">
+            <i class="fas fa-satellite-dish text-sm"></i>
+          </span>
+          <span>Live View</span>
+          <span id="live-count-badge" class="ml-auto bg-green-100 text-green-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full hidden">0</span>
+        </button>
+
+        <button onclick="showTab('sessions')" data-tab="sessions"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-blue-100 text-blue-600 flex-shrink-0">
+            <i class="fas fa-list text-sm"></i>
+          </span>
+          <span>Sessions</span>
+        </button>
+
+        <button onclick="showTab('map')" data-tab="map"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-teal-100 text-teal-600 flex-shrink-0">
+            <i class="fas fa-map text-sm"></i>
+          </span>
+          <span>Map</span>
+        </button>
+
+        <button onclick="showTab('calendar')" data-tab="calendar"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-indigo-100 text-indigo-600 flex-shrink-0">
+            <i class="fas fa-calendar-alt text-sm"></i>
+          </span>
+          <span>Calendar</span>
+        </button>
+
+        <!-- WORKFORCE -->
+        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2 mt-5">Workforce</p>
+
+        <button onclick="showTab('workers')" data-tab="workers"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-blue-100 text-blue-600 flex-shrink-0">
+            <i class="fas fa-users text-sm"></i>
+          </span>
+          <span>Workers</span>
+          <span class="ml-auto text-xs text-gray-400" id="stat-total-workers">–</span>
+        </button>
+
+        <button onclick="showTab('overrides')" data-tab="overrides"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors relative">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-red-100 text-red-500 flex-shrink-0">
+            <i class="fas fa-shield-alt text-sm"></i>
+          </span>
+          <span>Overrides</span>
+          <span id="override-badge" class="hidden ml-auto bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">0</span>
+        </button>
+
+        <!-- FINANCE -->
+        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2 mt-5">Finance</p>
+
+        <button onclick="showTab('payroll')" data-tab="payroll"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-purple-100 text-purple-600 flex-shrink-0">
+            <i class="fas fa-dollar-sign text-sm"></i>
+          </span>
+          <span>Payroll Totals</span>
+        </button>
+
+        <button onclick="showTab('export')" data-tab="export"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-green-100 text-green-600 flex-shrink-0">
+            <i class="fas fa-file-export text-sm"></i>
+          </span>
+          <span>Export Timesheet</span>
+        </button>
+
+        <button onclick="showTab('accountant')" data-tab="accountant"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-amber-100 text-amber-600 flex-shrink-0">
+            <i class="fas fa-paper-plane text-sm"></i>
+          </span>
+          <span>Weekly Summary</span>
+          <span class="ml-auto text-[10px] text-amber-600 font-bold bg-amber-50 px-1.5 py-0.5 rounded-full">Acct</span>
+        </button>
+
+        <!-- ADMIN -->
+        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2 mt-5">Admin</p>
+
+        <button onclick="showTab('settings')" data-tab="settings"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-gray-100 text-gray-600 flex-shrink-0">
+            <i class="fas fa-building text-sm"></i>
+          </span>
+          <span>Company Settings</span>
+        </button>
+
+      </nav>
+
+      <!-- Sidebar footer -->
+      <div class="border-t px-4 py-3 bg-gray-50">
+        <div class="flex gap-2">
+          <button onclick="changePeriod('today')" data-period="today" class="period-btn flex-1 py-1.5 text-xs rounded-lg bg-indigo-600 text-white font-medium">Today</button>
+          <button onclick="changePeriod('week')" data-period="week" class="period-btn flex-1 py-1.5 text-xs rounded-lg bg-white border text-gray-600 font-medium">Week</button>
+          <button onclick="changePeriod('month')" data-period="month" class="period-btn flex-1 py-1.5 text-xs rounded-lg bg-white border text-gray-600 font-medium">Month</button>
+          <button onclick="changePeriod('all')" data-period="all" class="period-btn flex-1 py-1.5 text-xs rounded-lg bg-white border text-gray-600 font-medium">All</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Sidebar overlay for mobile -->
+    <div id="sidebar-overlay" class="hidden fixed inset-0 bg-black bg-opacity-40 z-30 lg:hidden" onclick="toggleSidebar()"></div>
+
+    <!-- ── Main content area ──────────────────────────────────────────────── -->
+    <main class="flex-1 overflow-y-auto p-4 lg:p-6 min-w-0">
+
+      <!-- Stats row (top of content, always visible) -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+        <div onclick="showTab('workers')" class="bg-white rounded-2xl shadow-sm p-4 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-blue-200 transition-all group">
+          <div class="flex items-center gap-2 mb-1">
+            <div class="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-200 transition-colors flex-shrink-0">
+              <i class="fas fa-users text-blue-600 text-xs"></i>
+            </div>
+            <span class="text-gray-400 text-xs">Workers</span>
+          </div>
+          <p class="text-2xl font-bold text-gray-800" id="stat-total-workers-card">–</p>
+        </div>
+        <div onclick="showTab('live')" class="bg-white rounded-2xl shadow-sm p-4 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-green-200 transition-all group">
+          <div class="flex items-center gap-2 mb-1">
+            <div class="w-8 h-8 bg-green-100 rounded-lg flex items-center justify-center group-hover:bg-green-200 transition-colors flex-shrink-0">
+              <i class="fas fa-user-clock text-green-600 text-xs"></i>
+            </div>
+            <span class="text-gray-400 text-xs">Working Now</span>
+          </div>
+          <p class="text-2xl font-bold text-green-600" id="stat-working-now-card">–</p>
+        </div>
+        <div onclick="showTab('sessions')" class="bg-white rounded-2xl shadow-sm p-4 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-yellow-200 transition-all group">
+          <div class="flex items-center gap-2 mb-1">
+            <div class="w-8 h-8 bg-yellow-100 rounded-lg flex items-center justify-center group-hover:bg-yellow-200 transition-colors flex-shrink-0">
+              <i class="fas fa-clock text-yellow-600 text-xs"></i>
+            </div>
+            <span class="text-gray-400 text-xs">Total Hours</span>
+          </div>
+          <p class="text-2xl font-bold text-gray-800" id="stat-total-hours-card">–</p>
+        </div>
+        <div onclick="showTab('payroll')" class="bg-white rounded-2xl shadow-sm p-4 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-purple-200 transition-all group">
+          <div class="flex items-center gap-2 mb-1">
+            <div class="w-8 h-8 bg-purple-100 rounded-lg flex items-center justify-center group-hover:bg-purple-200 transition-colors flex-shrink-0">
+              <i class="fas fa-dollar-sign text-purple-600 text-xs"></i>
+            </div>
+            <span class="text-gray-400 text-xs">Payroll</span>
+          </div>
+          <p class="text-2xl font-bold text-gray-800" id="stat-total-payroll-card">–</p>
+        </div>
+      </div>
 
     <!-- Tab: Live -->
-    <div id="tab-live" class="tab-content bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
+    <div id="tab-live" class="tab-content bg-white rounded-2xl shadow-sm p-5">
       <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
         <h3 class="font-bold text-gray-700 flex items-center gap-2">
           <span class="w-2 h-2 bg-green-500 rounded-full pulse"></span>
@@ -3617,7 +3737,7 @@ function getAdminHTML(): string {
     </div>
 
     <!-- Tab: Workers -->
-    <div id="tab-workers" class="tab-content hidden bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
+    <div id="tab-workers" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <div class="flex items-center justify-between mb-4">
         <h3 class="font-bold text-gray-700">All Workers</h3>
         <button onclick="showAddWorkerModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-4 py-2 rounded-xl font-medium">
@@ -3643,7 +3763,7 @@ function getAdminHTML(): string {
     </div>
 
     <!-- Tab: Sessions -->
-    <div id="tab-sessions" class="tab-content hidden bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
+    <div id="tab-sessions" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
         <h3 class="font-bold text-gray-700">Work Sessions</h3>
         <div class="flex gap-2 items-center flex-wrap">
@@ -3662,7 +3782,7 @@ function getAdminHTML(): string {
     </div>
 
     <!-- Tab: Map -->
-    <div id="tab-map" class="tab-content hidden bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
+    <div id="tab-map" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <div class="flex items-center justify-between mb-4">
         <h3 class="font-bold text-gray-700">Worker Locations</h3>
         <button onclick="loadMap()" class="text-indigo-600 text-sm font-medium hover:text-indigo-700">
@@ -3674,7 +3794,7 @@ function getAdminHTML(): string {
     </div>
 
     <!-- Tab: Calendar -->
-    <div id="tab-calendar" class="tab-content hidden bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
+    <div id="tab-calendar" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <div class="flex items-center justify-between mb-5 flex-wrap gap-3">
         <h3 class="font-bold text-gray-700 flex items-center gap-2">
           <i class="fas fa-calendar-alt text-indigo-500"></i> Work Calendar
@@ -3728,7 +3848,7 @@ function getAdminHTML(): string {
     </div>
 
     <!-- Tab: Settings -->
-    <div id="tab-settings" class="tab-content hidden bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
+    <div id="tab-settings" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <h3 class="font-bold text-gray-700 mb-5 flex items-center gap-2">
         <i class="fas fa-cog text-indigo-500"></i> App Settings
       </h3>
@@ -4098,7 +4218,7 @@ function getAdminHTML(): string {
     </div>
 
     <!-- Tab: Export -->
-    <div id="tab-export" class="tab-content hidden bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
+    <div id="tab-export" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <h3 class="font-bold text-gray-700 mb-5 flex items-center gap-2">
         <i class="fas fa-file-export text-indigo-500"></i> Weekly Export & Email Report
       </h3>
@@ -4210,11 +4330,111 @@ function getAdminHTML(): string {
       </div>
     </div>
 
-  </div>
-</div>
+    <!-- ── Tab: Payroll Totals ─────────────────────────────────────────────── -->
+    <div id="tab-payroll" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
+      <div class="flex items-center justify-between mb-5 flex-wrap gap-3">
+        <h3 class="font-bold text-gray-800 text-lg flex items-center gap-2">
+          <i class="fas fa-dollar-sign text-purple-500"></i> Payroll Totals
+        </h3>
+        <div class="flex gap-2 flex-wrap">
+          <button onclick="changePeriod('today');loadPayrollTab()" class="px-3 py-1.5 text-xs rounded-xl bg-white border border-gray-200 text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 font-medium">Today</button>
+          <button onclick="changePeriod('week');loadPayrollTab()" class="px-3 py-1.5 text-xs rounded-xl bg-white border border-gray-200 text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 font-medium">This Week</button>
+          <button onclick="changePeriod('month');loadPayrollTab()" class="px-3 py-1.5 text-xs rounded-xl bg-white border border-gray-200 text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 font-medium">This Month</button>
+          <button onclick="changePeriod('all');loadPayrollTab()" class="px-3 py-1.5 text-xs rounded-xl bg-indigo-600 text-white font-medium">All Time</button>
+        </div>
+      </div>
 
-<!-- Tab: Overrides -->
-<div id="tab-overrides" class="tab-content hidden bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
+      <!-- Summary totals banner -->
+      <div class="grid grid-cols-3 gap-3 mb-6">
+        <div class="bg-purple-50 border border-purple-100 rounded-2xl p-4 text-center">
+          <p class="text-2xl font-bold text-purple-700" id="pt-total-payroll">–</p>
+          <p class="text-xs text-purple-500 mt-0.5 font-medium">Total Payroll</p>
+        </div>
+        <div class="bg-blue-50 border border-blue-100 rounded-2xl p-4 text-center">
+          <p class="text-2xl font-bold text-blue-700" id="pt-total-hours">–</p>
+          <p class="text-xs text-blue-500 mt-0.5 font-medium">Total Hours</p>
+        </div>
+        <div class="bg-green-50 border border-green-100 rounded-2xl p-4 text-center">
+          <p class="text-2xl font-bold text-green-700" id="pt-total-workers">–</p>
+          <p class="text-xs text-green-500 mt-0.5 font-medium">Workers Paid</p>
+        </div>
+      </div>
+
+      <!-- Per-worker breakdown -->
+      <div id="payroll-workers-list" class="space-y-3">
+        <p class="text-gray-400 text-center py-8"><i class="fas fa-spinner fa-spin mr-2"></i>Loading payroll data...</p>
+      </div>
+    </div>
+
+    <!-- ── Tab: Weekly Summary → Accountant ───────────────────────────────── -->
+    <div id="tab-accountant" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
+      <div class="flex items-center justify-between mb-5 flex-wrap gap-3">
+        <div>
+          <h3 class="font-bold text-gray-800 text-lg flex items-center gap-2">
+            <i class="fas fa-paper-plane text-amber-500"></i> Weekly Summary to Accountant
+          </h3>
+          <p class="text-sm text-gray-400 mt-0.5">Send a clean per-worker recap of hours &amp; earnings for any week</p>
+        </div>
+      </div>
+
+      <!-- Week selector -->
+      <div class="bg-amber-50 border border-amber-200 rounded-2xl p-5 mb-5">
+        <div class="flex items-center gap-4 flex-wrap">
+          <div>
+            <label class="block text-xs font-semibold text-gray-600 mb-1">Select Week</label>
+            <input type="date" id="acct-week-date"
+              class="border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"/>
+          </div>
+          <div class="flex-1">
+            <label class="block text-xs font-semibold text-gray-600 mb-1">Week Range</label>
+            <p id="acct-week-label" class="text-sm font-bold text-amber-700 py-2">—</p>
+          </div>
+        </div>
+        <div class="flex gap-2 mt-3 flex-wrap">
+          <button onclick="setAcctWeek(-1)" class="px-3 py-2 bg-white border border-gray-300 text-gray-700 rounded-xl text-xs font-medium hover:bg-gray-50">
+            <i class="fas fa-chevron-left mr-1"></i>Prev Week
+          </button>
+          <button onclick="setAcctWeek(0)" class="px-3 py-2 bg-amber-500 text-white rounded-xl text-xs font-medium hover:bg-amber-600">
+            <i class="fas fa-calendar-check mr-1"></i>This Week
+          </button>
+          <button onclick="setAcctWeek(1)" class="px-3 py-2 bg-white border border-gray-300 text-gray-700 rounded-xl text-xs font-medium hover:bg-gray-50">
+            Next Week<i class="fas fa-chevron-right ml-1"></i>
+          </button>
+          <button onclick="loadAcctPreview()" class="ml-auto px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-semibold border border-indigo-200">
+            <i class="fas fa-eye mr-1"></i>Preview Recap
+          </button>
+        </div>
+      </div>
+
+      <!-- Accountant email field -->
+      <div class="bg-white border border-gray-200 rounded-2xl p-5 mb-5">
+        <label class="block text-sm font-semibold text-gray-700 mb-1">
+          <i class="fas fa-envelope text-amber-500 mr-1"></i> Send To (Accountant Email)
+        </label>
+        <div class="flex gap-2">
+          <input id="acct-email" type="email" placeholder="accountant@yourfirm.com"
+            class="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"/>
+          <button onclick="sendAcctSummary()" id="acct-send-btn"
+            class="bg-amber-500 hover:bg-amber-600 text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-colors shadow-md shadow-amber-200 flex items-center gap-2">
+            <i class="fas fa-paper-plane"></i> Send
+          </button>
+        </div>
+        <p class="text-xs text-gray-400 mt-2">Also CC'd to admin email. Uses Resend (free tier).</p>
+      </div>
+
+      <!-- Per-worker preview -->
+      <div id="acct-preview" class="space-y-3">
+        <div class="text-center py-8 text-gray-400">
+          <i class="fas fa-users text-3xl mb-3 block text-gray-300"></i>
+          <p class="text-sm">Select a week above and click <strong>Preview Recap</strong> to see the summary</p>
+        </div>
+      </div>
+
+      <div id="acct-send-status" class="hidden mt-4 rounded-xl p-4 text-sm"></div>
+    </div>
+
+    <!-- ── Tab: Overrides ─────────────────────────────────────────────────── -->
+    <div id="tab-overrides" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
   <div class="flex items-center justify-between mb-5">
     <h3 class="font-bold text-gray-700 flex items-center gap-2">
       <i class="fas fa-shield-alt text-red-500"></i>
@@ -4252,7 +4472,11 @@ function getAdminHTML(): string {
     <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2 mb-4">Override History (Last 100)</h4>
     <div id="overrides-history-list" class="space-y-2"></div>
   </div>
-</div>
+    </div><!-- /tab-overrides -->
+
+    </main><!-- /main content -->
+  </div><!-- /flex body -->
+</div><!-- /admin-dashboard -->
 
 <!-- Add Worker Modal -->
 <div id="add-worker-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -4517,10 +4741,21 @@ async function loadStats() {
     const res = await fetch('/api/stats/summary?period=' + currentPeriod)
     const data = await res.json()
     const s = data.stats
-    document.getElementById('stat-total-workers').textContent = s.total_workers || 0
-    document.getElementById('stat-working-now').textContent = s.currently_working || 0
-    document.getElementById('stat-total-hours').textContent = (s.total_hours || 0).toFixed(1) + 'h'
-    document.getElementById('stat-total-payroll').textContent = '$' + (s.total_earnings || 0).toFixed(2)
+    // Update all stat display elements (sidebar + navbar pills + cards)
+    const w = s.total_workers || 0
+    const n = s.currently_working || 0
+    const h = (s.total_hours || 0).toFixed(1) + 'h'
+    const p = '$' + (s.total_earnings || 0).toFixed(2)
+    document.querySelectorAll('#stat-total-workers,#stat-total-workers-card').forEach(el => { if(el) el.textContent = w })
+    document.querySelectorAll('#stat-working-now,#stat-working-now-card').forEach(el => { if(el) el.textContent = n })
+    document.querySelectorAll('#stat-total-hours,#stat-total-hours-card').forEach(el => { if(el) el.textContent = h })
+    document.querySelectorAll('#stat-total-payroll,#stat-total-payroll-card').forEach(el => { if(el) el.textContent = p })
+    // Live badge on sidebar
+    const liveBadge = document.getElementById('live-count-badge')
+    if (liveBadge) {
+      if (n > 0) { liveBadge.textContent = n; liveBadge.classList.remove('hidden') }
+      else liveBadge.classList.add('hidden')
+    }
   } catch(e) { console.error(e) }
 }
 
@@ -4952,7 +5187,7 @@ function openDayModal(dateStr) {
     if (s.away_flag)     flags.push('<span class="text-yellow-600 text-[10px]">⏰ Away</span>')
     if (s.auto_clockout) flags.push('<span class="text-red-600 text-[10px]">🔴 Auto Out</span>')
 
-    return \`<div class="bg-gray-50 border border-gray-100 rounded-xl p-4 hover:border-indigo-300 hover:shadow-sm transition-all cursor-pointer" onclick="closeDayModal();openSessionModal(\${JSON.stringify(s).replace(/"/g,'&quot;')})">
+    return \`<div class="bg-gray-50 border border-gray-100 rounded-xl p-4 hover:border-indigo-300 hover:shadow-sm transition-all cursor-pointer" onclick=\"closeDayModal();openSessionById(\${s.id})\">
       <div class="flex items-start justify-between gap-3">
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2 mb-1.5">
@@ -5174,20 +5409,20 @@ async function loadSessions() {
         : key === yesterday ? 'Yesterday'
         : d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' })
 
-      const dayHours = sessions.reduce((s, x) => s + (x.total_hours || 0), 0)
-      const dayEarnings = sessions.reduce((s, x) => s + (x.earnings || 0), 0)
-      const hasActive = sessions.some(s => s.status === 'active')
-      const uniqueWorkers = [...new Set(sessions.map(s => s.worker_name))].filter(Boolean)
+      const dayHours = sessions.reduce((acc, x) => acc + (x.total_hours || 0), 0)
+      const dayEarnings = sessions.reduce((acc, x) => acc + (x.earnings || 0), 0)
+      const hasActive = sessions.some(sess => sess.status === 'active')
+      const uniqueWorkers = [...new Set(sessions.map(sess => sess.worker_name))].filter(Boolean)
 
-      const sessionsHTML = sessions.map(s => {
-        const clockIn = new Date(s.clock_in_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})
-        const clockOut = s.clock_out_time ? new Date(s.clock_out_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : null
-        const isActive = s.status === 'active'
-        const mapLink = s.clock_in_lat
-          ? \`<a href="https://maps.google.com/?q=\${s.clock_in_lat},\${s.clock_in_lng}" target="_blank" class="text-blue-500 hover:text-blue-700 text-xs ml-2"><i class="fas fa-map-marker-alt mr-0.5"></i>Map</a>\`
+      const sessionsHTML = sessions.map(sess => {
+        const clockIn = new Date(sess.clock_in_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})
+        const clockOut = sess.clock_out_time ? new Date(sess.clock_out_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : null
+        const isActive = sess.status === 'active'
+        const mapLink = sess.clock_in_lat
+          ? \`<a href="https://maps.google.com/?q=\${sess.clock_in_lat},\${sess.clock_in_lng}" target="_blank" class="text-blue-500 hover:text-blue-700 text-xs ml-2"><i class="fas fa-map-marker-alt mr-0.5"></i>Map</a>\`
           : ''
 
-        return \`<div class="bg-gray-50 rounded-xl p-4 border border-gray-100 hover:border-indigo-300 hover:shadow-md transition-all cursor-pointer" onclick="openSessionModal(\${JSON.stringify(s).replace(/'/g,"\\'").replace(/"/g,'&quot;')})">
+        return \`<div class="bg-gray-50 rounded-xl p-4 border border-gray-100 hover:border-indigo-300 hover:shadow-md transition-all cursor-pointer" onclick="openSessionById(\${sess.id})">
           <div class="flex items-start justify-between gap-2">
             <div class="flex-1">
               <!-- Worker name -->
@@ -5195,22 +5430,22 @@ async function loadSessions() {
                 <div class="w-7 h-7 bg-indigo-100 rounded-full flex items-center justify-center flex-shrink-0">
                   <i class="fas fa-user text-indigo-500 text-xs"></i>
                 </div>
-                <span class="font-bold text-gray-800 text-sm">\${s.worker_name || '–'}</span>
-                <span class="text-gray-400 text-xs">\${s.worker_phone || ''}</span>
+                <span class="font-bold text-gray-800 text-sm">\${sess.worker_name || '–'}</span>
+                <span class="text-gray-400 text-xs">\${sess.worker_phone || ''}</span>
                 \${isActive ? \`<span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium pulse ml-auto">● LIVE</span>\` : ''}
               </div>
               <!-- Job location -->
-              \${s.job_location ? \`
+              \${sess.job_location ? \`
                 <div class="flex items-start gap-1.5 mb-1.5 ml-9">
                   <i class="fas fa-map-marker-alt text-red-500 mt-0.5 text-xs flex-shrink-0"></i>
-                  <p class="text-sm font-semibold text-gray-700">\${s.job_location}</p>
+                  <p class="text-sm font-semibold text-gray-700">\${sess.job_location}</p>
                 </div>
               \` : ''}
               <!-- Job description -->
-              \${s.job_description ? \`
+              \${sess.job_description ? \`
                 <div class="flex items-start gap-1.5 mb-2 ml-9">
                   <i class="fas fa-tools text-blue-400 mt-0.5 text-xs flex-shrink-0"></i>
-                  <p class="text-xs text-gray-500">\${s.job_description}</p>
+                  <p class="text-xs text-gray-500">\${sess.job_description}</p>
                 </div>
               \` : ''}
               <!-- Time row -->
@@ -5228,8 +5463,8 @@ async function loadSessions() {
             <div class="text-right flex-shrink-0">
               \${isActive
                 ? \`<span class="text-green-500 text-xs font-medium">In progress</span>\`
-                : \`<p class="text-base font-bold text-gray-800">\${(s.total_hours||0).toFixed(2)}h</p>
-                   <p class="text-sm font-bold text-green-600">$\${(s.earnings||0).toFixed(2)}</p>\`
+                : \`<p class="text-base font-bold text-gray-800">\${(sess.total_hours||0).toFixed(2)}h</p>
+                   <p class="text-sm font-bold text-green-600">$\${(sess.earnings||0).toFixed(2)}</p>\`
               }
               <p class="text-xs text-gray-400 mt-1"><i class="fas fa-info-circle"></i></p>
             </div>
@@ -5394,22 +5629,58 @@ function exportCSV() {
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 function showTab(name) {
   document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'))
-  document.querySelectorAll('.tab-btn').forEach(t => t.classList.remove('tab-active'))
-  document.getElementById('tab-' + name).classList.remove('hidden')
-  document.querySelector('[data-tab="' + name + '"]').classList.add('tab-active')
+  document.querySelectorAll('.tab-btn').forEach(t => {
+    t.classList.remove('tab-active')
+    // Update sidebar icon bg when active
+    const icon = t.querySelector('span.w-8')
+    if (icon) {
+      icon.classList.remove('bg-indigo-600','text-white')
+    }
+  })
+  const tabEl = document.getElementById('tab-' + name)
+  if (tabEl) tabEl.classList.remove('hidden')
+  const btnEl = document.querySelector('[data-tab="' + name + '"]')
+  if (btnEl) btnEl.classList.add('tab-active')
   if (name === 'map') loadMap()
   if (name === 'calendar') loadCalendar()
   if (name === 'settings') loadSettings()
   if (name === 'export') initExportTab()
   if (name === 'overrides') loadOverrides()
+  if (name === 'payroll') loadPayrollTab()
+  if (name === 'accountant') initAcctTab()
+  // Close sidebar on mobile after navigation
+  const sidebar = document.getElementById('admin-sidebar')
+  if (sidebar && window.innerWidth < 1024) {
+    sidebar.classList.add('-translate-x-full')
+    const overlay = document.getElementById('sidebar-overlay')
+    if (overlay) overlay.classList.add('hidden')
+  }
+}
+
+function toggleSidebar() {
+  const sidebar = document.getElementById('admin-sidebar')
+  const overlay = document.getElementById('sidebar-overlay')
+  if (!sidebar) return
+  if (sidebar.classList.contains('-translate-x-full')) {
+    sidebar.classList.remove('-translate-x-full')
+    if (overlay) overlay.classList.remove('hidden')
+  } else {
+    sidebar.classList.add('-translate-x-full')
+    if (overlay) overlay.classList.add('hidden')
+  }
 }
 
 function changePeriod(period) {
   currentPeriod = period
+  // Sync navbar select
+  const sel = document.getElementById('period-select')
+  if (sel) sel.value = period
+  // Sync sidebar footer period buttons
   document.querySelectorAll('.period-btn').forEach(b => {
-    b.className = b.dataset.period === period
-      ? 'period-btn px-4 py-2 rounded-xl text-sm font-medium bg-indigo-600 text-white'
-      : 'period-btn px-4 py-2 rounded-xl text-sm font-medium bg-white text-gray-600 shadow-sm'
+    const active = b.dataset.period === period
+    b.className = active
+      ? 'period-btn flex-1 py-1.5 text-xs rounded-lg bg-indigo-600 text-white font-medium'
+      : 'period-btn flex-1 py-1.5 text-xs rounded-lg bg-white border text-gray-600 font-medium'
   })
   loadStats()
 }
@@ -6140,6 +6411,200 @@ setInterval(async () => {
     else { badge.classList.add('hidden') }
   } catch(e) {}
 }, 60000)
+
+function showAdminToast(msg, type = 'info') {
+
+// ── Payroll Totals Tab ────────────────────────────────────────────────────────
+async function loadPayrollTab() {
+  const listEl = document.getElementById('payroll-workers-list')
+  const ptPayroll = document.getElementById('pt-total-payroll')
+  const ptHours   = document.getElementById('pt-total-hours')
+  const ptWorkers = document.getElementById('pt-total-workers')
+  if (!listEl) return
+  listEl.innerHTML = '<p class="text-gray-400 text-center py-8"><i class="fas fa-spinner fa-spin mr-2"></i>Loading...</p>'
+  try {
+    const res  = await fetch('/api/stats/summary?period=' + currentPeriod)
+    const data = await res.json()
+    const stats = data.stats || {}
+
+    if (ptPayroll) ptPayroll.textContent = '$' + (stats.total_earnings || 0).toFixed(2)
+    if (ptHours)   ptHours.textContent   = (stats.total_hours || 0).toFixed(1) + 'h'
+    if (ptWorkers) ptWorkers.textContent = stats.total_workers || 0
+
+    // Get per-worker breakdown via sessions
+    const sRes  = await fetch('/api/sessions?limit=500')
+    const sData = await sRes.json()
+    const sessions = sData.sessions || []
+
+    // Group by worker
+    const byWorker = {}
+    sessions.forEach(sess => {
+      if (!byWorker[sess.worker_id]) byWorker[sess.worker_id] = {
+        name: sess.worker_name, phone: sess.worker_phone, sessions: [], hours: 0, earnings: 0
+      }
+      byWorker[sess.worker_id].sessions.push(sess)
+      byWorker[sess.worker_id].hours    += sess.total_hours || 0
+      byWorker[sess.worker_id].earnings += sess.earnings    || 0
+    })
+
+    const workers = Object.values(byWorker).sort((a, b) => b.earnings - a.earnings)
+    if (!workers.length) {
+      listEl.innerHTML = '<p class="text-gray-400 text-center py-8">No payroll data for this period</p>'
+      return
+    }
+
+    listEl.innerHTML = workers.map(w => \`
+      <div class="bg-white border border-gray-100 rounded-2xl p-4 hover:shadow-md transition-shadow">
+        <div class="flex items-center justify-between gap-3">
+          <div class="flex items-center gap-3 flex-1 min-w-0">
+            <div class="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center flex-shrink-0">
+              <span class="text-indigo-700 font-bold text-sm">\${w.name.charAt(0).toUpperCase()}</span>
+            </div>
+            <div class="min-w-0">
+              <p class="font-semibold text-gray-800 truncate">\${w.name}</p>
+              <p class="text-xs text-gray-400">\${w.phone} · \${w.sessions.length} shift\${w.sessions.length !== 1 ? 's' : ''}</p>
+            </div>
+          </div>
+          <div class="text-right flex-shrink-0">
+            <p class="text-xl font-bold text-green-700">$\${w.earnings.toFixed(2)}</p>
+            <p class="text-xs text-gray-400">\${w.hours.toFixed(1)}h worked</p>
+          </div>
+        </div>
+        <!-- Mini bar showing proportion of total earnings -->
+        <div class="mt-3 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+          <div class="h-full bg-gradient-to-r from-indigo-400 to-purple-500 rounded-full" style="width:\${Math.min(100,(w.earnings/(stats.total_earnings||1))*100).toFixed(1)}%"></div>
+        </div>
+        <div class="mt-2 flex gap-3 text-[11px] text-gray-400">
+          <span><i class="fas fa-clock mr-1"></i>\${w.hours.toFixed(1)} hrs</span>
+          <span><i class="fas fa-calendar mr-1"></i>\${w.sessions.length} sessions</span>
+          <span class="ml-auto text-indigo-600 font-medium">\${((w.earnings/(s.total_earnings||1))*100).toFixed(1)}% of payroll</span>
+        </div>
+      </div>
+    \`).join('')
+  } catch(e) {
+    if (listEl) listEl.innerHTML = '<p class="text-red-400 text-center py-8">Error loading payroll data</p>'
+    console.error(e)
+  }
+}
+
+// ── Accountant Weekly Summary Tab ─────────────────────────────────────────────
+let acctWeekOffset = 0
+
+function getMondayOf(offset = 0) {
+  const d = new Date()
+  const day = d.getDay()
+  const diff = d.getDate() - (day === 0 ? 6 : day - 1)
+  d.setDate(diff + offset * 7)
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+function setAcctWeek(offset) {
+  acctWeekOffset = offset
+  const monday = getMondayOf(offset)
+  const friday = new Date(monday); friday.setDate(monday.getDate() + 6)
+  const fmt = d => d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+  const dateInput = document.getElementById('acct-week-date')
+  const label     = document.getElementById('acct-week-label')
+  if (dateInput) dateInput.value = monday.toISOString().split('T')[0]
+  if (label) label.textContent = fmt(monday) + ' – ' + fmt(friday)
+}
+
+function initAcctTab() {
+  setAcctWeek(0)
+}
+
+async function loadAcctPreview() {
+  const dateInput = document.getElementById('acct-week-date')
+  const previewEl = document.getElementById('acct-preview')
+  if (!previewEl || !dateInput?.value) return
+
+  previewEl.innerHTML = '<p class="text-gray-400 text-center py-8"><i class="fas fa-spinner fa-spin mr-2"></i>Loading preview...</p>'
+
+  try {
+    const res  = await fetch('/api/export/report?week=' + dateInput.value)
+    const data = await res.json()
+    const workers = data.workers || []
+
+    if (!workers.length) {
+      previewEl.innerHTML = '<p class="text-gray-400 text-center py-8">No shifts recorded for this week</p>'
+      return
+    }
+
+    previewEl.innerHTML = \`
+      <div class="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4">
+        <p class="text-sm font-semibold text-amber-800"><i class="fas fa-info-circle mr-1"></i>Preview: \${workers.length} worker\${workers.length !== 1 ? 's' : ''} — \${data.label || ''}</p>
+      </div>
+    \` + workers.map(w => \`
+      <div class="bg-white border border-gray-100 rounded-2xl p-4 mb-3">
+        <div class="flex items-center gap-3 mb-3">
+          <div class="w-10 h-10 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0">
+            <span class="text-amber-700 font-bold text-sm">\${w.worker_name.charAt(0)}</span>
+          </div>
+          <div class="flex-1">
+            <p class="font-bold text-gray-800">\${w.worker_name}</p>
+            <p class="text-xs text-gray-400">\${w.worker_phone}</p>
+          </div>
+          <div class="text-right">
+            <p class="text-lg font-bold text-green-700">$\${(w.total_earnings || 0).toFixed(2)}</p>
+            <p class="text-xs text-gray-400">\${(w.total_hours || 0).toFixed(1)}h</p>
+          </div>
+        </div>
+        <div class="space-y-1">
+          \${(w.sessions || []).map(s => {
+            const cin  = new Date(s.clock_in_time)
+            const cout = s.clock_out_time ? new Date(s.clock_out_time) : null
+            return \`<div class="flex items-center justify-between text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5">
+              <span><i class="fas fa-calendar mr-1 text-gray-400"></i>\${cin.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})}</span>
+              <span>\${cin.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} → \${cout ? cout.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : 'Active'}</span>
+              <span class="font-semibold text-gray-700">\${(s.total_hours||0).toFixed(1)}h · $\${(s.earnings||0).toFixed(2)}</span>
+            </div>\`
+          }).join('')}
+        </div>
+      </div>
+    \`).join('')
+  } catch(e) {
+    if (previewEl) previewEl.innerHTML = '<p class="text-red-400 text-center py-8">Error loading preview</p>'
+    console.error(e)
+  }
+}
+
+async function sendAcctSummary() {
+  const emailEl  = document.getElementById('acct-email')
+  const dateEl   = document.getElementById('acct-week-date')
+  const statusEl = document.getElementById('acct-send-status')
+  const btn      = document.getElementById('acct-send-btn')
+  if (!emailEl?.value) { showAdminToast('Enter accountant email first', 'error'); return }
+  if (!dateEl?.value)  { showAdminToast('Select a week first', 'error'); return }
+
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Sending...'
+  if (statusEl) { statusEl.className = 'mt-4 rounded-xl p-4 text-sm bg-blue-50 border border-blue-200 text-blue-700'; statusEl.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Sending weekly summary...'; statusEl.classList.remove('hidden') }
+
+  try {
+    const res  = await fetch('/api/report/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week: dateEl.value, to: emailEl.value })
+    })
+    const data = await res.json()
+    if (data.success) {
+      if (statusEl) { statusEl.className = 'mt-4 rounded-xl p-4 text-sm bg-green-50 border border-green-200 text-green-700'; statusEl.innerHTML = \`<i class="fas fa-check-circle mr-2"></i><strong>Sent!</strong> Weekly summary emailed to \${emailEl.value}\` }
+      showAdminToast('✅ Weekly summary sent to accountant!', 'success')
+    } else {
+      if (statusEl) { statusEl.className = 'mt-4 rounded-xl p-4 text-sm bg-red-50 border border-red-200 text-red-700'; statusEl.innerHTML = '<i class="fas fa-times-circle mr-2"></i>' + (data.error || 'Send failed') }
+      showAdminToast(data.error || 'Send failed', 'error')
+    }
+  } catch(e) {
+    if (statusEl) { statusEl.className = 'mt-4 rounded-xl p-4 text-sm bg-red-50 border border-red-200 text-red-700'; statusEl.innerHTML = '<i class="fas fa-times-circle mr-2"></i>Connection error' }
+    showAdminToast('Connection error', 'error')
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-paper-plane mr-1"></i>Send'
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 function showAdminToast(msg, type = 'info') {
   const t = document.getElementById('admin-toast')
