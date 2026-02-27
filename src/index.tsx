@@ -1728,15 +1728,13 @@ app.get('/api/export/csv', async (c) => {
     'Job Location', 'Job Description',
     'Clock-In GPS (Lat)', 'Clock-In GPS (Lng)', 'Clock-In Address',
     'Clock-Out GPS (Lat)', 'Clock-Out GPS (Lng)', 'Clock-Out Address',
-    'GPS Pings Count', 'GPS Ping Times', 'GPS Ping Coords', 'Status'
+    'GPS Pings Count', 'Status'
   ]
 
   const escape = (v: any) => '"' + String(v ?? '').replace(/"/g, '""') + '"'
 
   const rows = (sessions.results as any[]).map((s: any) => {
     const sessionPings = pingsBySession[s.id] || []
-    const pingTimes  = sessionPings.map((p: any) => new Date(p.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })).join(' | ')
-    const pingCoords = sessionPings.map((p: any) => `${p.latitude},${p.longitude}`).join(' | ')
     const clockInDate = new Date(s.clock_in_time)
     const dayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][clockInDate.getUTCDay()]
 
@@ -1759,8 +1757,6 @@ app.get('/api/export/csv', async (c) => {
       s.clock_out_lng || '',
       s.clock_out_address || '',
       sessionPings.length,
-      pingTimes,
-      pingCoords,
       s.status
     ].map(escape).join(',')
   })
@@ -1875,14 +1871,9 @@ function buildWeeklyReportHTML(
         })
       }
 
-      pings.forEach((p: any, i: number) => {
-        allGPSPoints.push({
-          time: new Date(p.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}),
-          lat: p.latitude, lng: p.longitude,
-          label: `📍 Ping #${i+1}`,
-          note: `Accuracy ±${Math.round(p.accuracy || 0)}m`
-        })
-      })
+      // Pings excluded from export — only Clock In / Clock Out shown
+      // Summary: total pings count only
+      const pingCount = pings.length
 
       if (s.clock_out_lat && clockOutDate) {
         allGPSPoints.push({
@@ -1901,7 +1892,6 @@ function buildWeeklyReportHTML(
                 <th style="padding:5px 8px;border:1px solid #e2e8f0;">Event</th>
                 <th style="padding:5px 8px;border:1px solid #e2e8f0;">GPS Coordinates</th>
                 <th style="padding:5px 8px;border:1px solid #e2e8f0;">Map Link</th>
-                <th style="padding:5px 8px;border:1px solid #e2e8f0;">Note</th>
               </tr>
             </thead>
             <tbody>
@@ -1911,15 +1901,15 @@ function buildWeeklyReportHTML(
                   <td style="padding:5px 8px;border:1px solid #e2e8f0;">${pt.label}</td>
                   <td style="padding:5px 8px;border:1px solid #e2e8f0;font-family:monospace;">${pt.lat !== null ? `${(pt.lat as number).toFixed(6)}, ${(pt.lng as number).toFixed(6)}` : '—'}</td>
                   <td style="padding:5px 8px;border:1px solid #e2e8f0;">${pt.lat !== null ? `<a href="https://maps.google.com/?q=${pt.lat},${pt.lng}" style="color:#2563eb;">View Map</a>` : '—'}</td>
-                  <td style="padding:5px 8px;border:1px solid #e2e8f0;font-size:10px;color:#64748b;">${pt.note.substring(0, 60)}</td>
                 </tr>
               `).join('')}
             </tbody>
           </table>`
         : `<p style="font-size:11px;color:#94a3b8;margin-top:6px;font-style:italic;">⚠ No GPS data recorded for this shift</p>`
 
-      const gpsStatus = allGPSPoints.length > 0
-        ? `<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 7px;border-radius:999px;font-weight:600;">✓ GPS Verified (${allGPSPoints.length} point${allGPSPoints.length > 1 ? 's' : ''})</span>`
+      const totalGPSPoints = allGPSPoints.length + pingCount
+      const gpsStatus = totalGPSPoints > 0
+        ? `<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 7px;border-radius:999px;font-weight:600;">✓ GPS Verified (${pingCount} ping${pingCount !== 1 ? 's' : ''} logged)</span>`
         : `<span style="background:#fef9c3;color:#854d0e;font-size:10px;padding:2px 7px;border-radius:999px;font-weight:600;">⚠ No GPS</span>`
 
       return `
@@ -1946,9 +1936,8 @@ function buildWeeklyReportHTML(
             ${s.job_location ? `<p style="margin:0 0 4px;font-size:12px;"><span style="color:#64748b;">📍 Location:</span> <strong>${s.job_location}</strong></p>` : ''}
             ${s.job_description ? `<p style="margin:0;font-size:12px;color:#475569;"><span style="color:#64748b;">🔧 Tasks:</span> ${s.job_description}</p>` : ''}
           </div>
-          <!-- GPS proof table -->
+          <!-- GPS summary (no per-ping rows) -->
           <div style="padding:10px 14px;">
-            <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:0.05em;">GPS Location Proof</p>
             ${gpsProofHTML}
           </div>
         </div>`
