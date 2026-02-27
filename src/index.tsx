@@ -68,6 +68,18 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('app_name', 'WorkTracker')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('default_hourly_rate', '15.00')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_pin', '1234')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('country_code', 'CA')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('province_code', 'ON')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('city', 'Toronto')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('timezone', 'America/Toronto')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('work_start', '08:00')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('work_end', '16:00')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('break_morning_min', '15')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('break_lunch_min', '30')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('break_afternoon_min', '15')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('paid_hours_per_day', '7.5')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('work_days', '1,2,3,4,5')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('stat_pay_multiplier', '1.5')`,
   ]
   for (const sql of statements) {
     await db.prepare(sql).run()
@@ -435,6 +447,183 @@ app.put('/api/settings', async (c) => {
   return c.json({ success: true })
 })
 
+// ─── STAT PAY RULES (province/state minimums) ─────────────────────────────────
+const STAT_PAY_RULES: Record<string, { multiplier: number; name: string }> = {
+  // Canadian Provinces
+  'CA-ON': { multiplier: 1.5, name: 'Ontario' },
+  'CA-BC': { multiplier: 1.5, name: 'British Columbia' },
+  'CA-AB': { multiplier: 1.5, name: 'Alberta' },
+  'CA-QC': { multiplier: 1.0, name: 'Quebec' },         // Regular pay if given day off
+  'CA-MB': { multiplier: 1.5, name: 'Manitoba' },
+  'CA-SK': { multiplier: 1.5, name: 'Saskatchewan' },
+  'CA-NS': { multiplier: 1.5, name: 'Nova Scotia' },
+  'CA-NB': { multiplier: 1.5, name: 'New Brunswick' },
+  'CA-PE': { multiplier: 1.5, name: 'Prince Edward Island' },
+  'CA-NL': { multiplier: 2.0, name: 'Newfoundland & Labrador' },
+  'CA-NT': { multiplier: 1.5, name: 'Northwest Territories' },
+  'CA-YT': { multiplier: 1.5, name: 'Yukon' },
+  'CA-NU': { multiplier: 1.5, name: 'Nunavut' },
+  // US States (federal FLSA: no mandatory premium, but common practice is 1.5x)
+  'US-CA': { multiplier: 1.5, name: 'California' },
+  'US-NY': { multiplier: 1.5, name: 'New York' },
+  'US-TX': { multiplier: 1.5, name: 'Texas' },
+  'US-FL': { multiplier: 1.5, name: 'Florida' },
+  'US-WA': { multiplier: 1.5, name: 'Washington' },
+  'US-OR': { multiplier: 1.5, name: 'Oregon' },
+  'US-MA': { multiplier: 1.5, name: 'Massachusetts' },
+  'US-IL': { multiplier: 1.5, name: 'Illinois' },
+}
+
+// ─── HOLIDAYS API ─────────────────────────────────────────────────────────────
+
+// Fetch public holidays from Nager.Date API (free, no key needed)
+app.get('/api/holidays/:year', async (c) => {
+  const year = c.req.param('year')
+  const db = c.env.DB
+
+  // Get country + province from settings
+  const settingsRaw = await db.prepare('SELECT * FROM settings').all()
+  const settings: Record<string, string> = {}
+  settingsRaw.results.forEach((s: any) => { settings[s.key] = s.value })
+
+  const country = settings.country_code || 'CA'
+  const province = settings.province_code || 'ON'
+
+  try {
+    // Nager.Date public API - completely free
+    const url = `https://date.nager.at/api/v3/PublicHolidays/${year}/${country}`
+    const res = await fetch(url, {
+      headers: { 'Accept': 'application/json', 'User-Agent': 'WorkTracker/1.0' }
+    })
+
+    if (!res.ok) throw new Error('Holiday API failed')
+    const allHolidays: any[] = await res.json()
+
+    // Filter: national holidays + province-specific ones
+    const filtered = allHolidays.filter((h: any) => {
+      if (!h.counties || h.counties.length === 0) return true  // national
+      // Check if this province is in the counties list
+      const provCode = `${country}-${province}`
+      return h.counties.some((c: string) => c === provCode || c === province)
+    })
+
+    // Add stat pay info
+    const provinceKey = `${country}-${province}`
+    const statRule = STAT_PAY_RULES[provinceKey] || { multiplier: 1.5, name: province }
+
+    const holidays = filtered.map((h: any) => ({
+      date: h.date,
+      name: h.localName || h.name,
+      global: !h.counties || h.counties.length === 0,
+      stat_multiplier: statRule.multiplier,
+      province: statRule.name
+    }))
+
+    return c.json({ holidays, country, province, year, stat_rule: statRule })
+  } catch (e) {
+    // Return empty on failure (don't crash the app)
+    return c.json({ holidays: [], country, province, year, error: 'Could not fetch holidays' })
+  }
+})
+
+// Get calendar data for a month (sessions + holidays + schedule info)
+app.get('/api/calendar/:year/:month', async (c) => {
+  const db = c.env.DB
+  const year = parseInt(c.req.param('year'))
+  const month = parseInt(c.req.param('month')) // 1-12
+  const worker_id = c.req.query('worker_id')
+
+  // Get settings
+  const settingsRaw = await db.prepare('SELECT * FROM settings').all()
+  const settings: Record<string, string> = {}
+  settingsRaw.results.forEach((s: any) => { settings[s.key] = s.value })
+
+  // Get sessions for the month
+  const startDate = `${year}-${String(month).padStart(2,'0')}-01`
+  const endDate = `${year}-${String(month).padStart(2,'0')}-31`
+
+  let sessQuery = `
+    SELECT s.*, w.name as worker_name, w.hourly_rate
+    FROM sessions s JOIN workers w ON s.worker_id = w.id
+    WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+  `
+  const params: any[] = [startDate, endDate]
+
+  if (worker_id) {
+    sessQuery += ' AND s.worker_id = ?'
+    params.push(parseInt(worker_id))
+  }
+
+  sessQuery += ' ORDER BY s.clock_in_time ASC'
+
+  const sessions = await db.prepare(sessQuery).bind(...params).all()
+
+  // Group sessions by date
+  const sessionsByDate: Record<string, any[]> = {}
+  sessions.results.forEach((s: any) => {
+    const d = s.clock_in_time.split('T')[0].split(' ')[0]
+    if (!sessionsByDate[d]) sessionsByDate[d] = []
+    sessionsByDate[d].push(s)
+  })
+
+  // Work schedule from settings
+  const workDays = (settings.work_days || '1,2,3,4,5').split(',').map(Number) // 0=Sun,1=Mon...6=Sat
+  const workStart = settings.work_start || '08:00'
+  const workEnd = settings.work_end || '16:00'
+  const paidHours = parseFloat(settings.paid_hours_per_day || '7.5')
+
+  return c.json({
+    year, month,
+    sessions_by_date: sessionsByDate,
+    settings: {
+      country: settings.country_code || 'CA',
+      province: settings.province_code || 'ON',
+      work_days: workDays,
+      work_start: workStart,
+      work_end: workEnd,
+      paid_hours_per_day: paidHours,
+      stat_pay_multiplier: parseFloat(settings.stat_pay_multiplier || '1.5')
+    }
+  })
+})
+
+// ─── PAYROLL REPORT API ───────────────────────────────────────────────────────
+app.get('/api/payroll/:year/:month', async (c) => {
+  const db = c.env.DB
+  const year = parseInt(c.req.param('year'))
+  const month = parseInt(c.req.param('month'))
+  const worker_id = c.req.query('worker_id')
+
+  const startDate = `${year}-${String(month).padStart(2,'0')}-01`
+  const endDate = new Date(year, month, 0).toISOString().split('T')[0] // last day of month
+
+  let query = `
+    SELECT s.*, w.name as worker_name, w.phone as worker_phone, w.hourly_rate
+    FROM sessions s JOIN workers w ON s.worker_id = w.id
+    WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+    AND s.status = 'completed'
+  `
+  const params: any[] = [startDate, endDate]
+  if (worker_id) { query += ' AND s.worker_id = ?'; params.push(parseInt(worker_id)) }
+  query += ' ORDER BY w.name, s.clock_in_time ASC'
+
+  const sessions = await db.prepare(query).bind(...params).all()
+
+  // Group by worker
+  const byWorker: Record<string, any> = {}
+  sessions.results.forEach((s: any) => {
+    const wid = s.worker_id
+    if (!byWorker[wid]) {
+      byWorker[wid] = { worker_id: wid, name: s.worker_name, phone: s.worker_phone, hourly_rate: s.hourly_rate, sessions: [], total_hours: 0, total_regular: 0, total_stat: 0, total_pay: 0 }
+    }
+    byWorker[wid].sessions.push(s)
+    byWorker[wid].total_hours += s.total_hours || 0
+    byWorker[wid].total_pay += s.earnings || 0
+  })
+
+  return c.json({ payroll: Object.values(byWorker), period: `${year}-${String(month).padStart(2,'0')}`, start: startDate, end: endDate })
+})
+
 // ─── MAIN PAGES ───────────────────────────────────────────────────────────────
 
 // Worker mobile app (clock in/out)
@@ -645,11 +834,51 @@ function getWorkerHTML(): string {
 
     <!-- Work Log by Day -->
     <div class="bg-white rounded-2xl shadow-sm p-4">
-      <h3 class="font-semibold text-gray-700 mb-4 flex items-center gap-2">
-        <i class="fas fa-calendar-alt text-purple-500"></i> Work Log
-      </h3>
-      <div id="work-log-by-day" class="space-y-4">
-        <p class="text-gray-400 text-sm text-center py-4">No sessions yet</p>
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-semibold text-gray-700 flex items-center gap-2">
+          <i class="fas fa-calendar-alt text-purple-500"></i> Work Log
+        </h3>
+        <div class="flex gap-2">
+          <button onclick="showWorkerView('log')" id="view-log-btn"
+            class="px-3 py-1.5 text-xs font-medium rounded-xl bg-purple-600 text-white">Log</button>
+          <button onclick="showWorkerView('calendar')" id="view-cal-btn"
+            class="px-3 py-1.5 text-xs font-medium rounded-xl bg-gray-100 text-gray-600">Calendar</button>
+        </div>
+      </div>
+
+      <!-- List view -->
+      <div id="view-log-panel">
+        <div id="work-log-by-day" class="space-y-4">
+          <p class="text-gray-400 text-sm text-center py-4">No sessions yet</p>
+        </div>
+      </div>
+
+      <!-- Calendar view -->
+      <div id="view-cal-panel" class="hidden">
+        <div class="flex items-center justify-between mb-3">
+          <button onclick="workerCalPrev()" class="w-8 h-8 bg-gray-100 hover:bg-gray-200 rounded-xl flex items-center justify-center">
+            <i class="fas fa-chevron-left text-xs"></i>
+          </button>
+          <span id="worker-cal-label" class="font-bold text-gray-700 text-sm"></span>
+          <button onclick="workerCalNext()" class="w-8 h-8 bg-gray-100 hover:bg-gray-200 rounded-xl flex items-center justify-center">
+            <i class="fas fa-chevron-right text-xs"></i>
+          </button>
+        </div>
+        <!-- Day headers -->
+        <div class="grid grid-cols-7 mb-1 gap-0.5">
+          <div class="text-center text-xs text-gray-400 py-1">S</div>
+          <div class="text-center text-xs text-gray-400 py-1">M</div>
+          <div class="text-center text-xs text-gray-400 py-1">T</div>
+          <div class="text-center text-xs text-gray-400 py-1">W</div>
+          <div class="text-center text-xs text-gray-400 py-1">T</div>
+          <div class="text-center text-xs text-gray-400 py-1">F</div>
+          <div class="text-center text-xs text-gray-400 py-1">S</div>
+        </div>
+        <div id="worker-cal-grid" class="grid grid-cols-7 gap-0.5"></div>
+        <!-- Month stats -->
+        <div id="worker-cal-stats" class="mt-3 grid grid-cols-3 gap-2"></div>
+        <!-- Holidays this month -->
+        <div id="worker-cal-holidays" class="mt-2"></div>
       </div>
     </div>
 
@@ -1224,6 +1453,127 @@ async function loadWorkLog() {
   } catch(e) { console.error(e) }
 }
 
+// ── Worker Calendar View ───────────────────────────────────────────────────────
+let workerCalYear = new Date().getFullYear()
+let workerCalMonth = new Date().getMonth() + 1
+let workerCalHolidays = []
+let workerCalSchedule = { work_days:[1,2,3,4,5] }
+const WC_MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
+
+function showWorkerView(v) {
+  document.getElementById('view-log-panel').classList.toggle('hidden', v !== 'log')
+  document.getElementById('view-cal-panel').classList.toggle('hidden', v !== 'calendar')
+  document.getElementById('view-log-btn').className = v === 'log'
+    ? 'px-3 py-1.5 text-xs font-medium rounded-xl bg-purple-600 text-white'
+    : 'px-3 py-1.5 text-xs font-medium rounded-xl bg-gray-100 text-gray-600'
+  document.getElementById('view-cal-btn').className = v === 'calendar'
+    ? 'px-3 py-1.5 text-xs font-medium rounded-xl bg-purple-600 text-white'
+    : 'px-3 py-1.5 text-xs font-medium rounded-xl bg-gray-100 text-gray-600'
+  if (v === 'calendar') loadWorkerCalendar()
+}
+
+function workerCalPrev() { workerCalMonth--; if(workerCalMonth<1){workerCalMonth=12;workerCalYear--} loadWorkerCalendar() }
+function workerCalNext() { workerCalMonth++; if(workerCalMonth>12){workerCalMonth=1;workerCalYear++} loadWorkerCalendar() }
+
+async function loadWorkerCalendar() {
+  if (!currentWorker) return
+  document.getElementById('worker-cal-label').textContent = WC_MONTHS[workerCalMonth-1] + ' ' + workerCalYear
+  try {
+    const [calRes, holRes] = await Promise.all([
+      fetch(\`/api/calendar/\${workerCalYear}/\${workerCalMonth}?worker_id=\${currentWorker.id}\`),
+      fetch(\`/api/holidays/\${workerCalYear}\`)
+    ])
+    const calData = await calRes.json()
+    const holData = await holRes.json()
+    workerCalHolidays = holData.holidays || []
+    workerCalSchedule = calData.settings || { work_days:[1,2,3,4,5] }
+    renderWorkerCalGrid(calData)
+    renderWorkerCalStats(calData)
+    renderWorkerCalHolidays()
+  } catch(e) { console.error(e) }
+}
+
+function renderWorkerCalGrid(calData) {
+  const sessionsByDate = calData.sessions_by_date || {}
+  const workDays = workerCalSchedule.work_days || [1,2,3,4,5]
+  const today = new Date().toISOString().split('T')[0]
+  const holidayDates = {}
+  workerCalHolidays.forEach(h => { holidayDates[h.date] = h })
+
+  const firstDay = new Date(workerCalYear, workerCalMonth-1, 1).getDay()
+  const daysInMonth = new Date(workerCalYear, workerCalMonth, 0).getDate()
+  let html = ''
+
+  for (let i = 0; i < firstDay; i++) {
+    html += \`<div class="min-h-[44px] rounded-lg bg-gray-50"></div>\`
+  }
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = \`\${workerCalYear}-\${String(workerCalMonth).padStart(2,'0')}-\${String(d).padStart(2,'0')}\`
+    const dow = new Date(workerCalYear, workerCalMonth-1, d).getDay()
+    const isWeekend = !workDays.includes(dow)
+    const isToday = dateStr === today
+    const isHoliday = !!holidayDates[dateStr]
+    const sessions = sessionsByDate[dateStr] || []
+    const hasSessions = sessions.length > 0
+    const totalHours = sessions.reduce((s, x) => s + (x.total_hours || 0), 0)
+
+    let cellClass = 'min-h-[44px] rounded-lg p-1 text-center border text-xs '
+    if (isToday)          cellClass += 'bg-yellow-100 border-yellow-400 ring-1 ring-yellow-300 '
+    else if (isHoliday)   cellClass += 'bg-red-50 border-red-200 '
+    else if (isWeekend)   cellClass += 'bg-gray-50 border-gray-100 '
+    else if (hasSessions) cellClass += 'bg-green-50 border-green-300 '
+    else                  cellClass += 'bg-white border-gray-100 '
+
+    html += \`<div class="\${cellClass}">
+      <div class="font-bold \${isToday?'text-yellow-700':isWeekend?'text-gray-300':isHoliday?'text-red-500':'text-gray-700'}">\${d}</div>
+      \${isHoliday ? \`<div style="font-size:7px" class="text-red-400 leading-tight mt-0.5">★</div>\`
+        : hasSessions ? \`<div style="font-size:8px" class="text-green-600 font-bold">\${totalHours.toFixed(1)}h</div>\`
+        : isWeekend ? \`<div style="font-size:7px" class="text-gray-300">off</div>\` : ''}
+    </div>\`
+  }
+
+  document.getElementById('worker-cal-grid').innerHTML = html
+}
+
+function renderWorkerCalStats(calData) {
+  const sessionsByDate = calData.sessions_by_date || {}
+  let totalHours = 0, totalEarnings = 0, daysWorked = 0
+  Object.values(sessionsByDate).forEach((sessions: any) => {
+    totalHours += (sessions as any[]).reduce((s: number, x: any) => s + (x.total_hours || 0), 0)
+    totalEarnings += (sessions as any[]).reduce((s: number, x: any) => s + (x.earnings || 0), 0)
+    daysWorked++
+  })
+  document.getElementById('worker-cal-stats').innerHTML = \`
+    <div class="bg-blue-50 rounded-xl p-2.5 text-center">
+      <p class="text-lg font-bold text-blue-700">\${daysWorked}</p>
+      <p class="text-xs text-blue-400">Days</p>
+    </div>
+    <div class="bg-green-50 rounded-xl p-2.5 text-center">
+      <p class="text-lg font-bold text-green-700">\${totalHours.toFixed(1)}</p>
+      <p class="text-xs text-green-400">Hours</p>
+    </div>
+    <div class="bg-purple-50 rounded-xl p-2.5 text-center">
+      <p class="text-lg font-bold text-purple-700">$\${totalEarnings.toFixed(0)}</p>
+      <p class="text-xs text-purple-400">Earned</p>
+    </div>
+  \`
+}
+
+function renderWorkerCalHolidays() {
+  const monthHols = workerCalHolidays.filter(h => {
+    const d = new Date(h.date)
+    return d.getFullYear() === workerCalYear && d.getMonth()+1 === workerCalMonth
+  })
+  if (monthHols.length === 0) { document.getElementById('worker-cal-holidays').innerHTML = ''; return }
+  document.getElementById('worker-cal-holidays').innerHTML = monthHols.map(h =>
+    \`<div class="flex items-center justify-between text-xs py-1 border-t border-gray-100">
+      <span class="text-red-600 font-medium"><i class="fas fa-star mr-1"></i>\${h.name}</span>
+      <span class="text-amber-600 font-bold">\${h.stat_multiplier || 1.5}× pay</span>
+    </div>\`
+  ).join('')
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getDeviceId() {
   let id = localStorage.getItem('wt_device_id')
@@ -1378,6 +1728,12 @@ function getAdminHTML(): string {
       <button onclick="showTab('map')" class="tab-btn px-6 py-4 text-sm font-medium text-gray-600" data-tab="map">
         <i class="fas fa-map mr-1"></i>Map
       </button>
+      <button onclick="showTab('calendar')" class="tab-btn px-6 py-4 text-sm font-medium text-gray-600" data-tab="calendar">
+        <i class="fas fa-calendar-alt mr-1"></i>Calendar
+      </button>
+      <button onclick="showTab('settings')" class="tab-btn px-6 py-4 text-sm font-medium text-gray-600" data-tab="settings">
+        <i class="fas fa-cog mr-1"></i>Settings
+      </button>
     </div>
 
     <!-- Tab: Live -->
@@ -1447,6 +1803,205 @@ function getAdminHTML(): string {
       <div id="admin-map" class="rounded-xl overflow-hidden"></div>
       <p class="text-xs text-gray-400 mt-2">Shows clock-in locations for today's sessions</p>
     </div>
+
+    <!-- Tab: Calendar -->
+    <div id="tab-calendar" class="tab-content hidden bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
+      <div class="flex items-center justify-between mb-5 flex-wrap gap-3">
+        <h3 class="font-bold text-gray-700 flex items-center gap-2">
+          <i class="fas fa-calendar-alt text-indigo-500"></i> Work Calendar
+        </h3>
+        <div class="flex items-center gap-2 flex-wrap">
+          <select id="cal-worker-filter" class="border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" onchange="loadCalendar()">
+            <option value="">All Workers</option>
+          </select>
+          <button onclick="calPrevMonth()" class="w-9 h-9 bg-gray-100 hover:bg-gray-200 rounded-xl flex items-center justify-center">
+            <i class="fas fa-chevron-left text-sm"></i>
+          </button>
+          <span id="cal-month-label" class="font-bold text-gray-800 min-w-[140px] text-center text-sm"></span>
+          <button onclick="calNextMonth()" class="w-9 h-9 bg-gray-100 hover:bg-gray-200 rounded-xl flex items-center justify-center">
+            <i class="fas fa-chevron-right text-sm"></i>
+          </button>
+          <button onclick="calGoToday()" class="px-3 py-2 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded-xl text-sm font-medium">Today</button>
+        </div>
+      </div>
+
+      <!-- Legend -->
+      <div class="flex flex-wrap gap-3 mb-4 text-xs">
+        <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-green-100 border border-green-300 inline-block"></span> Worked</span>
+        <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-red-100 border border-red-300 inline-block"></span> Stat Holiday</span>
+        <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-gray-100 border border-gray-300 inline-block"></span> Weekend</span>
+        <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-blue-50 border border-blue-200 inline-block"></span> Workday (no session)</span>
+        <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-yellow-100 border border-yellow-300 inline-block"></span> Today</span>
+      </div>
+
+      <!-- Calendar Grid -->
+      <div id="cal-grid" class="overflow-x-auto">
+        <div class="min-w-[600px]">
+          <!-- Day headers -->
+          <div class="grid grid-cols-7 mb-1">
+            <div class="text-center text-xs font-bold text-gray-500 py-2">Sun</div>
+            <div class="text-center text-xs font-bold text-gray-500 py-2">Mon</div>
+            <div class="text-center text-xs font-bold text-gray-500 py-2">Tue</div>
+            <div class="text-center text-xs font-bold text-gray-500 py-2">Wed</div>
+            <div class="text-center text-xs font-bold text-gray-500 py-2">Thu</div>
+            <div class="text-center text-xs font-bold text-gray-500 py-2">Fri</div>
+            <div class="text-center text-xs font-bold text-gray-500 py-2">Sat</div>
+          </div>
+          <div id="cal-days" class="grid grid-cols-7 gap-1"></div>
+        </div>
+      </div>
+
+      <!-- Monthly Summary -->
+      <div id="cal-summary" class="mt-5 grid grid-cols-2 md:grid-cols-4 gap-3"></div>
+
+      <!-- Holiday List -->
+      <div id="cal-holidays" class="mt-4"></div>
+    </div>
+
+    <!-- Tab: Settings -->
+    <div id="tab-settings" class="tab-content hidden bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
+      <h3 class="font-bold text-gray-700 mb-5 flex items-center gap-2">
+        <i class="fas fa-cog text-indigo-500"></i> App Settings
+      </h3>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+        <!-- General -->
+        <div class="space-y-4">
+          <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2">General</h4>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">App Name</label>
+            <input id="s-app-name" type="text" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Default Hourly Rate ($/hr)</label>
+            <input id="s-hourly-rate" type="number" step="0.50" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Admin PIN</label>
+            <input id="s-admin-pin" type="text" maxlength="6" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+          </div>
+        </div>
+
+        <!-- Jurisdiction -->
+        <div class="space-y-4">
+          <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2">Location & Holidays</h4>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Country</label>
+            <select id="s-country" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm" onchange="updateProvinceList()">
+              <option value="CA">🇨🇦 Canada</option>
+              <option value="US">🇺🇸 United States</option>
+              <option value="GB">🇬🇧 United Kingdom</option>
+              <option value="AU">🇦🇺 Australia</option>
+              <option value="NZ">🇳🇿 New Zealand</option>
+              <option value="DE">🇩🇪 Germany</option>
+              <option value="FR">🇫🇷 France</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Province / State</label>
+            <select id="s-province" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"></select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">City (for reference)</label>
+            <input id="s-city" type="text" placeholder="e.g. Toronto" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Timezone</label>
+            <select id="s-timezone" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm">
+              <option value="America/Toronto">America/Toronto (ET)</option>
+              <option value="America/Vancouver">America/Vancouver (PT)</option>
+              <option value="America/Edmonton">America/Edmonton (MT)</option>
+              <option value="America/Winnipeg">America/Winnipeg (CT)</option>
+              <option value="America/Halifax">America/Halifax (AT)</option>
+              <option value="America/St_Johns">America/St_Johns (NT)</option>
+              <option value="America/New_York">America/New_York (EST)</option>
+              <option value="America/Chicago">America/Chicago (CST)</option>
+              <option value="America/Denver">America/Denver (MST)</option>
+              <option value="America/Los_Angeles">America/Los_Angeles (PST)</option>
+              <option value="Europe/London">Europe/London (GMT)</option>
+              <option value="Australia/Sydney">Australia/Sydney (AEST)</option>
+              <option value="UTC">UTC</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Work Schedule -->
+        <div class="space-y-4">
+          <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2">Work Schedule</h4>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Start Time</label>
+              <input id="s-work-start" type="time" value="08:00" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">End Time</label>
+              <input id="s-work-end" type="time" value="16:00" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Work Days</label>
+            <div class="flex gap-1 flex-wrap" id="s-work-days">
+              <button type="button" onclick="toggleDay(0)" data-day="0" class="work-day-btn px-3 py-2 text-xs rounded-xl border font-medium bg-gray-100 text-gray-500 hover:bg-indigo-50">Sun</button>
+              <button type="button" onclick="toggleDay(1)" data-day="1" class="work-day-btn px-3 py-2 text-xs rounded-xl border font-medium bg-indigo-600 text-white">Mon</button>
+              <button type="button" onclick="toggleDay(2)" data-day="2" class="work-day-btn px-3 py-2 text-xs rounded-xl border font-medium bg-indigo-600 text-white">Tue</button>
+              <button type="button" onclick="toggleDay(3)" data-day="3" class="work-day-btn px-3 py-2 text-xs rounded-xl border font-medium bg-indigo-600 text-white">Wed</button>
+              <button type="button" onclick="toggleDay(4)" data-day="4" class="work-day-btn px-3 py-2 text-xs rounded-xl border font-medium bg-indigo-600 text-white">Thu</button>
+              <button type="button" onclick="toggleDay(5)" data-day="5" class="work-day-btn px-3 py-2 text-xs rounded-xl border font-medium bg-indigo-600 text-white">Fri</button>
+              <button type="button" onclick="toggleDay(6)" data-day="6" class="work-day-btn px-3 py-2 text-xs rounded-xl border font-medium bg-gray-100 text-gray-500 hover:bg-indigo-50">Sat</button>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-3">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Morning Break (min)</label>
+              <input id="s-break-morning" type="number" value="15" min="0" max="60" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Lunch (min)</label>
+              <input id="s-break-lunch" type="number" value="30" min="0" max="120" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Afternoon Break (min)</label>
+              <input id="s-break-afternoon" type="number" value="15" min="0" max="60" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Paid Hours per Day</label>
+            <input id="s-paid-hours" type="number" step="0.5" min="1" max="12" value="7.5" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+            <p class="text-xs text-gray-400 mt-1">Standard: 8h shift − 30min lunch = 7.5h paid</p>
+          </div>
+        </div>
+
+        <!-- Stat Pay -->
+        <div class="space-y-4">
+          <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2">Statutory Holiday Pay</h4>
+          <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+            <p class="font-semibold mb-1"><i class="fas fa-info-circle mr-1"></i> Stat Pay Rules (by province)</p>
+            <div id="stat-pay-info" class="text-xs space-y-1 mt-2"></div>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Stat Pay Multiplier</label>
+            <input id="s-stat-multiplier" type="number" step="0.25" min="1" max="3" value="1.5" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+            <p class="text-xs text-gray-400 mt-1">e.g. 1.5 = time and a half. Auto-set when province changes.</p>
+          </div>
+          <div>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" id="s-stat-pay-enabled" class="w-4 h-4 rounded accent-indigo-600" checked/>
+              <span class="text-sm font-medium text-gray-700">Enable statutory holiday pay</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-6 flex gap-3">
+        <button onclick="saveSettings()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl">
+          <i class="fas fa-save mr-2"></i>Save Settings
+        </button>
+        <button onclick="loadSettings()" class="px-6 border border-gray-300 text-gray-700 font-medium py-3 rounded-xl hover:bg-gray-50">
+          <i class="fas fa-undo mr-1"></i>Reset
+        </button>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -1896,6 +2451,8 @@ function showTab(name) {
   document.getElementById('tab-' + name).classList.remove('hidden')
   document.querySelector('[data-tab="' + name + '"]').classList.add('tab-active')
   if (name === 'map') loadMap()
+  if (name === 'calendar') loadCalendar()
+  if (name === 'settings') loadSettings()
 }
 
 function changePeriod(period) {
@@ -1906,6 +2463,383 @@ function changePeriod(period) {
       : 'period-btn px-4 py-2 rounded-xl text-sm font-medium bg-white text-gray-600 shadow-sm'
   })
   loadStats()
+}
+
+// ── Calendar ──────────────────────────────────────────────────────────────────
+let calYear = new Date().getFullYear()
+let calMonth = new Date().getMonth() + 1  // 1-based
+let calHolidays = []
+let calSchedule = {}
+
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December']
+
+function calPrevMonth() { calMonth--; if (calMonth < 1) { calMonth = 12; calYear-- } loadCalendar() }
+function calNextMonth() { calMonth++; if (calMonth > 12) { calMonth = 1; calYear++ } loadCalendar() }
+function calGoToday()   { calYear = new Date().getFullYear(); calMonth = new Date().getMonth() + 1; loadCalendar() }
+
+async function loadCalendar() {
+  document.getElementById('cal-month-label').textContent = MONTH_NAMES[calMonth - 1] + ' ' + calYear
+
+  // Populate worker filter if empty
+  const wSel = document.getElementById('cal-worker-filter')
+  if (wSel && wSel.options.length <= 1) {
+    try {
+      const wr = await fetch('/api/workers')
+      const wd = await wr.json()
+      if (wd.workers) {
+        wd.workers.forEach(w => {
+          const opt = document.createElement('option')
+          opt.value = w.id; opt.textContent = w.name
+          wSel.appendChild(opt)
+        })
+      }
+    } catch(e) {}
+  }
+
+  const workerId = document.getElementById('cal-worker-filter').value
+
+  try {
+    // Fetch calendar data + holidays in parallel
+    const [calRes, holRes] = await Promise.all([
+      fetch(\`/api/calendar/\${calYear}/\${calMonth}\${workerId ? '?worker_id=' + workerId : ''}\`),
+      fetch(\`/api/holidays/\${calYear}\`)
+    ])
+    const calData = await calRes.json()
+    const holData = await holRes.json()
+
+    calSchedule = calData.settings || {}
+    calHolidays = holData.holidays || []
+
+    renderCalendar(calData)
+    renderCalendarSummary(calData)
+    renderHolidayList(calData)
+  } catch(e) { console.error('Calendar error:', e) }
+}
+
+function renderCalendar(calData) {
+  const sessionsByDate = calData.sessions_by_date || {}
+  const workDays = (calData.settings?.work_days || [1,2,3,4,5])
+  const today = new Date().toISOString().split('T')[0]
+
+  // Get holiday dates as a set for fast lookup
+  const holidayMap = {}
+  calHolidays.forEach(h => { holidayMap[h.date] = h })
+
+  // Build grid: first day of month
+  const firstDay = new Date(calYear, calMonth - 1, 1).getDay()  // 0=Sun
+  const daysInMonth = new Date(calYear, calMonth, 0).getDate()
+
+  const container = document.getElementById('cal-days')
+  let html = ''
+
+  // Empty cells before first day
+  for (let i = 0; i < firstDay; i++) {
+    html += \`<div class="min-h-[80px] rounded-xl bg-gray-50 opacity-40"></div>\`
+  }
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = \`\${calYear}-\${String(calMonth).padStart(2,'0')}-\${String(d).padStart(2,'0')}\`
+    const dow = new Date(calYear, calMonth - 1, d).getDay()
+    const isWeekend = !workDays.includes(dow)
+    const isToday = dateStr === today
+    const isHoliday = !!holidayMap[dateStr]
+    const sessions = sessionsByDate[dateStr] || []
+    const hasSessions = sessions.length > 0
+    const totalHours = sessions.reduce((s, x) => s + (x.total_hours || 0), 0)
+    const totalEarnings = sessions.reduce((s, x) => s + (x.earnings || 0), 0)
+    const hasActive = sessions.some(s => s.status === 'active')
+
+    let cellClass = 'min-h-[80px] rounded-xl p-2 border text-xs cursor-default transition-all hover:shadow-sm '
+    if (isToday)          cellClass += 'bg-yellow-50 border-yellow-400 ring-2 ring-yellow-300 '
+    else if (isHoliday)   cellClass += 'bg-red-50 border-red-300 '
+    else if (isWeekend)   cellClass += 'bg-gray-100 border-gray-200 '
+    else if (hasSessions) cellClass += 'bg-green-50 border-green-300 '
+    else                  cellClass += 'bg-blue-50 border-blue-100 '
+
+    const holiday = holidayMap[dateStr]
+
+    html += \`<div class="\${cellClass}">
+      <div class="flex items-start justify-between mb-1">
+        <span class="font-bold text-sm \${isToday ? 'text-yellow-700' : isHoliday ? 'text-red-700' : isWeekend ? 'text-gray-400' : 'text-gray-700'}">\${d}</span>
+        \${isHoliday ? \`<span class="text-red-500" title="\${holiday.name}"><i class="fas fa-star" style="font-size:9px"></i></span>\` : ''}
+        \${hasActive ? \`<span class="text-green-500 pulse"><i class="fas fa-circle" style="font-size:7px"></i></span>\` : ''}
+      </div>
+      \${holiday ? \`<p class="text-red-600 leading-tight mb-1" style="font-size:9px">\${holiday.name.substring(0,18)}</p>\` : ''}
+      \${hasSessions ? \`
+        <div class="bg-white bg-opacity-70 rounded-lg px-1.5 py-1 mt-1">
+          <p class="font-bold text-green-700">\${totalHours.toFixed(1)}h</p>
+          <p class="text-green-600">$\${totalEarnings.toFixed(0)}</p>
+          <p class="text-gray-400">\${sessions.length} shift\${sessions.length > 1 ? 's' : ''}</p>
+        </div>
+      \` : isWeekend ? \`<p style="font-size:9px" class="text-gray-400 mt-1">Off</p>\`
+         : isHoliday ? \`<p style="font-size:9px" class="text-red-400 mt-1">Stat Holiday</p>\`
+         : \`<p style="font-size:9px" class="text-gray-300 mt-1">No shift</p>\`}
+    </div>\`
+  }
+
+  container.innerHTML = html
+}
+
+function renderCalendarSummary(calData) {
+  const sessionsByDate = calData.sessions_by_date || {}
+  const workDays = calData.settings?.work_days || [1,2,3,4,5]
+  const paidHours = calData.settings?.paid_hours_per_day || 7.5
+  const daysInMonth = new Date(calYear, calMonth, 0).getDate()
+
+  // Count workdays, holidays in month
+  const holidayDates = new Set(calHolidays.map(h => h.date))
+  let workdayCount = 0
+  let statDayCount = 0
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = \`\${calYear}-\${String(calMonth).padStart(2,'0')}-\${String(d).padStart(2,'0')}\`
+    const dow = new Date(calYear, calMonth - 1, d).getDay()
+    if (workDays.includes(dow)) {
+      if (holidayDates.has(dateStr)) statDayCount++
+      else workdayCount++
+    }
+  }
+
+  let totalHours = 0, totalEarnings = 0, daysWorked = 0
+  Object.values(sessionsByDate).forEach((sessions: any) => {
+    const dayH = (sessions as any[]).reduce((s: number, x: any) => s + (x.total_hours || 0), 0)
+    const dayE = (sessions as any[]).reduce((s: number, x: any) => s + (x.earnings || 0), 0)
+    totalHours += dayH; totalEarnings += dayE; daysWorked++
+  })
+
+  const expectedHours = workdayCount * paidHours
+  const coverage = expectedHours > 0 ? Math.min(100, Math.round((totalHours / expectedHours) * 100)) : 0
+
+  document.getElementById('cal-summary').innerHTML = \`
+    <div class="bg-blue-50 rounded-xl p-3 text-center">
+      <p class="text-2xl font-bold text-blue-700">\${workdayCount}</p>
+      <p class="text-xs text-blue-500 mt-0.5">Workdays</p>
+    </div>
+    <div class="bg-red-50 rounded-xl p-3 text-center">
+      <p class="text-2xl font-bold text-red-600">\${statDayCount}</p>
+      <p class="text-xs text-red-500 mt-0.5">Stat Holidays</p>
+    </div>
+    <div class="bg-green-50 rounded-xl p-3 text-center">
+      <p class="text-2xl font-bold text-green-700">\${totalHours.toFixed(1)}h</p>
+      <p class="text-xs text-green-500 mt-0.5">Hrs Worked (\${daysWorked} days)</p>
+    </div>
+    <div class="bg-purple-50 rounded-xl p-3 text-center">
+      <p class="text-2xl font-bold text-purple-700">$\${totalEarnings.toFixed(0)}</p>
+      <p class="text-xs text-purple-500 mt-0.5">Total Earned</p>
+    </div>
+  \`
+}
+
+function renderHolidayList(calData) {
+  const provinceHols = calHolidays.filter(h => {
+    const d = new Date(h.date)
+    return d.getFullYear() === calYear && d.getMonth() + 1 === calMonth
+  })
+
+  if (provinceHols.length === 0) {
+    document.getElementById('cal-holidays').innerHTML = ''
+    return
+  }
+
+  const html = \`<div class="mt-2 border border-gray-200 rounded-2xl overflow-hidden">
+    <div class="bg-red-50 border-b border-red-100 px-4 py-2.5 flex items-center gap-2">
+      <i class="fas fa-star text-red-500 text-xs"></i>
+      <h4 class="font-bold text-red-700 text-sm">Statutory Holidays in \${MONTH_NAMES[calMonth-1]}</h4>
+    </div>
+    <div class="divide-y divide-gray-100">
+      \${provinceHols.map(h => \`
+        <div class="px-4 py-3 flex items-center justify-between">
+          <div>
+            <p class="font-medium text-gray-800 text-sm">\${h.name}</p>
+            <p class="text-xs text-gray-500">\${new Date(h.date + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric'})}</p>
+          </div>
+          <span class="bg-amber-100 text-amber-700 text-xs px-2.5 py-1 rounded-full font-semibold">
+            \${h.stat_multiplier || 1.5}× pay
+          </span>
+        </div>
+      \`).join('')}
+    </div>
+  </div>\`
+
+  document.getElementById('cal-holidays').innerHTML = html
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+const PROVINCE_DATA = {
+  'CA': [
+    {code:'ON', name:'Ontario'}, {code:'BC', name:'British Columbia'},
+    {code:'AB', name:'Alberta'}, {code:'QC', name:'Quebec'},
+    {code:'MB', name:'Manitoba'}, {code:'SK', name:'Saskatchewan'},
+    {code:'NS', name:'Nova Scotia'}, {code:'NB', name:'New Brunswick'},
+    {code:'PE', name:'Prince Edward Island'}, {code:'NL', name:'Newfoundland & Labrador'},
+    {code:'NT', name:'Northwest Territories'}, {code:'YT', name:'Yukon'},
+    {code:'NU', name:'Nunavut'}
+  ],
+  'US': [
+    {code:'CA', name:'California'}, {code:'NY', name:'New York'},
+    {code:'TX', name:'Texas'}, {code:'FL', name:'Florida'},
+    {code:'WA', name:'Washington'}, {code:'OR', name:'Oregon'},
+    {code:'MA', name:'Massachusetts'}, {code:'IL', name:'Illinois'},
+    {code:'CO', name:'Colorado'}, {code:'AZ', name:'Arizona'},
+    {code:'GA', name:'Georgia'}, {code:'NC', name:'North Carolina'}
+  ],
+  'AU': [
+    {code:'NSW', name:'New South Wales'}, {code:'VIC', name:'Victoria'},
+    {code:'QLD', name:'Queensland'}, {code:'WA', name:'Western Australia'},
+    {code:'SA', name:'South Australia'}, {code:'TAS', name:'Tasmania'},
+    {code:'ACT', name:'Australian Capital Territory'}, {code:'NT', name:'Northern Territory'}
+  ],
+  'GB': [ {code:'ENG', name:'England'}, {code:'WLS', name:'Wales'}, {code:'SCT', name:'Scotland'}, {code:'NIR', name:'Northern Ireland'} ],
+  'NZ': [ {code:'NZ', name:'New Zealand'} ],
+  'DE': [ {code:'DE', name:'Germany'} ],
+  'FR': [ {code:'FR', name:'France'} ]
+}
+
+const STAT_MULTIPLIERS = {
+  'CA-ON':1.5,'CA-BC':1.5,'CA-AB':1.5,'CA-QC':1.0,'CA-MB':1.5,'CA-SK':1.5,
+  'CA-NS':1.5,'CA-NB':1.5,'CA-PE':1.5,'CA-NL':2.0,'CA-NT':1.5,'CA-YT':1.5,'CA-NU':1.5,
+  'US-CA':1.5,'US-NY':1.5,'US-TX':1.5,'US-FL':1.5,'US-WA':1.5,'US-OR':1.5,
+  'US-MA':1.5,'US-IL':1.5,'AU-NSW':2.0,'AU-VIC':2.0,'AU-QLD':2.0,'GB-ENG':1.0
+}
+
+const STAT_PAY_NOTES = {
+  'CA-ON': 'Ontario: 1.5× for working on stat holidays + regular pay for the day.',
+  'CA-BC': 'BC: Must receive regular day\'s pay for stat; 1.5× if working.',
+  'CA-AB': 'Alberta: General holidays — regular pay off or 1.5× if working.',
+  'CA-QC': 'Quebec: Regular pay for the stat day; no premium for working (unless collective agreement).',
+  'CA-MB': 'Manitoba: 1.5× for working on a general holiday.',
+  'CA-SK': 'Saskatchewan: 1.5× for working on statutory holidays.',
+  'CA-NL': 'Newfoundland: 2× pay for working on public holidays.',
+  'US-CA': 'California: No state mandate; federal FLSA has no holiday premium. Industry standard 1.5×.',
+  'US-NY': 'New York: No state mandate for holiday premium pay. 1.5× is common practice.',
+  'US-TX': 'Texas: Follows federal FLSA — no holiday pay mandate. 1.5× by employer policy.',
+  'AU-NSW': 'NSW: Double time for working on public holidays (penalty rates).',
+  'AU-VIC': 'Victoria: Double time for public holiday work.',
+  'GB-ENG': 'England: No legal right to extra pay on bank holidays (contract dependent).'
+}
+
+let currentSettings = {}
+let activeDays = [1,2,3,4,5]
+
+async function loadSettings() {
+  try {
+    const res = await fetch('/api/settings')
+    const data = await res.json()
+    currentSettings = data.settings || {}
+
+    document.getElementById('s-app-name').value = currentSettings.app_name || 'WorkTracker'
+    document.getElementById('s-hourly-rate').value = currentSettings.default_hourly_rate || '15.00'
+    document.getElementById('s-admin-pin').value = currentSettings.admin_pin || '1234'
+    document.getElementById('s-city').value = currentSettings.city || ''
+    document.getElementById('s-work-start').value = currentSettings.work_start || '08:00'
+    document.getElementById('s-work-end').value = currentSettings.work_end || '16:00'
+    document.getElementById('s-break-morning').value = currentSettings.break_morning_min || '15'
+    document.getElementById('s-break-lunch').value = currentSettings.break_lunch_min || '30'
+    document.getElementById('s-break-afternoon').value = currentSettings.break_afternoon_min || '15'
+    document.getElementById('s-paid-hours').value = currentSettings.paid_hours_per_day || '7.5'
+    document.getElementById('s-stat-multiplier').value = currentSettings.stat_pay_multiplier || '1.5'
+
+    // Country dropdown
+    const country = currentSettings.country_code || 'CA'
+    document.getElementById('s-country').value = country
+    updateProvinceList(currentSettings.province_code)
+
+    // Timezone
+    const tzSel = document.getElementById('s-timezone')
+    if (tzSel) tzSel.value = currentSettings.timezone || 'America/Toronto'
+
+    // Work days
+    activeDays = (currentSettings.work_days || '1,2,3,4,5').split(',').map(Number)
+    document.querySelectorAll('.work-day-btn').forEach(btn => {
+      const day = parseInt(btn.dataset.day)
+      if (activeDays.includes(day)) {
+        btn.className = 'work-day-btn px-3 py-2 text-xs rounded-xl border font-medium bg-indigo-600 text-white'
+      } else {
+        btn.className = 'work-day-btn px-3 py-2 text-xs rounded-xl border font-medium bg-gray-100 text-gray-500 hover:bg-indigo-50'
+      }
+    })
+
+    updateStatPayInfo(country, currentSettings.province_code || 'ON')
+  } catch(e) { console.error(e) }
+}
+
+function updateProvinceList(selectedProvince = null) {
+  const country = document.getElementById('s-country').value
+  const provSel = document.getElementById('s-province')
+  const provinces = PROVINCE_DATA[country] || []
+  provSel.innerHTML = provinces.map(p =>
+    \`<option value="\${p.code}" \${(selectedProvince || currentSettings.province_code) === p.code ? 'selected' : ''}>\${p.name}</option>\`
+  ).join('')
+  // Auto-update stat multiplier when province changes
+  const pcode = provSel.value
+  const key = country + '-' + pcode
+  const mult = STAT_MULTIPLIERS[key] || 1.5
+  document.getElementById('s-stat-multiplier').value = mult
+  updateStatPayInfo(country, pcode)
+}
+
+function updateStatPayInfo(country, province) {
+  const key = country + '-' + province
+  const note = STAT_PAY_NOTES[key] || \`Standard stat pay: \${STAT_MULTIPLIERS[key] || 1.5}× for working on statutory holidays.\`
+  const mult = STAT_MULTIPLIERS[key] || 1.5
+  document.getElementById('stat-pay-info').innerHTML = \`
+    <p><strong>Jurisdiction:</strong> \${key}</p>
+    <p><strong>Rate:</strong> \${mult}× pay on statutory holidays</p>
+    <p class="mt-1 italic">\${note}</p>
+  \`
+}
+
+function toggleDay(day) {
+  const idx = activeDays.indexOf(day)
+  if (idx >= 0) activeDays.splice(idx, 1)
+  else activeDays.push(day)
+  activeDays.sort()
+  document.querySelectorAll('.work-day-btn').forEach(btn => {
+    const d = parseInt(btn.dataset.day)
+    if (activeDays.includes(d)) {
+      btn.className = 'work-day-btn px-3 py-2 text-xs rounded-xl border font-medium bg-indigo-600 text-white'
+    } else {
+      btn.className = 'work-day-btn px-3 py-2 text-xs rounded-xl border font-medium bg-gray-100 text-gray-500 hover:bg-indigo-50'
+    }
+  })
+}
+
+async function saveSettings() {
+  const country = document.getElementById('s-country').value
+  const province = document.getElementById('s-province').value
+  const key = country + '-' + province
+  const mult = document.getElementById('s-stat-multiplier').value
+
+  const payload = {
+    app_name: document.getElementById('s-app-name').value.trim(),
+    default_hourly_rate: document.getElementById('s-hourly-rate').value,
+    admin_pin: document.getElementById('s-admin-pin').value.trim(),
+    country_code: country,
+    province_code: province,
+    city: document.getElementById('s-city').value.trim(),
+    timezone: document.getElementById('s-timezone').value,
+    work_start: document.getElementById('s-work-start').value,
+    work_end: document.getElementById('s-work-end').value,
+    break_morning_min: document.getElementById('s-break-morning').value,
+    break_lunch_min: document.getElementById('s-break-lunch').value,
+    break_afternoon_min: document.getElementById('s-break-afternoon').value,
+    paid_hours_per_day: document.getElementById('s-paid-hours').value,
+    stat_pay_multiplier: mult,
+    work_days: activeDays.join(',')
+  }
+
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (res.ok) {
+      showAdminToast('Settings saved! ✅', 'success')
+      currentSettings = payload
+    } else {
+      showAdminToast('Failed to save settings', 'error')
+    }
+  } catch(e) { showAdminToast('Error saving settings', 'error') }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
