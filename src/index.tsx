@@ -43,6 +43,8 @@ async function ensureSchema(db: D1Database) {
       total_hours REAL,
       earnings REAL,
       notes TEXT,
+      job_location TEXT,
+      job_description TEXT,
       status TEXT DEFAULT 'active',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (worker_id) REFERENCES workers(id)
@@ -177,9 +179,11 @@ app.delete('/api/workers/:id', async (c) => {
 app.post('/api/sessions/clock-in', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const { worker_id, latitude, longitude, address, notes } = await c.req.json()
+  const { worker_id, latitude, longitude, address, notes, job_location, job_description } = await c.req.json()
 
   if (!worker_id) return c.json({ error: 'worker_id required' }, 400)
+  if (!job_location || !job_location.trim()) return c.json({ error: 'Job location is required' }, 400)
+  if (!job_description || !job_description.trim()) return c.json({ error: 'Job description is required' }, 400)
 
   // Check if already clocked in
   const active = await db.prepare(
@@ -193,9 +197,9 @@ app.post('/api/sessions/clock-in', async (c) => {
   const now = new Date().toISOString()
   const result = await db.prepare(
     `INSERT INTO sessions 
-     (worker_id, clock_in_time, clock_in_lat, clock_in_lng, clock_in_address, notes, status)
-     VALUES (?, ?, ?, ?, ?, ?, 'active')`
-  ).bind(worker_id, now, latitude || null, longitude || null, address || null, notes || null).run()
+     (worker_id, clock_in_time, clock_in_lat, clock_in_lng, clock_in_address, notes, job_location, job_description, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`
+  ).bind(worker_id, now, latitude || null, longitude || null, address || null, notes || null, job_location.trim(), job_description.trim()).run()
 
   const session = await db.prepare(
     'SELECT * FROM sessions WHERE id = ?'
@@ -469,6 +473,8 @@ function getWorkerHTML(): string {
     @keyframes slideUp { from{transform:translateY(20px);opacity:0} to{transform:translateY(0);opacity:1} }
     .spinner { animation: spin 1s linear infinite; }
     @keyframes spin { to{transform:rotate(360deg)} }
+    .modal-bg { backdrop-filter: blur(4px); }
+    .day-group { border-left: 3px solid #3b82f6; }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -483,7 +489,6 @@ function getWorkerHTML(): string {
       <h1 class="text-2xl font-bold text-gray-800">WorkTracker</h1>
       <p class="text-gray-500 text-sm mt-1">Track your work hours & location</p>
     </div>
-
     <div class="bg-white rounded-2xl shadow-sm p-6 space-y-4">
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Your Name</label>
@@ -504,8 +509,7 @@ function getWorkerHTML(): string {
         class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl clock-btn shadow-md">
         <i class="fas fa-user-plus mr-2"></i>Get Started
       </button>
-      <button onclick="showLogin()"
-        class="w-full text-blue-600 hover:text-blue-700 font-medium py-2 text-sm">
+      <button onclick="showLogin()" class="w-full text-blue-600 hover:text-blue-700 font-medium py-2 text-sm">
         Already registered? Sign in
       </button>
     </div>
@@ -537,8 +541,7 @@ function getWorkerHTML(): string {
         class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl clock-btn shadow-md">
         <i class="fas fa-sign-in-alt mr-2"></i>Sign In
       </button>
-      <button onclick="showRegister()"
-        class="w-full text-blue-600 font-medium py-2 text-sm">
+      <button onclick="showRegister()" class="w-full text-blue-600 font-medium py-2 text-sm">
         New user? Register here
       </button>
     </div>
@@ -571,6 +574,12 @@ function getWorkerHTML(): string {
       <div class="flex items-center gap-3 mb-3">
         <div id="status-dot" class="w-3 h-3 rounded-full bg-gray-300"></div>
         <span id="status-text" class="font-semibold text-gray-700">Not Clocked In</span>
+      </div>
+      <!-- Active job info banner -->
+      <div id="active-job-banner" class="hidden bg-blue-50 border border-blue-100 rounded-xl p-3 mb-3">
+        <p class="text-xs text-blue-500 font-medium mb-0.5"><i class="fas fa-briefcase mr-1"></i>Current Job</p>
+        <p id="active-job-location" class="text-sm font-bold text-blue-800"></p>
+        <p id="active-job-desc" class="text-xs text-blue-600 mt-0.5"></p>
       </div>
       <div id="clock-in-info" class="hidden">
         <div class="grid grid-cols-2 gap-3 mb-4">
@@ -607,13 +616,13 @@ function getWorkerHTML(): string {
     </div>
 
     <!-- Clock In/Out Button -->
-    <button id="clock-btn" onclick="toggleClock()"
+    <button id="clock-btn" onclick="handleClockBtn()"
       class="w-full py-5 rounded-2xl text-white text-xl font-bold shadow-lg clock-btn flex items-center justify-center gap-3 bg-green-500 hover:bg-green-600">
       <i id="clock-btn-icon" class="fas fa-play-circle text-2xl"></i>
       <span id="clock-btn-text">Clock In</span>
     </button>
 
-    <!-- Today's Summary -->
+    <!-- My Stats -->
     <div class="bg-white rounded-2xl shadow-sm p-4">
       <h3 class="font-semibold text-gray-700 mb-3 flex items-center gap-2">
         <i class="fas fa-chart-bar text-blue-500"></i> My Stats
@@ -634,12 +643,12 @@ function getWorkerHTML(): string {
       </div>
     </div>
 
-    <!-- Recent Sessions -->
+    <!-- Work Log by Day -->
     <div class="bg-white rounded-2xl shadow-sm p-4">
-      <h3 class="font-semibold text-gray-700 mb-3 flex items-center gap-2">
-        <i class="fas fa-history text-purple-500"></i> Recent Sessions
+      <h3 class="font-semibold text-gray-700 mb-4 flex items-center gap-2">
+        <i class="fas fa-calendar-alt text-purple-500"></i> Work Log
       </h3>
-      <div id="recent-sessions" class="space-y-2">
+      <div id="work-log-by-day" class="space-y-4">
         <p class="text-gray-400 text-sm text-center py-4">No sessions yet</p>
       </div>
     </div>
@@ -652,8 +661,84 @@ function getWorkerHTML(): string {
   </div>
 </div>
 
+<!-- ── Clock In Job Details Modal ─────────────────────────────────────────── -->
+<div id="job-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 modal-bg flex items-end justify-center z-50">
+  <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up" style="max-height:90vh;overflow-y:auto">
+    <div class="w-10 h-1 bg-gray-300 rounded-full mx-auto mb-5"></div>
+    <div class="flex items-center gap-3 mb-5">
+      <div class="w-12 h-12 bg-green-100 rounded-2xl flex items-center justify-center">
+        <i class="fas fa-briefcase text-green-600 text-xl"></i>
+      </div>
+      <div>
+        <h3 class="text-lg font-bold text-gray-800">Where are you working?</h3>
+        <p class="text-gray-500 text-xs">Tell us about today's job before clocking in</p>
+      </div>
+    </div>
+
+    <!-- Job Location -->
+    <div class="mb-4">
+      <label class="block text-sm font-semibold text-gray-700 mb-2">
+        <i class="fas fa-map-marker-alt text-red-500 mr-1"></i>Job Location / Address
+      </label>
+      <input id="job-location-input" type="text"
+        placeholder="e.g. 123 Ryan Street, Building 4"
+        class="w-full px-4 py-3.5 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 text-gray-800 text-sm"
+        oninput="filterLocationSuggestions(this.value)"/>
+      <!-- Recent locations dropdown -->
+      <div id="location-suggestions" class="hidden mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-10"></div>
+    </div>
+
+    <!-- Tasks / Description -->
+    <div class="mb-5">
+      <label class="block text-sm font-semibold text-gray-700 mb-2">
+        <i class="fas fa-tasks text-blue-500 mr-1"></i>What are you doing today?
+      </label>
+      <textarea id="job-description-input" rows="3"
+        placeholder="e.g. Installing floor tiles in bedroom, drywall in bathroom, painting hallway"
+        class="w-full px-4 py-3.5 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 text-gray-800 text-sm resize-none"></textarea>
+      <p class="text-xs text-gray-400 mt-1">Be specific — this helps track what was done each day</p>
+    </div>
+
+    <!-- Quick task chips -->
+    <div class="mb-5">
+      <p class="text-xs text-gray-500 font-medium mb-2">Quick add tasks:</p>
+      <div class="flex flex-wrap gap-2" id="task-chips">
+        <button onclick="addChip('Flooring')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🪵 Flooring</button>
+        <button onclick="addChip('Drywall')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🧱 Drywall</button>
+        <button onclick="addChip('Painting')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🎨 Painting</button>
+        <button onclick="addChip('Plumbing')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🔧 Plumbing</button>
+        <button onclick="addChip('Electrical')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">⚡ Electrical</button>
+        <button onclick="addChip('Tiling')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🏗️ Tiling</button>
+        <button onclick="addChip('Cleanup')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🧹 Cleanup</button>
+        <button onclick="addChip('Inspection')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🔍 Inspection</button>
+      </div>
+    </div>
+
+    <!-- GPS capture indicator -->
+    <div class="bg-gray-50 rounded-xl p-3 mb-5 flex items-center gap-3">
+      <i class="fas fa-map-marker-alt text-red-500"></i>
+      <div class="flex-1">
+        <p class="text-xs font-medium text-gray-700">GPS will be captured automatically</p>
+        <p id="modal-gps-status" class="text-xs text-gray-400 mt-0.5">
+          Getting your location...
+        </p>
+      </div>
+    </div>
+
+    <div class="flex gap-3">
+      <button onclick="closeJobModal()" class="flex-1 border-2 border-gray-200 text-gray-600 font-semibold py-3.5 rounded-xl hover:bg-gray-50">
+        Cancel
+      </button>
+      <button onclick="confirmClockIn()" id="confirm-clock-in-btn"
+        class="flex-2 flex-grow-[2] bg-green-500 hover:bg-green-600 text-white font-bold py-3.5 rounded-xl shadow-md clock-btn">
+        <i class="fas fa-play-circle mr-2"></i>Start Working
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast notification -->
-<div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium"></div>
+<div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
 <script>
 let currentWorker = null
@@ -665,10 +750,12 @@ let map = null
 let marker = null
 let durationTimer = null
 let pingInterval = null
+let recentLocations = []
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 window.onload = async () => {
   const saved = localStorage.getItem('wt_worker')
+  recentLocations = JSON.parse(localStorage.getItem('wt_recent_locations') || '[]')
   if (saved) {
     currentWorker = JSON.parse(saved)
     await initMain()
@@ -684,7 +771,6 @@ function showScreen(name) {
   })
   document.getElementById('screen-' + name).classList.remove('hidden')
 }
-
 function showLogin() { showScreen('login') }
 function showRegister() { showScreen('register') }
 
@@ -693,39 +779,32 @@ async function registerWorker() {
   const name = document.getElementById('reg-name').value.trim()
   const phone = document.getElementById('reg-phone').value.trim()
   const pin = document.getElementById('reg-pin').value.trim()
-
   if (!name || !phone) { showToast('Please enter name and phone', 'error'); return }
   if (pin && pin.length !== 4) { showToast('PIN must be 4 digits', 'error'); return }
-
-  setLoading('reg-btn', true)
+  const btn = document.getElementById('reg-btn')
+  btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch spinner mr-2"></i>Please wait...'
   try {
     const res = await fetch('/api/workers/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, phone, pin: pin || '0000', device_id: getDeviceId() })
     })
     const data = await res.json()
     if (data.worker) {
       currentWorker = data.worker
       localStorage.setItem('wt_worker', JSON.stringify(data.worker))
-      showToast(data.isNew ? 'Registered successfully!' : 'Welcome back!', 'success')
+      showToast(data.isNew ? 'Registered! Welcome 🎉' : 'Welcome back!', 'success')
       await initMain()
-    } else {
-      showToast(data.error || 'Registration failed', 'error')
-    }
-  } catch(e) {
-    showToast('Connection error', 'error')
-  }
-  setLoading('reg-btn', false)
+    } else { showToast(data.error || 'Registration failed', 'error') }
+  } catch(e) { showToast('Connection error', 'error') }
+  btn.disabled = false; btn.innerHTML = '<i class="fas fa-user-plus mr-2"></i>Get Started'
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 async function loginWorker() {
   const phone = document.getElementById('login-phone').value.trim()
-  const pin = document.getElementById('login-pin').value.trim()
   if (!phone) { showToast('Enter your phone number', 'error'); return }
-
-  setLoading('login-btn', true)
+  const btn = document.getElementById('login-btn')
+  btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch spinner mr-2"></i>Signing in...'
   try {
     const res = await fetch('/api/workers/lookup/' + encodeURIComponent(phone))
     const data = await res.json()
@@ -734,21 +813,15 @@ async function loginWorker() {
       localStorage.setItem('wt_worker', JSON.stringify(data.worker))
       showToast('Welcome back, ' + data.worker.name + '!', 'success')
       await initMain()
-    } else {
-      showToast('Worker not found. Please register first.', 'error')
-    }
-  } catch(e) {
-    showToast('Connection error', 'error')
-  }
-  setLoading('login-btn', false)
+    } else { showToast('Worker not found. Please register first.', 'error') }
+  } catch(e) { showToast('Connection error', 'error') }
+  btn.disabled = false; btn.innerHTML = '<i class="fas fa-sign-in-alt mr-2"></i>Sign In'
 }
 
 function logout() {
   localStorage.removeItem('wt_worker')
-  currentWorker = null
-  activeSession = null
-  clearInterval(durationTimer)
-  clearInterval(pingInterval)
+  currentWorker = null; activeSession = null
+  clearInterval(durationTimer); clearInterval(pingInterval)
   showScreen('register')
 }
 
@@ -758,10 +831,9 @@ async function initMain() {
   document.getElementById('worker-name-display').textContent = currentWorker.name
   document.getElementById('worker-phone-display').textContent = currentWorker.phone
   document.getElementById('worker-rate-display').textContent = '$' + (currentWorker.hourly_rate || 0).toFixed(2) + '/hr'
-
   await checkStatus()
   await loadStats()
-  await loadRecentSessions()
+  await loadWorkLog()
 }
 
 async function checkStatus() {
@@ -769,7 +841,6 @@ async function checkStatus() {
     const res = await fetch('/api/sessions/status/' + currentWorker.id)
     const data = await res.json()
     activeSession = data.active_session
-
     if (data.is_clocked_in && activeSession) {
       setClockedInUI(true)
       startDurationTimer()
@@ -787,6 +858,7 @@ function setClockedInUI(isClockedIn) {
   const icon = document.getElementById('clock-btn-icon')
   const btnTxt = document.getElementById('clock-btn-text')
   const info = document.getElementById('clock-in-info')
+  const jobBanner = document.getElementById('active-job-banner')
 
   if (isClockedIn) {
     btn.className = 'w-full py-5 rounded-2xl text-white text-xl font-bold shadow-lg clock-btn flex items-center justify-center gap-3 bg-red-500 hover:bg-red-600'
@@ -799,6 +871,12 @@ function setClockedInUI(isClockedIn) {
     if (activeSession) {
       const t = new Date(activeSession.clock_in_time)
       document.getElementById('session-start-time').textContent = t.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+      // Show job banner
+      if (activeSession.job_location) {
+        jobBanner.classList.remove('hidden')
+        document.getElementById('active-job-location').textContent = '📍 ' + activeSession.job_location
+        document.getElementById('active-job-desc').textContent = activeSession.job_description || ''
+      }
     }
   } else {
     btn.className = 'w-full py-5 rounded-2xl text-white text-xl font-bold shadow-lg clock-btn flex items-center justify-center gap-3 bg-green-500 hover:bg-green-600'
@@ -808,69 +886,153 @@ function setClockedInUI(isClockedIn) {
     icon.className = 'fas fa-play-circle text-2xl'
     btnTxt.textContent = 'Clock In'
     info.classList.add('hidden')
+    jobBanner.classList.add('hidden')
     clearInterval(durationTimer)
     clearInterval(pingInterval)
   }
 }
 
-// ── Clock In/Out ──────────────────────────────────────────────────────────────
-async function toggleClock() {
-  const btn = document.getElementById('clock-btn')
-  btn.disabled = true
+// ── Clock Button Handler ───────────────────────────────────────────────────────
+function handleClockBtn() {
+  if (!activeSession) {
+    openJobModal()  // Show job details form before clocking in
+  } else {
+    clockOut()      // Clock out directly
+  }
+}
+
+// ── Job Details Modal ─────────────────────────────────────────────────────────
+function openJobModal() {
+  document.getElementById('job-modal').classList.remove('hidden')
+  document.getElementById('job-location-input').value = ''
+  document.getElementById('job-description-input').value = ''
+  document.getElementById('location-suggestions').classList.add('hidden')
+  // Update GPS status in modal
+  const gpsEl = document.getElementById('modal-gps-status')
+  if (gpsEl) {
+    gpsEl.textContent = currentLat
+      ? \`✓ Location ready (±\${currentLat.toFixed(3)}...)\`
+      : 'Getting location...'
+  }
+  // Pre-fill with most recent location
+  if (recentLocations.length > 0) {
+    document.getElementById('job-location-input').value = recentLocations[0]
+  }
+  setTimeout(() => document.getElementById('job-location-input').focus(), 300)
+}
+
+function closeJobModal() {
+  document.getElementById('job-modal').classList.add('hidden')
+}
+
+// Close modal on backdrop click
+document.getElementById('job-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeJobModal()
+})
+
+function addChip(task) {
+  const el = document.getElementById('job-description-input')
+  const current = el.value.trim()
+  if (current) {
+    el.value = current.endsWith(',') ? current + ' ' + task : current + ', ' + task
+  } else {
+    el.value = task
+  }
+  el.focus()
+}
+
+function filterLocationSuggestions(val) {
+  const box = document.getElementById('location-suggestions')
+  if (!val || recentLocations.length === 0) { box.classList.add('hidden'); return }
+  const filtered = recentLocations.filter(l => l.toLowerCase().includes(val.toLowerCase()))
+  if (filtered.length === 0) { box.classList.add('hidden'); return }
+  box.innerHTML = filtered.map(l =>
+    \`<button onclick="selectLocation('\${l.replace(/'/g,"&#39;")}')"
+      class="w-full text-left px-4 py-3 hover:bg-blue-50 text-sm text-gray-700 border-b border-gray-100 last:border-0">
+      <i class="fas fa-history text-gray-400 mr-2 text-xs"></i>\${l}
+    </button>\`
+  ).join('')
+  box.classList.remove('hidden')
+}
+
+function selectLocation(loc) {
+  document.getElementById('job-location-input').value = loc
+  document.getElementById('location-suggestions').classList.add('hidden')
+}
+
+async function confirmClockIn() {
+  const jobLocation = document.getElementById('job-location-input').value.trim()
+  const jobDescription = document.getElementById('job-description-input').value.trim()
+
+  if (!jobLocation) { showToast('Please enter the job location', 'error'); document.getElementById('job-location-input').focus(); return }
+  if (!jobDescription) { showToast('Please describe what you are doing', 'error'); document.getElementById('job-description-input').focus(); return }
+
+  const btn = document.getElementById('confirm-clock-in-btn')
+  btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch spinner mr-2"></i>Clocking in...'
 
   try {
-    if (!activeSession) {
-      // Clock In
-      const res = await fetch('/api/sessions/clock-in', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          worker_id: currentWorker.id,
-          latitude: currentLat,
-          longitude: currentLng,
-          address: currentAddress
-        })
+    const res = await fetch('/api/sessions/clock-in', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        worker_id: currentWorker.id,
+        latitude: currentLat,
+        longitude: currentLng,
+        address: currentAddress,
+        job_location: jobLocation,
+        job_description: jobDescription
       })
-      const data = await res.json()
-      if (data.session) {
-        activeSession = data.session
-        setClockedInUI(true)
-        startDurationTimer()
-        startPingInterval()
-        showToast('Clocked in! Have a great shift 💪', 'success')
-        await loadStats()
-      } else {
-        showToast(data.error || 'Failed to clock in', 'error')
+    })
+    const data = await res.json()
+    if (data.session) {
+      activeSession = data.session
+      // Save location to recent list
+      if (!recentLocations.includes(jobLocation)) {
+        recentLocations.unshift(jobLocation)
+        recentLocations = recentLocations.slice(0, 10)
+        localStorage.setItem('wt_recent_locations', JSON.stringify(recentLocations))
       }
+      closeJobModal()
+      setClockedInUI(true)
+      startDurationTimer()
+      startPingInterval()
+      showToast('Clocked in! Have a great shift 💪', 'success')
+      await loadStats()
+      await loadWorkLog()
     } else {
-      // Clock Out
-      const res = await fetch('/api/sessions/clock-out', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          worker_id: currentWorker.id,
-          latitude: currentLat,
-          longitude: currentLng,
-          address: currentAddress
-        })
-      })
-      const data = await res.json()
-      if (data.session) {
-        const hrs = data.total_hours?.toFixed(2) || '0'
-        const earned = '$' + (data.earnings?.toFixed(2) || '0')
-        activeSession = null
-        setClockedInUI(false)
-        showToast(\`Clocked out! \${hrs}h worked · \${earned} earned 🎉\`, 'success')
-        await loadStats()
-        await loadRecentSessions()
-      } else {
-        showToast(data.error || 'Failed to clock out', 'error')
-      }
+      showToast(data.error || 'Failed to clock in', 'error')
     }
-  } catch(e) {
-    showToast('Connection error', 'error')
-  }
+  } catch(e) { showToast('Connection error', 'error') }
 
+  btn.disabled = false; btn.innerHTML = '<i class="fas fa-play-circle mr-2"></i>Start Working'
+}
+
+// ── Clock Out ─────────────────────────────────────────────────────────────────
+async function clockOut() {
+  const btn = document.getElementById('clock-btn')
+  btn.disabled = true
+  try {
+    const res = await fetch('/api/sessions/clock-out', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        worker_id: currentWorker.id,
+        latitude: currentLat,
+        longitude: currentLng,
+        address: currentAddress
+      })
+    })
+    const data = await res.json()
+    if (data.session) {
+      const hrs = (data.total_hours || 0).toFixed(2)
+      const earned = '$' + (data.earnings || 0).toFixed(2)
+      activeSession = null
+      setClockedInUI(false)
+      showToast(\`Clocked out! \${hrs}h worked · \${earned} earned 🎉\`, 'success')
+      await loadStats()
+      await loadWorkLog()
+    } else { showToast(data.error || 'Failed to clock out', 'error') }
+  } catch(e) { showToast('Connection error', 'error') }
   btn.disabled = false
 }
 
@@ -879,15 +1041,12 @@ function startDurationTimer() {
   clearInterval(durationTimer)
   durationTimer = setInterval(() => {
     if (!activeSession) return
-    const start = new Date(activeSession.clock_in_time)
-    const now = new Date()
-    const diff = (now - start) / 1000
+    const diff = (new Date() - new Date(activeSession.clock_in_time)) / 1000
     const h = Math.floor(diff / 3600)
     const m = Math.floor((diff % 3600) / 60)
     const s = Math.floor(diff % 60)
     document.getElementById('session-duration').textContent = \`\${h}h \${m}m \${s}s\`
-    const earnings = (diff / 3600) * (currentWorker.hourly_rate || 0)
-    document.getElementById('session-earnings').textContent = '$' + earnings.toFixed(2)
+    document.getElementById('session-earnings').textContent = '$' + ((diff / 3600) * (currentWorker.hourly_rate || 0)).toFixed(2)
   }, 1000)
 }
 
@@ -898,30 +1057,25 @@ function getLocation() {
     return
   }
   document.getElementById('location-status').innerHTML = '<i class="fas fa-circle-notch spinner mr-1"></i> Getting location...'
-
   navigator.geolocation.getCurrentPosition(
     async (pos) => {
       currentLat = pos.coords.latitude
       currentLng = pos.coords.longitude
       const acc = Math.round(pos.coords.accuracy)
-
       document.getElementById('location-status').innerHTML =
-        \`<i class="fas fa-check-circle text-green-500 mr-1"></i> <span class="text-gray-700 font-medium">Lat: \${currentLat.toFixed(5)}, Lng: \${currentLng.toFixed(5)}</span><br><span class="text-xs text-gray-400">Accuracy: ±\${acc}m</span>\`
-
-      // Try reverse geocode
+        \`<i class="fas fa-check-circle text-green-500 mr-1"></i> <span class="text-gray-700 font-medium">\${currentLat.toFixed(5)}, \${currentLng.toFixed(5)}</span> <span class="text-xs text-gray-400">±\${acc}m</span>\`
       try {
         const geo = await fetch(\`https://nominatim.openstreetmap.org/reverse?lat=\${currentLat}&lon=\${currentLng}&format=json\`)
         const gd = await geo.json()
         if (gd.display_name) {
           currentAddress = gd.display_name
           document.getElementById('location-status').innerHTML =
-            \`<i class="fas fa-map-marker-alt text-red-500 mr-1"></i> <span class="text-gray-700 text-xs">\${gd.display_name.substring(0, 80)}...</span><br><span class="text-xs text-gray-400">±\${acc}m accuracy</span>\`
+            \`<i class="fas fa-map-marker-alt text-red-500 mr-1"></i> <span class="text-gray-700 text-xs">\${gd.display_name.substring(0,80)}...</span> <span class="text-xs text-gray-400">±\${acc}m</span>\`
         }
       } catch(e) {}
-
       showMap(currentLat, currentLng)
     },
-    (err) => {
+    () => {
       document.getElementById('location-status').innerHTML = '<i class="fas fa-exclamation-triangle text-yellow-500 mr-1"></i> Location access denied'
       currentLat = null; currentLng = null
     },
@@ -941,28 +1095,21 @@ function showMap(lat, lng) {
   marker = L.circleMarker([lat, lng], { color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.8, radius: 10 }).addTo(map)
 }
 
-// ── Location Ping ─────────────────────────────────────────────────────────────
 function startPingInterval() {
   clearInterval(pingInterval)
   pingInterval = setInterval(async () => {
     if (!activeSession || !currentLat) return
     try {
       await fetch('/api/location/ping', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id: activeSession.id,
-          worker_id: currentWorker.id,
-          latitude: currentLat,
-          longitude: currentLng
-        })
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: activeSession.id, worker_id: currentWorker.id, latitude: currentLat, longitude: currentLng })
       })
-      getLocation() // Refresh location
+      getLocation()
     } catch(e) {}
-  }, 5 * 60 * 1000) // Every 5 minutes
+  }, 5 * 60 * 1000)
 }
 
-// ── Stats & Sessions ──────────────────────────────────────────────────────────
+// ── Stats ─────────────────────────────────────────────────────────────────────
 async function loadStats() {
   try {
     const res = await fetch('/api/stats/worker/' + currentWorker.id)
@@ -975,57 +1122,122 @@ async function loadStats() {
   } catch(e) {}
 }
 
-async function loadRecentSessions() {
+// ── Work Log grouped by Day ───────────────────────────────────────────────────
+async function loadWorkLog() {
   try {
-    const res = await fetch('/api/sessions/worker/' + currentWorker.id + '?limit=5')
+    const res = await fetch('/api/sessions/worker/' + currentWorker.id + '?limit=60')
     const data = await res.json()
-    const el = document.getElementById('recent-sessions')
+    const el = document.getElementById('work-log-by-day')
     if (!data.sessions || data.sessions.length === 0) {
-      el.innerHTML = '<p class="text-gray-400 text-sm text-center py-4">No sessions yet</p>'
+      el.innerHTML = '<p class="text-gray-400 text-sm text-center py-6"><i class="fas fa-inbox mb-2 block text-2xl"></i>No sessions yet</p>'
       return
     }
-    el.innerHTML = data.sessions.map(s => {
-      const date = new Date(s.clock_in_time).toLocaleDateString('en-US', {month:'short', day:'numeric'})
-      const clockIn = new Date(s.clock_in_time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
-      const clockOut = s.clock_out_time ? new Date(s.clock_out_time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : 'Active'
-      const badge = s.status === 'active'
-        ? '<span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full pulse">Active</span>'
-        : \`<span class="bg-gray-100 text-gray-600 text-xs px-2 py-0.5 rounded-full">\${(s.total_hours || 0).toFixed(1)}h · $\${(s.earnings || 0).toFixed(2)}</span>\`
-      return \`<div class="flex items-center justify-between py-2.5 border-b border-gray-100 last:border-0">
-        <div>
-          <p class="text-sm font-medium text-gray-800">\${date}</p>
-          <p class="text-xs text-gray-500">\${clockIn} → \${clockOut}</p>
-          \${s.clock_in_address ? \`<p class="text-xs text-gray-400 truncate max-w-[180px]">\${s.clock_in_address.substring(0,40)}...</p>\` : ''}
+
+    // Group sessions by calendar date
+    const groups = {}
+    data.sessions.forEach(s => {
+      const d = new Date(s.clock_in_time)
+      const key = d.toISOString().split('T')[0]           // YYYY-MM-DD key
+      if (!groups[key]) groups[key] = { date: d, sessions: [] }
+      groups[key].sessions.push(s)
+    })
+
+    const today = new Date().toISOString().split('T')[0]
+    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0]
+
+    el.innerHTML = Object.keys(groups).sort((a,b) => b.localeCompare(a)).map(key => {
+      const g = groups[key]
+      const dayLabel = key === today ? '📅 Today'
+        : key === yesterday ? '📅 Yesterday'
+        : '📅 ' + g.date.toLocaleDateString('en-US', { weekday:'long', month:'short', day:'numeric' })
+
+      const dayHours = g.sessions.reduce((sum, s) => sum + (s.total_hours || 0), 0)
+      const dayEarnings = g.sessions.reduce((sum, s) => sum + (s.earnings || 0), 0)
+      const hasActive = g.sessions.some(s => s.status === 'active')
+
+      const sessionsHTML = g.sessions.map(s => {
+        const clockIn = new Date(s.clock_in_time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+        const clockOut = s.clock_out_time
+          ? new Date(s.clock_out_time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+          : null
+        const isActive = s.status === 'active'
+
+        return \`<div class="bg-white border border-gray-100 rounded-xl p-3.5 mb-2 last:mb-0 shadow-sm">
+          <!-- Job location + description -->
+          \${s.job_location ? \`
+            <div class="flex items-start gap-2 mb-2">
+              <i class="fas fa-map-marker-alt text-red-500 mt-0.5 text-sm flex-shrink-0"></i>
+              <div>
+                <p class="text-sm font-bold text-gray-800">\${s.job_location}</p>
+                \${s.job_description ? \`<p class="text-xs text-gray-500 mt-0.5">\${s.job_description}</p>\` : ''}
+              </div>
+            </div>
+          \` : ''}
+          <!-- Times + earnings -->
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2 text-xs text-gray-500">
+              <i class="fas fa-clock text-blue-400"></i>
+              <span>\${clockIn}</span>
+              <span class="text-gray-300">→</span>
+              \${isActive
+                ? \`<span class="bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium pulse">Working now</span>\`
+                : \`<span>\${clockOut}</span>\`
+              }
+            </div>
+            <div class="text-right">
+              \${isActive
+                ? \`<span class="text-green-600 text-xs font-medium">In progress...</span>\`
+                : \`<span class="text-xs font-bold text-gray-700">\${(s.total_hours||0).toFixed(2)}h</span>
+                   <span class="text-xs text-green-600 font-bold ml-1">$\${(s.earnings||0).toFixed(2)}</span>\`
+              }
+            </div>
+          </div>
+          \${s.clock_in_lat ? \`
+            <div class="mt-1.5">
+              <a href="https://maps.google.com/?q=\${s.clock_in_lat},\${s.clock_in_lng}" target="_blank"
+                class="text-xs text-blue-500 hover:text-blue-700">
+                <i class="fas fa-external-link-alt mr-1"></i>View on map
+              </a>
+            </div>
+          \` : ''}
+        </div>\`
+      }).join('')
+
+      return \`<div class="mb-4">
+        <!-- Day header -->
+        <div class="flex items-center justify-between mb-2 pl-1">
+          <span class="text-sm font-bold text-gray-700">\${dayLabel}</span>
+          <div class="flex items-center gap-2 text-xs">
+            \${hasActive
+              ? \`<span class="bg-green-100 text-green-700 px-2 py-0.5 rounded-full pulse font-medium">Active</span>\`
+              : \`<span class="text-gray-500">\${dayHours.toFixed(1)}h</span>
+                 <span class="font-bold text-green-600">$\${dayEarnings.toFixed(2)}</span>\`
+            }
+          </div>
         </div>
-        <div>\${badge}</div>
+        <!-- Sessions for this day -->
+        <div class="day-group pl-3">
+          \${sessionsHTML}
+        </div>
       </div>\`
     }).join('')
-  } catch(e) {}
+  } catch(e) { console.error(e) }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getDeviceId() {
   let id = localStorage.getItem('wt_device_id')
-  if (!id) {
-    id = 'dev_' + Math.random().toString(36).substr(2, 12) + '_' + Date.now()
-    localStorage.setItem('wt_device_id', id)
-  }
+  if (!id) { id = 'dev_' + Math.random().toString(36).substr(2, 12) + '_' + Date.now(); localStorage.setItem('wt_device_id', id) }
   return id
 }
 
 function showToast(msg, type = 'info') {
   const t = document.getElementById('toast')
   t.textContent = msg
-  t.className = \`fixed bottom-6 left-1/2 transform -translate-x-1/2 px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium text-white
+  t.className = \`fixed bottom-6 left-1/2 transform -translate-x-1/2 px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium text-white max-w-xs text-center
     \${type === 'error' ? 'bg-red-600' : type === 'success' ? 'bg-green-600' : 'bg-gray-800'}\`
   t.classList.remove('hidden')
-  setTimeout(() => t.classList.add('hidden'), 3500)
-}
-
-function setLoading(id, loading) {
-  const el = document.getElementById(id)
-  el.disabled = loading
-  el.innerHTML = loading ? '<i class="fas fa-circle-notch spinner mr-2"></i>Loading...' : el.innerHTML
+  setTimeout(() => t.classList.add('hidden'), 4000)
 }
 </script>
 </body>
@@ -1209,31 +1421,19 @@ function getAdminHTML(): string {
     <div id="tab-sessions" class="tab-content hidden bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
       <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
         <h3 class="font-bold text-gray-700">Work Sessions</h3>
-        <div class="flex gap-2 items-center">
+        <div class="flex gap-2 items-center flex-wrap">
           <input type="date" id="filter-date" class="border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             onchange="loadSessions()"/>
+          <select id="filter-worker" class="border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" onchange="loadSessions()">
+            <option value="">All Workers</option>
+          </select>
           <button onclick="exportCSV()" class="bg-green-600 hover:bg-green-700 text-white text-sm px-4 py-2 rounded-xl font-medium">
             <i class="fas fa-download mr-1"></i>Export
           </button>
         </div>
       </div>
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead><tr class="border-b text-gray-500">
-            <th class="py-3 text-left">Worker</th>
-            <th class="py-3 text-left">Date</th>
-            <th class="py-3 text-left">Clock In</th>
-            <th class="py-3 text-left">Clock Out</th>
-            <th class="py-3 text-right">Hours</th>
-            <th class="py-3 text-right">Earned</th>
-            <th class="py-3 text-left">Location</th>
-            <th class="py-3 text-center">Status</th>
-          </tr></thead>
-          <tbody id="sessions-tbody">
-            <tr><td colspan="8" class="text-center py-8 text-gray-400">Loading...</td></tr>
-          </tbody>
-        </table>
-      </div>
+      <!-- Day-grouped sessions view -->
+      <div id="sessions-by-day" class="space-y-5"></div>
     </div>
 
     <!-- Tab: Map -->
@@ -1404,7 +1604,15 @@ async function loadWorkers() {
     const res = await fetch('/api/workers')
     const data = await res.json()
     const tbody = document.getElementById('workers-tbody')
-    
+
+    // Populate the worker filter dropdown
+    const workerSelect = document.getElementById('filter-worker')
+    if (workerSelect && data.workers) {
+      const currentVal = workerSelect.value
+      workerSelect.innerHTML = '<option value="">All Workers</option>' +
+        data.workers.map(w => \`<option value="\${w.id}" \${currentVal == w.id ? 'selected' : ''}>\${w.name}</option>\`).join('')
+    }
+
     if (!data.workers || data.workers.length === 0) {
       tbody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-gray-400">No workers registered</td></tr>'
       return
@@ -1440,40 +1648,124 @@ async function loadWorkers() {
 async function loadSessions() {
   try {
     const date = document.getElementById('filter-date').value
-    let url = '/api/sessions?limit=100'
+    const workerId = document.getElementById('filter-worker').value
+    let url = '/api/sessions?limit=200'
     if (date) url += '&date=' + date
-    
+    if (workerId) url += '&worker_id=' + workerId
+
     const res = await fetch(url)
     const data = await res.json()
     allSessionsData = data.sessions || []
-    const tbody = document.getElementById('sessions-tbody')
-    
+    const container = document.getElementById('sessions-by-day')
+
     if (allSessionsData.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" class="text-center py-8 text-gray-400">No sessions found</td></tr>'
+      container.innerHTML = \`<div class="text-center py-12 text-gray-400">
+        <i class="fas fa-calendar-times text-4xl mb-3 block"></i>
+        <p>No sessions found for this filter</p>
+      </div>\`
       return
     }
-    
-    tbody.innerHTML = allSessionsData.map(s => {
-      const date = new Date(s.clock_in_time).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
-      const clockIn = new Date(s.clock_in_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})
-      const clockOut = s.clock_out_time ? new Date(s.clock_out_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '–'
-      const status = s.status === 'active'
-        ? '<span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full pulse">Active</span>'
-        : '<span class="bg-gray-100 text-gray-600 text-xs px-2 py-0.5 rounded-full">Done</span>'
-      const loc = s.clock_in_lat
-        ? \`<a href="https://maps.google.com/?q=\${s.clock_in_lat},\${s.clock_in_lng}" target="_blank" class="text-blue-500 hover:text-blue-700 text-xs"><i class="fas fa-map-marker-alt"></i> View</a>\`
-        : '<span class="text-gray-300 text-xs">–</span>'
-      
-      return \`<tr class="border-b border-gray-50 hover:bg-gray-50 text-sm">
-        <td class="py-2.5 font-medium text-gray-800">\${s.worker_name || '–'}</td>
-        <td class="py-2.5 text-gray-500">\${date}</td>
-        <td class="py-2.5 text-gray-700">\${clockIn}</td>
-        <td class="py-2.5 text-gray-700">\${clockOut}</td>
-        <td class="py-2.5 text-right font-medium">\${(s.total_hours||0).toFixed(2)}</td>
-        <td class="py-2.5 text-right font-bold text-green-600">$\${(s.earnings||0).toFixed(2)}</td>
-        <td class="py-2.5">\${loc}</td>
-        <td class="py-2.5 text-center">\${status}</td>
-      </tr>\`
+
+    // Group by day
+    const groups = {}
+    allSessionsData.forEach(s => {
+      const key = new Date(s.clock_in_time).toISOString().split('T')[0]
+      if (!groups[key]) groups[key] = []
+      groups[key].push(s)
+    })
+
+    const today = new Date().toISOString().split('T')[0]
+    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0]
+
+    container.innerHTML = Object.keys(groups).sort((a,b) => b.localeCompare(a)).map(key => {
+      const sessions = groups[key]
+      const d = new Date(key + 'T12:00:00')
+      const dayLabel = key === today ? 'Today'
+        : key === yesterday ? 'Yesterday'
+        : d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' })
+
+      const dayHours = sessions.reduce((s, x) => s + (x.total_hours || 0), 0)
+      const dayEarnings = sessions.reduce((s, x) => s + (x.earnings || 0), 0)
+      const hasActive = sessions.some(s => s.status === 'active')
+      const uniqueWorkers = [...new Set(sessions.map(s => s.worker_name))].filter(Boolean)
+
+      const sessionsHTML = sessions.map(s => {
+        const clockIn = new Date(s.clock_in_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})
+        const clockOut = s.clock_out_time ? new Date(s.clock_out_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : null
+        const isActive = s.status === 'active'
+        const mapLink = s.clock_in_lat
+          ? \`<a href="https://maps.google.com/?q=\${s.clock_in_lat},\${s.clock_in_lng}" target="_blank" class="text-blue-500 hover:text-blue-700 text-xs ml-2"><i class="fas fa-map-marker-alt mr-0.5"></i>Map</a>\`
+          : ''
+
+        return \`<div class="bg-gray-50 rounded-xl p-4 border border-gray-100 hover:border-indigo-200 hover:shadow-sm transition-all">
+          <div class="flex items-start justify-between gap-2">
+            <div class="flex-1">
+              <!-- Worker name -->
+              <div class="flex items-center gap-2 mb-2">
+                <div class="w-7 h-7 bg-indigo-100 rounded-full flex items-center justify-center flex-shrink-0">
+                  <i class="fas fa-user text-indigo-500 text-xs"></i>
+                </div>
+                <span class="font-bold text-gray-800 text-sm">\${s.worker_name || '–'}</span>
+                <span class="text-gray-400 text-xs">\${s.worker_phone || ''}</span>
+                \${isActive ? \`<span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium pulse ml-auto">● LIVE</span>\` : ''}
+              </div>
+              <!-- Job location -->
+              \${s.job_location ? \`
+                <div class="flex items-start gap-1.5 mb-1.5 ml-9">
+                  <i class="fas fa-map-marker-alt text-red-500 mt-0.5 text-xs flex-shrink-0"></i>
+                  <p class="text-sm font-semibold text-gray-700">\${s.job_location}</p>
+                </div>
+              \` : ''}
+              <!-- Job description -->
+              \${s.job_description ? \`
+                <div class="flex items-start gap-1.5 mb-2 ml-9">
+                  <i class="fas fa-tools text-blue-400 mt-0.5 text-xs flex-shrink-0"></i>
+                  <p class="text-xs text-gray-500">\${s.job_description}</p>
+                </div>
+              \` : ''}
+              <!-- Time row -->
+              <div class="flex items-center gap-3 ml-9 text-xs text-gray-500">
+                <span><i class="fas fa-sign-in-alt text-green-500 mr-1"></i>\${clockIn}</span>
+                <span class="text-gray-300">→</span>
+                \${isActive
+                  ? \`<span class="text-green-600 font-medium">Still working...</span>\`
+                  : \`<span><i class="fas fa-sign-out-alt text-red-400 mr-1"></i>\${clockOut}</span>\`
+                }
+                \${mapLink}
+              </div>
+            </div>
+            <!-- Earnings block -->
+            <div class="text-right flex-shrink-0">
+              \${isActive
+                ? \`<span class="text-green-500 text-xs font-medium">In progress</span>\`
+                : \`<p class="text-base font-bold text-gray-800">\${(s.total_hours||0).toFixed(2)}h</p>
+                   <p class="text-sm font-bold text-green-600">$\${(s.earnings||0).toFixed(2)}</p>\`
+              }
+            </div>
+          </div>
+        </div>\`
+      }).join('')
+
+      return \`<div class="border border-gray-200 rounded-2xl overflow-hidden">
+        <!-- Day header -->
+        <div class="bg-gray-50 border-b border-gray-200 px-5 py-3 flex items-center justify-between">
+          <div>
+            <p class="font-bold text-gray-800">\${dayLabel}</p>
+            <p class="text-xs text-gray-500 mt-0.5">\${uniqueWorkers.join(', ')}</p>
+          </div>
+          <div class="text-right">
+            \${hasActive
+              ? \`<span class="bg-green-100 text-green-700 text-sm px-3 py-1 rounded-full font-medium pulse">Active</span>\`
+              : \`<p class="text-sm font-bold text-gray-700">\${dayHours.toFixed(1)}h</p>
+                 <p class="text-sm font-bold text-green-600">$\${dayEarnings.toFixed(2)}</p>\`
+            }
+          </div>
+        </div>
+        <!-- Sessions -->
+        <div class="p-3 space-y-2">
+          \${sessionsHTML}
+        </div>
+      </div>\`
     }).join('')
   } catch(e) { console.error(e) }
 }

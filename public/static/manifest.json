@@ -1,0 +1,16 @@
+{
+  "name": "WorkTracker",
+  "short_name": "WorkTracker",
+  "description": "Track work hours, GPS location & earnings",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1e40af",
+  "theme_color": "#1e40af",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='50' fill='%231e40af'/><text y='65' x='50' text-anchor='middle' font-size='55' fill='white'>⏱</text></svg>",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
