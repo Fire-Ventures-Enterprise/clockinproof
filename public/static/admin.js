@@ -685,14 +685,19 @@ async function loadWorkers() {
         <td class="py-3 text-right font-bold text-gray-800">$${(w.total_earnings_all_time||0).toFixed(2)}</td>
         <td class="py-3 text-center">${status}</td>
         <td class="py-3 text-right" onclick="event.stopPropagation()">
+          <button data-id="${w.id}" data-name="${w.name.replace(/"/g,'&quot;')}"
+            onclick="generateInviteLink(+this.dataset.id, this.dataset.name)"
+            class="text-emerald-600 hover:text-emerald-800 text-xs mr-2" title="Generate invite link">
+            <i class="fas fa-link"></i>
+          </button>
           <button data-id="${w.id}" data-name="${w.name.replace(/"/g,'&quot;')}" data-rate="${w.hourly_rate}"
             onclick="editWorkerRate(+this.dataset.id, this.dataset.name, +this.dataset.rate)"
-            class="text-indigo-600 hover:text-indigo-800 text-xs mr-2">
+            class="text-indigo-600 hover:text-indigo-800 text-xs mr-2" title="Edit rate">
             <i class="fas fa-edit"></i>
           </button>
           <button data-id="${w.id}" data-name="${w.name.replace(/"/g,'&quot;')}"
             onclick="deleteWorker(+this.dataset.id, this.dataset.name)"
-            class="text-red-500 hover:text-red-700 text-xs">
+            class="text-red-500 hover:text-red-700 text-xs" title="Remove worker">
             <i class="fas fa-trash"></i>
           </button>
         </td>
@@ -934,6 +939,62 @@ async function deleteWorker(id, name) {
     showAdminToast(name + ' removed', 'success')
     await loadWorkers()
   } catch(e) { showAdminToast('Error removing worker', 'error') }
+}
+
+async function generateInviteLink(id, name) {
+  try {
+    const res  = await fetch('/api/workers/' + id + '/invite', { method: 'POST' })
+    const data = await res.json()
+    if (!data.invite_code) { showAdminToast('Could not generate link', 'error'); return }
+    const link = window.location.origin + '/invite/' + data.invite_code
+    // Show modal with the link
+    const existing = document.getElementById('invite-modal')
+    if (existing) existing.remove()
+    const modal = document.createElement('div')
+    modal.id = 'invite-modal'
+    modal.className = 'fixed inset-0 z-50 flex items-center justify-center p-4'
+    modal.style.background = 'rgba(0,0,0,0.55)'
+    modal.innerHTML = `
+      <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 slide-up">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-11 h-11 bg-indigo-100 rounded-xl flex items-center justify-center flex-shrink-0">
+            <i class="fas fa-link text-indigo-600 text-lg"></i>
+          </div>
+          <div>
+            <h3 class="font-bold text-gray-800 text-base">Invite Link for ${name}</h3>
+            <p class="text-xs text-gray-400">Share this link — one tap and they're in</p>
+          </div>
+        </div>
+
+        <div class="bg-indigo-50 border border-indigo-200 rounded-xl p-3 mb-4">
+          <p class="text-xs font-semibold text-indigo-600 mb-1">Access Code</p>
+          <p class="font-mono text-2xl font-bold text-indigo-800 tracking-widest text-center py-1">${data.invite_code}</p>
+        </div>
+
+        <div class="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-4">
+          <p class="text-xs font-semibold text-gray-500 mb-1">Invite Link</p>
+          <p class="text-xs text-gray-700 break-all font-mono">${link}</p>
+        </div>
+
+        <div class="space-y-2">
+          <button onclick="navigator.clipboard.writeText('${link}').then(()=>showAdminToast('Link copied!','success'))"
+            class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl text-sm">
+            <i class="fas fa-copy mr-2"></i>Copy Link
+          </button>
+          <button onclick="(()=>{ const txt=encodeURIComponent('Hi ${name}! Tap this link to open your WorkTracker app: ${link}'); window.open('sms:?body='+txt,'_blank') })()"
+            class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-xl text-sm">
+            <i class="fas fa-sms mr-2"></i>Send via SMS
+          </button>
+          <button onclick="document.getElementById('invite-modal').remove()"
+            class="w-full text-gray-500 hover:text-gray-700 py-2 text-sm font-medium">
+            Close
+          </button>
+        </div>
+      </div>
+    `
+    document.body.appendChild(modal)
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
+  } catch(e) { showAdminToast('Error generating invite link', 'error') }
 }
 
 // ── Export CSV ────────────────────────────────────────────────────────────────

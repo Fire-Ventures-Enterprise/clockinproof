@@ -132,6 +132,8 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('drift_check_enabled', '1')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('drift_radius_meters', '500')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('geofence_exit_clockout_min', '0')`,
+    // invite_code column on workers (safe to run on existing DBs)
+    `ALTER TABLE workers ADD COLUMN invite_code TEXT`,
   ]
   for (const sql of statements) {
     try {
@@ -243,6 +245,127 @@ app.delete('/api/workers/:id', async (c) => {
 })
 
 // ─── SESSIONS API (Clock In / Out) ────────────────────────────────────────────
+
+// ─── INVITE CODE API ──────────────────────────────────────────────────────────
+
+// POST /api/workers/:id/invite  — generate (or regenerate) an invite code
+app.post('/api/workers/:id/invite', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id   = parseInt(c.req.param('id'))
+  const code = Math.random().toString(36).substring(2, 8).toUpperCase()   // e.g. "K7XM2P"
+  await db.prepare('UPDATE workers SET invite_code = ? WHERE id = ?').bind(code, id).run()
+  const worker = await db.prepare('SELECT id, name, phone, invite_code FROM workers WHERE id = ?').bind(id).first() as any
+  return c.json({ invite_code: code, worker_name: worker?.name })
+})
+
+// GET /api/workers/by-invite/:code  — resolve an invite code → worker data (no auth needed)
+app.get('/api/workers/by-invite/:code', async (c) => {
+  const db   = c.env.DB
+  await ensureSchema(db)
+  const code = c.req.param('code').toUpperCase()
+  const worker = await db.prepare(
+    'SELECT id, name, phone, hourly_rate, role, active, invite_code FROM workers WHERE invite_code = ? AND active = 1'
+  ).bind(code).first() as any
+  if (!worker) return c.json({ error: 'Invalid or expired invite code' }, 404)
+  return c.json({ worker })
+})
+
+// GET /invite/:code  — landing page that auto-logs the worker in
+app.get('/invite/:code', async (c) => {
+  const code = c.req.param('code').toUpperCase()
+  // Tiny redirect page: sets localStorage then sends to /
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+  <meta name="theme-color" content="#1e40af"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <title>WorkTracker — Joining...</title>
+  <link rel="manifest" href="/static/manifest.json"/>
+  <link rel="apple-touch-icon" href="/static/icon-192.png"/>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:system-ui,sans-serif;background:#1e40af;min-height:100vh;
+      display:flex;align-items:center;justify-content:center;padding:24px}
+    .card{background:#fff;border-radius:24px;padding:40px 32px;text-align:center;
+      max-width:360px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+    .icon{width:80px;height:80px;background:#1e40af;border-radius:50%;
+      display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:36px}
+    h1{font-size:22px;font-weight:700;color:#1e3a8a;margin-bottom:8px}
+    p{color:#6b7280;font-size:15px;line-height:1.5;margin-bottom:24px}
+    .spinner{width:44px;height:44px;border:4px solid #e0e7ff;border-top-color:#1e40af;
+      border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .name{font-size:20px;font-weight:700;color:#1e3a8a;margin:16px 0 4px}
+    .sub{color:#6b7280;font-size:14px;margin-bottom:28px}
+    .btn{display:block;width:100%;padding:14px;background:#1e40af;color:#fff;
+      font-size:16px;font-weight:600;border:none;border-radius:14px;
+      cursor:pointer;text-decoration:none;margin-top:8px}
+    .btn:hover{background:#1d4ed8}
+    .error{color:#dc2626;font-size:14px;margin-top:12px}
+    .code-badge{display:inline-block;background:#eff6ff;border:1.5px solid #bfdbfe;
+      color:#1e40af;font-family:monospace;font-size:18px;font-weight:700;
+      letter-spacing:3px;padding:8px 20px;border-radius:10px;margin:12px 0}
+  </style>
+</head>
+<body>
+<div class="card" id="card">
+  <div class="icon">⏱</div>
+  <h1>WorkTracker</h1>
+  <p>Verifying your access code&hellip;</p>
+  <div class="spinner" id="spinner"></div>
+  <div id="msg" style="display:none"></div>
+</div>
+<script>
+(async () => {
+  const code = '${code}'
+  const card = document.getElementById('card')
+  const spinner = document.getElementById('spinner')
+  const msg = document.getElementById('msg')
+
+  try {
+    const res  = await fetch('/api/workers/by-invite/' + code)
+    const data = await res.json()
+    if (!res.ok || !data.worker) {
+      spinner.style.display = 'none'
+      msg.style.display = 'block'
+      msg.innerHTML = '<p class="error"><strong>❌ Invalid invite link.</strong><br>Please ask your manager for a new link.</p>'
+      return
+    }
+    const w = data.worker
+    // Persist worker session exactly like normal login
+    localStorage.setItem('workerToken', JSON.stringify({ id: w.id, name: w.name, phone: w.phone, hourly_rate: w.hourly_rate || 0, role: w.role || 'worker' }))
+    localStorage.setItem('workerId',   w.id)
+    localStorage.setItem('workerName', w.name)
+    localStorage.setItem('workerPhone', w.phone)
+
+    // Show success + "Open App" button
+    spinner.style.display = 'none'
+    msg.style.display = 'block'
+    msg.innerHTML = \`
+      <p class="name">👋 Hi, \${w.name}!</p>
+      <p class="sub">Your access code is verified.<br>Tap below to open the app.</p>
+      <a href="/" class="btn">📲 Open WorkTracker</a>
+      <p style="margin-top:16px;font-size:12px;color:#9ca3af">
+        Tip: tap <strong>Share → Add to Home Screen</strong><br>for quick access next time.
+      </p>
+    \`
+    // Auto-redirect in 1.8s
+    setTimeout(() => { window.location.href = '/' }, 1800)
+  } catch(e) {
+    spinner.style.display = 'none'
+    msg.style.display = 'block'
+    msg.innerHTML = '<p class="error">Connection error. Please try again.</p>'
+  }
+})()
+</script>
+</body>
+</html>`
+  return c.html(html)
+})
 
 // Haversine distance in meters between two lat/lng points
 function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -2111,10 +2234,17 @@ function getWorkerHTML(): string {
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
   <meta name="theme-color" content="#1e40af"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="WorkTracker"/>
   <title>WorkTracker — Clock In/Out</title>
   <link rel="manifest" href="/static/manifest.json"/>
+  <link rel="apple-touch-icon" href="/static/icon-180.png"/>
+  <link rel="apple-touch-icon" sizes="192x192" href="/static/icon-192.png"/>
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png"/>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -2135,6 +2265,23 @@ function getWorkerHTML(): string {
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
+
+<!-- ── Add to Home Screen Banner (shown once, dismissed to localStorage) ── -->
+<div id="a2hs-banner" class="hidden fixed bottom-0 left-0 right-0 z-50 p-3">
+  <div class="bg-blue-700 text-white rounded-2xl shadow-2xl p-4 flex items-center gap-3 max-w-lg mx-auto">
+    <div class="w-10 h-10 bg-blue-500 rounded-xl flex items-center justify-center flex-shrink-0 text-xl">📲</div>
+    <div class="flex-1 min-w-0">
+      <p class="font-bold text-sm">Save app to Home Screen</p>
+      <p class="text-blue-200 text-xs mt-0.5">
+        <span class="ios-hint">Tap <strong>Share</strong> → <strong>Add to Home Screen</strong></span>
+        <span class="android-hint hidden">Tap <strong>⋮</strong> → <strong>Add to Home Screen</strong></span>
+      </p>
+    </div>
+    <button onclick="dismissA2HS()" class="text-blue-200 hover:text-white p-1 flex-shrink-0">
+      <i class="fas fa-times text-lg"></i>
+    </button>
+  </div>
+</div>
 
 <!-- Register Screen -->
 <div id="screen-register" class="min-h-screen flex items-center justify-center p-4">
@@ -3463,6 +3610,29 @@ function showToast(msg, type = 'info') {
   t.classList.remove('hidden')
   setTimeout(() => t.classList.add('hidden'), 4000)
 }
+
+// ── Add to Home Screen banner ────────────────────────────────────────────────
+function dismissA2HS() {
+  localStorage.setItem('a2hs_dismissed', '1')
+  document.getElementById('a2hs-banner')?.remove()
+}
+
+;(function initA2HS() {
+  if (localStorage.getItem('a2hs_dismissed')) return
+  // Don't show if already installed (standalone mode)
+  if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) return
+  const banner = document.getElementById('a2hs-banner')
+  if (!banner) return
+  const isAndroid = /android/i.test(navigator.userAgent)
+  const isIOS     = /iphone|ipad|ipod/i.test(navigator.userAgent)
+  if (!isIOS && !isAndroid) return   // desktop — don't show
+  if (isAndroid) {
+    banner.querySelector('.ios-hint')?.classList.add('hidden')
+    banner.querySelector('.android-hint')?.classList.remove('hidden')
+  }
+  setTimeout(() => banner.classList.remove('hidden'), 2500)  // show after 2.5s
+})()
+
 </script>
 </body>
 </html>`
