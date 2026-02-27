@@ -131,6 +131,7 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_clockout_enabled', '1')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('drift_check_enabled', '1')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('drift_radius_meters', '500')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('geofence_exit_clockout_min', '0')`,
   ]
   for (const sql of statements) {
     try {
@@ -735,6 +736,113 @@ app.post('/api/override/:id/notify', async (c) => {
   })
 })
 
+// ── ADMIN FORCE CLOCK-OUT: stop any single active session ────────────────────
+app.post('/api/sessions/:id/admin-clockout', async (c) => {
+  const db      = c.env.DB
+  const env     = c.env as any
+  const id      = parseInt(c.req.param('id'))
+  const body    = await c.req.json().catch(() => ({})) as any
+  const adminNote = body.note?.trim() || 'Manually stopped by admin'
+
+  await ensureSchema(db)
+
+  const session = await db.prepare(
+    "SELECT s.*, w.name as worker_name, w.phone as worker_phone, w.hourly_rate FROM sessions s JOIN workers w ON s.worker_id=w.id WHERE s.id=? AND s.status='active'"
+  ).bind(id).first<any>()
+
+  if (!session) return c.json({ error: 'Session not found or already completed' }, 404)
+
+  const now        = new Date()
+  const clockInMs  = new Date(session.clock_in_time).getTime()
+  const hoursWorked = (now.getTime() - clockInMs) / (1000 * 60 * 60)
+  const earnings    = hoursWorked * (session.hourly_rate || 0)
+  const reason      = `Admin clock-out: ${adminNote}`
+
+  await db.prepare(`
+    UPDATE sessions SET
+      clock_out_time=?, total_hours=?, earnings=?,
+      status='completed', auto_clockout=1, auto_clockout_reason=?,
+      notes=CASE WHEN notes IS NULL OR notes='' THEN ? ELSE notes||' | '||? END
+    WHERE id=?
+  `).bind(
+    now.toISOString(),
+    Math.round(hoursWorked * 100) / 100,
+    Math.round(earnings * 100) / 100,
+    reason, reason, reason, id
+  ).run()
+
+  // Fetch settings for notifications
+  const settingsRaw = await db.prepare('SELECT * FROM settings').all()
+  const settings: Record<string, string> = {}
+  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+
+  return c.json({
+    success: true,
+    message: `${session.worker_name} clocked out by admin`,
+    session_id: id,
+    total_hours: Math.round(hoursWorked * 100) / 100,
+    earnings: Math.round(earnings * 100) / 100,
+    reason
+  })
+})
+
+// ── ADMIN BULK CLOCK-OUT: stop all sessions where worker left geofence ────────
+app.post('/api/sessions/clockout-drifted', async (c) => {
+  const db  = c.env.DB
+  const env = c.env as any
+  const body = await c.req.json().catch(() => ({})) as any
+  const adminNote = body.note?.trim() || 'Worker left job site — stopped by admin'
+
+  await ensureSchema(db)
+
+  // Get all active drifted sessions
+  const drifted = await db.prepare(`
+    SELECT s.*, w.name as worker_name, w.phone as worker_phone, w.hourly_rate
+    FROM sessions s JOIN workers w ON s.worker_id=w.id
+    WHERE s.status='active' AND s.drift_flag=1
+  `).all()
+
+  if (!drifted.results || drifted.results.length === 0)
+    return c.json({ success: true, message: 'No drifted sessions to close', count: 0 })
+
+  const now = new Date()
+  const stopped: any[] = []
+
+  for (const s of drifted.results as any[]) {
+    const clockInMs  = new Date((s as any).clock_in_time).getTime()
+    const hoursWorked = (now.getTime() - clockInMs) / (1000 * 60 * 60)
+    const earnings    = hoursWorked * ((s as any).hourly_rate || 0)
+    const reason      = `${adminNote} (${((s as any).drift_distance_meters / 1000).toFixed(1)}km from site)`
+
+    await db.prepare(`
+      UPDATE sessions SET
+        clock_out_time=?, total_hours=?, earnings=?,
+        status='completed', auto_clockout=1, auto_clockout_reason=?,
+        notes=CASE WHEN notes IS NULL OR notes='' THEN ? ELSE notes||' | '||? END
+      WHERE id=?
+    `).bind(
+      now.toISOString(),
+      Math.round(hoursWorked * 100) / 100,
+      Math.round(earnings * 100) / 100,
+      reason, reason, reason, (s as any).id
+    ).run()
+
+    stopped.push({
+      session_id: (s as any).id,
+      worker_name: (s as any).worker_name,
+      hours: Math.round(hoursWorked * 10) / 10,
+      earnings: Math.round(earnings * 100) / 100
+    })
+  }
+
+  return c.json({
+    success: true,
+    message: `${stopped.length} worker(s) clocked out`,
+    count: stopped.length,
+    sessions: stopped
+  })
+})
+
 // Get current session status for a worker
 app.get('/api/sessions/status/:worker_id', async (c) => {
   const db = c.env.DB
@@ -989,7 +1097,47 @@ app.get('/api/sessions/watchdog', async (c) => {
       }
     }
 
-    // ── 3. AWAY/IDLE FLAG ────────────────────────────────────────────────────
+    // ── 3. GEOFENCE EXIT AUTO-CLOCKOUT ────────────────────────────────────────
+    // If worker has been outside the geofence for geofence_exit_clockout_min minutes,
+    // automatically clock them out (0 = disabled)
+    const exitClockoutMin = parseFloat(settings.geofence_exit_clockout_min || '0')
+    if (exitClockoutMin > 0 && s.drift_flag && !s.auto_clockout && s.drift_detected_at) {
+      const driftMs = nowMs - new Date(s.drift_detected_at).getTime()
+      const driftMinutes = driftMs / (1000 * 60)
+      if (driftMinutes >= exitClockoutMin) {
+        const earnings = hoursWorked * (s.hourly_rate || 0)
+        const dist = s.drift_distance_meters >= 1000
+          ? (s.drift_distance_meters / 1000).toFixed(1) + 'km'
+          : Math.round(s.drift_distance_meters || 0) + 'm'
+        const reason = `Auto clocked out — worker left geofence for ${Math.round(driftMinutes)} min (${dist} from site)`
+        await db.prepare(`
+          UPDATE sessions SET
+            clock_out_time=?, total_hours=?, earnings=?,
+            status='completed', auto_clockout=1, auto_clockout_reason=?
+          WHERE id=?
+        `).bind(now.toISOString(), Math.round(hoursWorked*100)/100, Math.round(earnings*100)/100, reason, s.id).run()
+        item.action = 'auto_clocked_out_drift'
+        item.reason = reason
+        item.hours  = Math.round(hoursWorked*10)/10
+
+        sendOverrideNotification(settings, env, {
+          id: s.id,
+          worker_name: s.worker_name,
+          worker_phone: s.worker_phone,
+          job_location: s.job_location || 'Unknown',
+          job_description: `📍 GEOFENCE AUTO CLOCK-OUT: Worker was ${dist} outside the job site for ${Math.round(driftMinutes)} min. Session automatically closed. Hours recorded: ${item.hours}h. Task: ${s.job_description || 'N/A'}`,
+          distance_meters: s.drift_distance_meters || 0,
+          worker_address: null,
+          worker_lat: null,
+          worker_lng: null
+        }).catch(() => {})
+
+        results.push(item)
+        continue
+      }
+    }
+
+    // ── 4. AWAY/IDLE FLAG ────────────────────────────────────────────────────
     // Check when last ping was received — if too long ago, flag as away
     const lastPing = await db.prepare(
       'SELECT timestamp FROM location_pings WHERE session_id=? ORDER BY timestamp DESC LIMIT 1'
@@ -3444,10 +3592,22 @@ function getAdminHTML(): string {
 
     <!-- Tab: Live -->
     <div id="tab-live" class="tab-content bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
-      <h3 class="font-bold text-gray-700 mb-4 flex items-center gap-2">
-        <span class="w-2 h-2 bg-green-500 rounded-full pulse"></span>
-        Currently Working Workers
-      </h3>
+      <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <h3 class="font-bold text-gray-700 flex items-center gap-2">
+          <span class="w-2 h-2 bg-green-500 rounded-full pulse"></span>
+          Currently Working Workers
+        </h3>
+        <div class="flex items-center gap-2 flex-wrap">
+          <button onclick="showBulkClockoutModal()" id="bulk-clockout-btn"
+            class="hidden bg-orange-100 hover:bg-orange-200 text-orange-700 text-xs font-bold px-3 py-2 rounded-xl transition-colors flex items-center gap-1.5">
+            <i class="fas fa-map-marker-slash"></i>
+            <span id="bulk-clockout-label">Clock Out All — Left Site</span>
+          </button>
+          <button onclick="loadLive()" class="text-gray-400 hover:text-gray-600 text-xs px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">
+            <i class="fas fa-sync-alt mr-1"></i>Refresh
+          </button>
+        </div>
+      </div>
       <div id="live-workers" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <p class="text-gray-400 text-center py-8 col-span-full">No workers currently clocked in</p>
       </div>
@@ -3800,6 +3960,27 @@ function getAdminHTML(): string {
               <button onclick="document.getElementById('s-away-warning-min').value='60'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">60m</button>
             </div>
           </div>
+
+          <!-- Geofence Exit Auto-Clockout -->
+          <div class="bg-orange-50 border border-orange-200 rounded-2xl p-4">
+            <div class="flex items-center gap-2 mb-3">
+              <i class="fas fa-map-marker-slash text-orange-500"></i>
+              <span class="text-sm font-semibold text-gray-700">Geofence Exit Auto-Clockout</span>
+            </div>
+            <p class="text-xs text-gray-500 mb-3">Automatically clock out a worker if they stay outside the job-site geofence for too long. Set to <strong>0</strong> to disable (admin must clock out manually via the Live tab).</p>
+            <label class="text-xs font-medium text-gray-600 block mb-1">Auto clock-out after leaving geofence for</label>
+            <div class="flex items-center gap-2">
+              <input id="s-geofence-exit-min" type="number" min="0" max="480" step="5" value="0"
+                class="flex-1 border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"/>
+              <span class="text-xs text-gray-500">minutes (0 = manual only)</span>
+            </div>
+            <div class="flex gap-1 mt-2 flex-wrap">
+              <button onclick="document.getElementById('s-geofence-exit-min').value='0'"  class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">Off</button>
+              <button onclick="document.getElementById('s-geofence-exit-min').value='15'" class="px-2 py-1 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg">15m</button>
+              <button onclick="document.getElementById('s-geofence-exit-min').value='30'" class="px-2 py-1 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg">30m</button>
+              <button onclick="document.getElementById('s-geofence-exit-min').value='60'" class="px-2 py-1 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg">60m</button>
+            </div>
+          </div>
         </div>
 
         <div class="text-xs text-gray-500 flex items-start gap-2 bg-gray-50 rounded-xl p-3">
@@ -4147,6 +4328,8 @@ function getAdminHTML(): string {
         <i class="fas fa-filter mr-1"></i>Filter Sessions Tab
       </button>
     </div>
+    <!-- Force Clock-Out Action Bar (shown when worker is active) -->
+    <div id="wd-action-bar" class="hidden px-5 py-3 border-b bg-red-50"></div>
     <!-- Sessions list -->
     <div class="px-5 py-4 flex-1">
       <h4 class="text-sm font-semibold text-gray-600 mb-3 flex items-center gap-2">
@@ -4196,6 +4379,74 @@ function getAdminHTML(): string {
     <div id="dm-stats" class="grid grid-cols-3 gap-3 px-5 py-3 bg-gray-50 border-b text-center text-sm"></div>
     <!-- Sessions -->
     <div id="dm-sessions" class="p-5 space-y-3 max-h-[60vh] overflow-y-auto"></div>
+  </div>
+</div>
+
+<!-- ── Admin Clock-Out Confirmation Modal ─────────────────────────────── -->
+<div id="admin-clockout-modal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4" onclick="if(event.target===this)closeAdminClockoutModal()">
+  <div class="absolute inset-0 bg-black bg-opacity-60 backdrop-blur-sm"></div>
+  <div class="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
+    <!-- Header -->
+    <div class="bg-gradient-to-r from-red-500 to-rose-600 px-6 py-5 text-center">
+      <div class="w-14 h-14 bg-white bg-opacity-20 rounded-full flex items-center justify-center mx-auto mb-3">
+        <i class="fas fa-stop-circle text-white text-2xl"></i>
+      </div>
+      <h2 class="text-white text-lg font-bold">Admin Clock-Out</h2>
+      <p id="aco-worker-label" class="text-red-100 text-sm mt-1"></p>
+    </div>
+    <!-- Body -->
+    <div class="p-6 space-y-4">
+      <!-- Session info strip -->
+      <div id="aco-info" class="bg-gray-50 rounded-2xl p-4 text-sm space-y-1.5"></div>
+      <!-- Reason input -->
+      <div>
+        <label class="text-xs font-semibold text-gray-600 block mb-1.5">
+          <i class="fas fa-comment-alt mr-1 text-gray-400"></i>Reason / Note <span class="text-gray-400 font-normal">(optional)</span>
+        </label>
+        <textarea id="aco-note" rows="2" placeholder="e.g. Worker left site, No-show after 2h, End of day..."
+          class="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"></textarea>
+        <!-- Quick reasons -->
+        <div class="flex flex-wrap gap-1.5 mt-2">
+          <button onclick="document.getElementById('aco-note').value='Worker left the job site'" class="text-xs bg-orange-50 text-orange-600 border border-orange-200 px-2 py-1 rounded-lg hover:bg-orange-100">Left site</button>
+          <button onclick="document.getElementById('aco-note').value='Worker forgot to clock out'" class="text-xs bg-yellow-50 text-yellow-600 border border-yellow-200 px-2 py-1 rounded-lg hover:bg-yellow-100">Forgot to clock out</button>
+          <button onclick="document.getElementById('aco-note').value='No GPS signal — admin action'" class="text-xs bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded-lg hover:bg-blue-100">No GPS</button>
+          <button onclick="document.getElementById('aco-note').value='End of work day'" class="text-xs bg-gray-100 text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-200">End of day</button>
+        </div>
+      </div>
+      <!-- Action buttons -->
+      <div class="flex gap-3 pt-1">
+        <button onclick="closeAdminClockoutModal()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 rounded-xl transition-colors">
+          Cancel
+        </button>
+        <button id="aco-confirm-btn" onclick="confirmAdminClockout()" class="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-red-200">
+          <i class="fas fa-stop-circle mr-1.5"></i>Clock Out Now
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Admin Bulk Drift Clock-Out Confirmation ─────────────────────────── -->
+<div id="bulk-clockout-modal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4" onclick="if(event.target===this)closeBulkClockoutModal()">
+  <div class="absolute inset-0 bg-black bg-opacity-60 backdrop-blur-sm"></div>
+  <div class="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
+    <div class="bg-gradient-to-r from-orange-500 to-red-500 px-6 py-5 text-center">
+      <div class="w-14 h-14 bg-white bg-opacity-20 rounded-full flex items-center justify-center mx-auto mb-3">
+        <i class="fas fa-map-marker-slash text-white text-2xl"></i>
+      </div>
+      <h2 class="text-white text-lg font-bold">Clock Out All — Left Site</h2>
+      <p id="bco-label" class="text-orange-100 text-sm mt-1"></p>
+    </div>
+    <div class="p-6 space-y-4">
+      <div id="bco-list" class="bg-orange-50 rounded-2xl p-4 max-h-40 overflow-y-auto space-y-2 text-sm"></div>
+      <p class="text-xs text-gray-500 text-center">These workers are outside the geofence. Their sessions will be stopped now and time recorded up to this moment.</p>
+      <div class="flex gap-3">
+        <button onclick="closeBulkClockoutModal()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 rounded-xl">Cancel</button>
+        <button id="bco-confirm-btn" onclick="confirmBulkClockout()" class="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-bold py-3 rounded-xl shadow-lg shadow-orange-200">
+          <i class="fas fa-stop-circle mr-1.5"></i>Stop All
+        </button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -4307,6 +4558,24 @@ async function openWorkerDrawer(workerId) {
           : '<span class="bg-red-100 text-red-600 text-xs px-2 py-0.5 rounded-full">Disabled</span>'
       document.getElementById('wd-status-badge').innerHTML = statusBadge
       document.getElementById('wd-filter-sessions-btn').dataset.workerId = workerId
+
+      // If worker is currently clocked in, show Force Clock-Out button
+      const wdActionBar = document.getElementById('wd-action-bar')
+      if (wdActionBar) {
+        const activeSession = sessions.find(s => s.status === 'active')
+        if (worker.currently_clocked_in > 0 && activeSession) {
+          wdActionBar.innerHTML = \`<button
+            onclick="closeWorkerDrawer();openAdminClockoutModal(\${activeSession.id})"
+            class="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-2xl text-sm transition-all shadow-lg shadow-red-200 active:scale-95">
+            <i class="fas fa-stop-circle"></i>
+            Force Clock-Out — \${worker.name}
+          </button>\`
+          wdActionBar.classList.remove('hidden')
+        } else {
+          wdActionBar.classList.add('hidden')
+          wdActionBar.innerHTML = ''
+        }
+      }
     }
 
     if (sessions.length === 0) {
@@ -4325,7 +4594,7 @@ async function openWorkerDrawer(workerId) {
       if (s.away_flag)     flags.push('<span class="bg-yellow-100 text-yellow-700 text-[10px] px-1.5 py-0.5 rounded-full">⏰ Away</span>')
       if (s.auto_clockout) flags.push('<span class="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded-full">🔴 Auto Out</span>')
 
-      return \`<div class="bg-gray-50 border border-gray-100 rounded-xl p-3 hover:border-indigo-300 hover:shadow-sm transition-all cursor-pointer" onclick="closeWorkerDrawer();openSessionModal(\${JSON.stringify(s).replace(/"/g,'&quot;')})">
+      return \`<div class="bg-gray-50 border border-gray-100 rounded-xl p-3 hover:border-indigo-300 hover:shadow-sm transition-all cursor-pointer" onclick="closeWorkerDrawer();openSessionById(\${s.id})">
         <div class="flex items-start justify-between gap-2">
           <div class="flex-1 min-w-0">
             <p class="text-xs font-semibold text-gray-700 truncate">\${s.job_location || 'No location'}</p>
@@ -4464,13 +4733,14 @@ function openSessionModal(s) {
     </div>\` : ''}
 
     <!-- Action row -->
-    <div class="flex gap-2 pt-2">
+    <div class="flex gap-2 pt-2 flex-wrap">
       <button onclick="closeSessionModal();openWorkerDrawer(\${s.worker_id})" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-medium py-2.5 rounded-xl text-sm transition-colors">
         <i class="fas fa-user mr-1"></i>View Worker
       </button>
       <button onclick="closeSessionModal();document.getElementById('filter-date').value='\${new Date(s.clock_in_time).toISOString().split('T')[0]}';document.getElementById('filter-worker').value=\${s.worker_id};showTab('sessions');setTimeout(loadSessions,100)" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2.5 rounded-xl text-sm transition-colors">
         <i class="fas fa-list mr-1"></i>Filter Sessions
       </button>
+      \${isActive ? \`<button onclick="closeSessionModal();openAdminClockoutModal(\${s.id})" class="w-full bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2.5 rounded-xl text-sm transition-colors border border-red-200"><i class="fas fa-stop-circle mr-1.5"></i>Admin Clock-Out</button>\` : ''}
     </div>
   \`
 }
@@ -4478,6 +4748,161 @@ function openSessionModal(s) {
 function closeSessionModal() {
   document.getElementById('session-modal').classList.add('hidden')
   document.body.style.overflow = ''
+}
+
+// ── Admin Clock-Out Modal ─────────────────────────────────────────────────────
+let pendingClockoutSessionId = null
+
+function openAdminClockoutModal(sessionId) {
+  pendingClockoutSessionId = sessionId
+  const s = sessionStore[sessionId]
+
+  // Pre-fill info strip
+  const infoEl = document.getElementById('aco-info')
+  const labelEl = document.getElementById('aco-worker-label')
+  document.getElementById('aco-note').value = ''
+
+  if (s) {
+    const start = new Date(s.clock_in_time)
+    const hoursWorked = ((new Date() - start) / 3600000).toFixed(1)
+    const est = (parseFloat(hoursWorked) * (s.hourly_rate || 0)).toFixed(2)
+    labelEl.textContent = s.worker_name || 'Worker'
+    infoEl.innerHTML = \`
+      <div class="flex justify-between text-sm mb-1">
+        <span class="text-gray-500"><i class="fas fa-user mr-1 text-gray-400"></i>Worker</span>
+        <span class="font-semibold text-gray-800">\${s.worker_name || '–'}</span>
+      </div>
+      <div class="flex justify-between text-sm mb-1">
+        <span class="text-gray-500"><i class="fas fa-map-marker-alt mr-1 text-red-400"></i>Job Site</span>
+        <span class="font-medium text-gray-700 text-right max-w-[55%] truncate">\${s.job_location || 'Unknown'}</span>
+      </div>
+      <div class="flex justify-between text-sm mb-1">
+        <span class="text-gray-500"><i class="fas fa-sign-in-alt mr-1 text-green-500"></i>Clocked In</span>
+        <span class="font-medium text-gray-700">\${start.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>
+      </div>
+      <div class="flex justify-between text-sm mb-1">
+        <span class="text-gray-500"><i class="fas fa-clock mr-1 text-yellow-500"></i>Hours So Far</span>
+        <span class="font-bold text-yellow-700">\${hoursWorked}h</span>
+      </div>
+      <div class="flex justify-between text-sm">
+        <span class="text-gray-500"><i class="fas fa-dollar-sign mr-1 text-green-500"></i>Est. Earnings</span>
+        <span class="font-bold text-green-700">$\${est}</span>
+      </div>
+      \${s.drift_flag ? '<div class="mt-2 text-xs text-orange-600 bg-orange-50 rounded-lg px-2 py-1"><i class="fas fa-exclamation-triangle mr-1"></i>Worker is outside the geofence</div>' : ''}
+      \${s.away_flag  ? '<div class="mt-2 text-xs text-yellow-600 bg-yellow-50 rounded-lg px-2 py-1"><i class="fas fa-wifi mr-1"></i>Worker GPS has gone silent</div>' : ''}
+    \`
+  } else {
+    labelEl.textContent = 'Session #' + sessionId
+    infoEl.innerHTML = '<p class="text-sm text-gray-500">Session ID: ' + sessionId + '</p>'
+  }
+
+  document.getElementById('admin-clockout-modal').classList.remove('hidden')
+  document.body.style.overflow = 'hidden'
+}
+
+function closeAdminClockoutModal() {
+  document.getElementById('admin-clockout-modal').classList.add('hidden')
+  document.body.style.overflow = ''
+  pendingClockoutSessionId = null
+}
+
+async function confirmAdminClockout() {
+  if (!pendingClockoutSessionId) return
+  const btn = document.getElementById('aco-confirm-btn')
+  const note = document.getElementById('aco-note').value.trim() || 'Admin clock-out'
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1.5"></i>Stopping...'
+
+  try {
+    const res = await fetch('/api/sessions/' + pendingClockoutSessionId + '/admin-clockout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note })
+    })
+    const data = await res.json()
+
+    if (data.success) {
+      closeAdminClockoutModal()
+      showAdminToast(\`✅ \${data.message} · \${data.total_hours}h · $\${data.earnings.toFixed(2)}\`, 'success')
+      // Refresh live, sessions, and stats
+      await Promise.all([loadLive(), loadSessions(), loadStats()])
+    } else {
+      showAdminToast(data.error || 'Clock-out failed', 'error')
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-stop-circle mr-1.5"></i>Clock Out Now'
+    }
+  } catch(e) {
+    showAdminToast('Connection error', 'error')
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-stop-circle mr-1.5"></i>Clock Out Now'
+  }
+}
+
+// ── Bulk Drift Clock-Out Modal ────────────────────────────────────────────────
+let pendingDriftedSessions = []
+
+async function showBulkClockoutModal() {
+  // Fetch current active sessions to get latest drifted list
+  const res = await fetch('/api/sessions/active')
+  const data = await res.json()
+  pendingDriftedSessions = (data.sessions || []).filter(s => s.drift_flag && !s.auto_clockout)
+
+  if (pendingDriftedSessions.length === 0) {
+    showAdminToast('No workers currently outside the geofence', 'info')
+    return
+  }
+
+  document.getElementById('bco-label').textContent =
+    pendingDriftedSessions.length + ' worker' + (pendingDriftedSessions.length > 1 ? 's' : '') + ' outside the geofence'
+
+  document.getElementById('bco-list').innerHTML = pendingDriftedSessions.map(s => {
+    const dist = s.drift_distance_meters >= 1000
+      ? (s.drift_distance_meters/1000).toFixed(1) + 'km'
+      : Math.round(s.drift_distance_meters) + 'm'
+    const hrs = ((new Date() - new Date(s.clock_in_time)) / 3600000).toFixed(1)
+    return \`<div class="flex items-center justify-between gap-2">
+      <span class="font-medium text-gray-800">\${s.worker_name}</span>
+      <span class="text-orange-600 text-xs font-bold">\${dist} away</span>
+      <span class="text-gray-400 text-xs">\${hrs}h</span>
+    </div>\`
+  }).join('')
+
+  document.getElementById('bulk-clockout-modal').classList.remove('hidden')
+  document.body.style.overflow = 'hidden'
+}
+
+function closeBulkClockoutModal() {
+  document.getElementById('bulk-clockout-modal').classList.add('hidden')
+  document.body.style.overflow = ''
+}
+
+async function confirmBulkClockout() {
+  const btn = document.getElementById('bco-confirm-btn')
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1.5"></i>Stopping...'
+
+  try {
+    const res = await fetch('/api/sessions/clockout-drifted', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: 'Worker left job site — stopped by admin' })
+    })
+    const data = await res.json()
+
+    if (data.success) {
+      closeBulkClockoutModal()
+      showAdminToast(\`✅ \${data.message} (\${data.count} session\${data.count !== 1 ? 's' : ''} closed)\`, 'success')
+      await Promise.all([loadLive(), loadSessions(), loadStats()])
+    } else {
+      showAdminToast('Bulk clock-out failed', 'error')
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-stop-circle mr-1.5"></i>Stop All'
+    }
+  } catch(e) {
+    showAdminToast('Connection error', 'error')
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-stop-circle mr-1.5"></i>Stop All'
+  }
 }
 
 // ── Day Detail Modal ──────────────────────────────────────────────────────────
@@ -4561,13 +4986,27 @@ async function loadLive() {
     const res = await fetch('/api/sessions/active')
     const data = await res.json()
     const el = document.getElementById('live-workers')
+    const bulkBtn = document.getElementById('bulk-clockout-btn')
     
     if (!data.sessions || data.sessions.length === 0) {
       el.innerHTML = '<p class="text-gray-400 text-center py-8 col-span-full"><i class="fas fa-moon mr-2"></i>No workers currently clocked in</p>'
+      if (bulkBtn) bulkBtn.classList.add('hidden')
       return
     }
     // Populate sessionStore for modal lookups
     data.sessions.forEach(s => { if (s.id) sessionStore[s.id] = s })
+
+    // Show/hide bulk drift clock-out button
+    const driftedCount = data.sessions.filter(s => s.drift_flag && !s.auto_clockout).length
+    if (bulkBtn) {
+      if (driftedCount > 0) {
+        bulkBtn.classList.remove('hidden')
+        document.getElementById('bulk-clockout-label').textContent =
+          \`Clock Out \${driftedCount} — Left Site\`
+      } else {
+        bulkBtn.classList.add('hidden')
+      }
+    }
 
     el.innerHTML = data.sessions.map(s => {
       const start = new Date(s.clock_in_time)
@@ -4575,6 +5014,7 @@ async function loadLive() {
       const hoursWorked = ((now - start) / 3600000).toFixed(1)
       const estimatedEarnings = (parseFloat(hoursWorked) * (s.hourly_rate || 0)).toFixed(2)
       const hasLocation = s.clock_in_lat && s.clock_in_lng
+      const isActive = !s.auto_clockout
 
       // Guardrail badges
       const badges = []
@@ -4598,8 +5038,16 @@ async function loadLive() {
       const autoReason = s.auto_clockout && s.auto_clockout_reason
         ? \`<p class="text-xs text-red-600 mt-1 italic"><i class="fas fa-info-circle mr-1"></i>\${s.auto_clockout_reason}</p>\`
         : ''
+
+      // Admin clock-out button — only for active sessions
+      const adminBtn = isActive
+        ? \`<button onclick="event.stopPropagation();openAdminClockoutModal(\${s.id})"
+            class="w-full mt-3 flex items-center justify-center gap-1.5 bg-red-50 hover:bg-red-100 text-red-600 font-semibold text-xs py-2 rounded-xl border border-red-200 hover:border-red-400 transition-all">
+            <i class="fas fa-stop-circle"></i> Admin Clock-Out
+          </button>\`
+        : ''
       
-      return \`<div class="border \${s.drift_flag ? 'border-orange-300' : s.away_flag ? 'border-yellow-300' : 'border-gray-100'} rounded-xl p-4 hover:shadow-md transition-shadow cursor-pointer hover:border-indigo-300 \${s.auto_clockout ? \'opacity-60\' : \'\'}" onclick="openWorkerDrawer(\${s.worker_id})">
+      return \`<div class="border \${s.drift_flag ? 'border-orange-300' : s.away_flag ? 'border-yellow-300' : 'border-gray-100'} rounded-xl p-4 hover:shadow-md transition-shadow cursor-pointer hover:border-indigo-300 \${s.auto_clockout ? 'opacity-70' : ''}" onclick="openWorkerDrawer(\${s.worker_id})">
         <div class="flex items-start justify-between mb-2">
           <div class="flex-1 min-w-0">
             <h4 class="font-bold text-gray-800">\${s.worker_name}</h4>
@@ -4609,7 +5057,7 @@ async function loadLive() {
           \${statusBadge}
         </div>
         \${badges.length ? \`<div class="flex flex-wrap gap-1 mb-2">\${badges.join('')}</div>\` : ''}
-        <div class="grid grid-cols-2 gap-2 mb-3">
+        <div class="grid grid-cols-2 gap-2 mb-2">
           <div class="bg-blue-50 rounded-lg p-2 text-center">
             <p class="text-xs text-blue-500">Clock In</p>
             <p class="text-sm font-bold text-blue-700">\${start.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</p>
@@ -4619,12 +5067,13 @@ async function loadLive() {
             <p class="text-sm font-bold text-yellow-700">\${hoursWorked}h</p>
           </div>
         </div>
-        <div class="flex items-center justify-between text-xs">
+        <div class="flex items-center justify-between text-xs mb-1">
           <span class="text-gray-500">
             \${hasLocation ? \`<i class="fas fa-map-marker-alt text-red-500 mr-1"></i>GPS tracked\` : '<i class="fas fa-map-marker-slash text-gray-400 mr-1"></i>No GPS'}
           </span>
           <span class="font-bold text-purple-600">~$\${estimatedEarnings}</span>
         </div>
+        \${adminBtn}
       </div>\`
     }).join('')
   } catch(e) { console.error(e) }
@@ -5245,6 +5694,8 @@ async function loadSettings() {
     if (maxShiftEl) maxShiftEl.value = currentSettings.max_shift_hours || '10'
     const awayWarnEl = document.getElementById('s-away-warning-min')
     if (awayWarnEl) awayWarnEl.value = currentSettings.away_warning_min || '30'
+    const geofenceExitEl = document.getElementById('s-geofence-exit-min')
+    if (geofenceExitEl) geofenceExitEl.value = currentSettings.geofence_exit_clockout_min || '0'
 
     // Notification settings
     const notifyEmailEl = document.getElementById('s-notify-email')
@@ -5355,6 +5806,7 @@ async function saveSettings() {
     auto_clockout_enabled: document.getElementById('s-auto-clockout')?.checked ? '1' : '0',
     max_shift_hours: document.getElementById('s-max-shift-hours')?.value || '10',
     away_warning_min: document.getElementById('s-away-warning-min')?.value || '30',
+    geofence_exit_clockout_min: document.getElementById('s-geofence-exit-min')?.value || '0',
     notify_email: document.getElementById('s-notify-email')?.checked ? '1' : '0',
     notify_sms: document.getElementById('s-notify-sms')?.checked ? '1' : '0',
     admin_phone: document.getElementById('s-admin-phone')?.value?.trim() || '',
