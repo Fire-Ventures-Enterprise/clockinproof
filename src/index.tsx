@@ -409,17 +409,20 @@ async function sendOverrideNotification(
   }
 
   // ── SMS via Twilio ──────────────────────────────────────────────────────────
-  // Free alternative: Twilio trial gives $15.50 credit (~1000 SMS messages)
-  // Sign up at twilio.com → get Account SID, Auth Token, and a free phone number
-  if (notifySms && adminPhone && env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM_NUMBER) {
+  // Credentials: prefer Cloudflare env secrets, fall back to DB settings
+  const twilioSid   = (env.TWILIO_ACCOUNT_SID   || settings.twilio_account_sid  || '').trim()
+  const twilioToken = (env.TWILIO_AUTH_TOKEN     || settings.twilio_auth_token   || '').trim()
+  const twilioFrom  = (env.TWILIO_FROM_NUMBER    || settings.twilio_from_number  || '').trim()
+
+  if (notifySms && adminPhone && twilioSid && twilioToken && twilioFrom) {
     const smsBody =
       `🚨 ${appName} ALERT\n` +
       `Worker ${req.worker_name} tried to clock in but is ${distTxt} from "${req.job_location}".\n` +
       `Task: ${(req.job_description || '').substring(0, 60)}\n` +
       `Tap to approve/deny: ${approveLink}`
 
-    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`
-    const twilioAuth = btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)
+    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`
+    const twilioAuth = btoa(`${twilioSid}:${twilioToken}`)
 
     try {
       const smsRes = await fetch(twilioUrl, {
@@ -429,7 +432,7 @@ async function sendOverrideNotification(
           'Content-Type': 'application/x-www-form-urlencoded'
         },
         body: new URLSearchParams({
-          From: env.TWILIO_FROM_NUMBER,
+          From: twilioFrom,
           To: adminPhone.startsWith('+') ? adminPhone : `+${adminPhone}`,
           Body: smsBody
         }).toString()
