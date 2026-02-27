@@ -1809,7 +1809,7 @@ async function loadPayrollTab() {
         <div class="mt-2 flex gap-3 text-[11px] text-gray-400">
           <span><i class="fas fa-clock mr-1"></i>${w.hours.toFixed(1)} hrs</span>
           <span><i class="fas fa-calendar mr-1"></i>${w.sessions.length} sessions</span>
-          <span class="ml-auto text-indigo-600 font-medium">${((w.earnings/(s.total_earnings||1))*100).toFixed(1)}% of payroll</span>
+          <span class="ml-auto text-indigo-600 font-medium">${((w.earnings/(stats.total_earnings||1))*100).toFixed(1)}% of payroll</span>
         </div>
       </div>
     `).join('')
