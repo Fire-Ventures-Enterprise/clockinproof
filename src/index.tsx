@@ -1856,14 +1856,28 @@ function getWorkerHTML(): string {
         <h3 class="font-semibold text-gray-700 flex items-center gap-2">
           <i class="fas fa-map-marker-alt text-red-500"></i> Current Location
         </h3>
-        <button onclick="getLocation()" class="text-blue-600 text-sm font-medium hover:text-blue-700">
-          <i class="fas fa-sync-alt mr-1"></i>Refresh
-        </button>
+        <div class="flex items-center gap-2">
+          <button id="toggle-map-btn" onclick="toggleMap()" class="hidden text-blue-600 text-xs font-medium hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg border border-blue-100 transition-colors">
+            <i class="fas fa-map mr-1"></i>View Map
+          </button>
+          <button onclick="getLocation()" class="text-gray-400 text-sm hover:text-gray-600 p-1">
+            <i class="fas fa-sync-alt"></i>
+          </button>
+        </div>
       </div>
-      <div id="location-status" class="text-sm text-gray-500 mb-3">
+      <div id="location-status" class="text-sm text-gray-500">
         <i class="fas fa-circle-notch spinner mr-1"></i> Getting location...
       </div>
-      <div id="map" class="hidden"></div>
+      <!-- Collapsible map — hidden by default, toggled by View Map button -->
+      <div id="map-wrapper" class="hidden mt-3">
+        <div class="flex items-center justify-between mb-1.5">
+          <p class="text-xs text-gray-400 font-medium">Your current position</p>
+          <button onclick="closeMap()" class="text-gray-400 hover:text-gray-600 text-xs flex items-center gap-1 bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded-lg transition-colors">
+            <i class="fas fa-times"></i> Close map
+          </button>
+        </div>
+        <div id="map" class="rounded-xl overflow-hidden" style="height:200px"></div>
+      </div>
     </div>
 
     <!-- Clock In/Out Button -->
@@ -2576,8 +2590,20 @@ function getLocation() {
 }
 
 function showMap(lat, lng) {
+  // Store coords for lazy map render — don't auto-open the map
+  // Just reveal the "View Map" button so the user can open it on demand
+  const toggleBtn = document.getElementById('toggle-map-btn')
+  if (toggleBtn) toggleBtn.classList.remove('hidden')
+  // If map is already open, refresh it in place
+  const wrapper = document.getElementById('map-wrapper')
+  if (wrapper && !wrapper.classList.contains('hidden')) {
+    renderMap(lat, lng)
+  }
+}
+
+function renderMap(lat, lng) {
   const mapEl = document.getElementById('map')
-  mapEl.classList.remove('hidden')
+  if (!mapEl) return
   if (!map) {
     map = L.map('map', { zoomControl: true, attributionControl: false })
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
@@ -2585,6 +2611,28 @@ function showMap(lat, lng) {
   map.setView([lat, lng], 16)
   if (marker) marker.remove()
   marker = L.circleMarker([lat, lng], { color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.8, radius: 10 }).addTo(map)
+  // Force Leaflet to recalculate size after reveal
+  setTimeout(() => { if (map) map.invalidateSize() }, 50)
+}
+
+function toggleMap() {
+  const wrapper = document.getElementById('map-wrapper')
+  const btn = document.getElementById('toggle-map-btn')
+  if (!wrapper) return
+  if (wrapper.classList.contains('hidden')) {
+    wrapper.classList.remove('hidden')
+    btn.innerHTML = '<i class="fas fa-map mr-1"></i>Hide Map'
+    if (currentLat && currentLng) renderMap(currentLat, currentLng)
+  } else {
+    closeMap()
+  }
+}
+
+function closeMap() {
+  const wrapper = document.getElementById('map-wrapper')
+  const btn = document.getElementById('toggle-map-btn')
+  if (wrapper) wrapper.classList.add('hidden')
+  if (btn) btn.innerHTML = '<i class="fas fa-map mr-1"></i>View Map'
 }
 
 function startPingInterval() {
