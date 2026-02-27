@@ -3371,41 +3371,45 @@ function getAdminHTML(): string {
     </div>
 
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-      <div class="bg-white rounded-2xl shadow-sm p-5">
+      <div onclick="showTab('workers')" class="bg-white rounded-2xl shadow-sm p-5 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-blue-300 transition-all group">
         <div class="flex items-center gap-3 mb-2">
-          <div class="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
+          <div class="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center group-hover:bg-blue-200 transition-colors">
             <i class="fas fa-users text-blue-600"></i>
           </div>
           <span class="text-gray-500 text-sm">Total Workers</span>
         </div>
         <p class="text-3xl font-bold text-gray-800" id="stat-total-workers">–</p>
+        <p class="text-xs text-blue-400 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">View all workers →</p>
       </div>
-      <div class="bg-white rounded-2xl shadow-sm p-5">
+      <div onclick="showTab('live')" class="bg-white rounded-2xl shadow-sm p-5 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-green-300 transition-all group">
         <div class="flex items-center gap-3 mb-2">
-          <div class="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center">
+          <div class="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center group-hover:bg-green-200 transition-colors">
             <i class="fas fa-user-clock text-green-600"></i>
           </div>
           <span class="text-gray-500 text-sm">Working Now</span>
         </div>
         <p class="text-3xl font-bold text-green-600" id="stat-working-now">–</p>
+        <p class="text-xs text-green-400 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">View live workers →</p>
       </div>
-      <div class="bg-white rounded-2xl shadow-sm p-5">
+      <div onclick="showTab('sessions')" class="bg-white rounded-2xl shadow-sm p-5 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-yellow-300 transition-all group">
         <div class="flex items-center gap-3 mb-2">
-          <div class="w-10 h-10 bg-yellow-100 rounded-xl flex items-center justify-center">
+          <div class="w-10 h-10 bg-yellow-100 rounded-xl flex items-center justify-center group-hover:bg-yellow-200 transition-colors">
             <i class="fas fa-clock text-yellow-600"></i>
           </div>
           <span class="text-gray-500 text-sm">Total Hours</span>
         </div>
         <p class="text-3xl font-bold text-gray-800" id="stat-total-hours">–</p>
+        <p class="text-xs text-yellow-500 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">View all sessions →</p>
       </div>
-      <div class="bg-white rounded-2xl shadow-sm p-5">
+      <div onclick="showTab('export')" class="bg-white rounded-2xl shadow-sm p-5 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-purple-300 transition-all group">
         <div class="flex items-center gap-3 mb-2">
-          <div class="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center">
+          <div class="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center group-hover:bg-purple-200 transition-colors">
             <i class="fas fa-dollar-sign text-purple-600"></i>
           </div>
           <span class="text-gray-500 text-sm">Total Payroll</span>
         </div>
         <p class="text-3xl font-bold text-gray-800" id="stat-total-payroll">–</p>
+        <p class="text-xs text-purple-400 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">Export payroll report →</p>
       </div>
     </div>
 
@@ -4105,10 +4109,101 @@ function getAdminHTML(): string {
 <!-- Toast -->
 <div id="admin-toast" class="hidden fixed bottom-6 right-6 px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium text-white"></div>
 
+<!-- ── Worker Detail Drawer ─────────────────────────────────────────── -->
+<div id="worker-drawer" class="hidden fixed inset-0 z-50 flex justify-end" onclick="if(event.target===this)closeWorkerDrawer()">
+  <div class="absolute inset-0 bg-black bg-opacity-40 backdrop-blur-sm"></div>
+  <div class="relative w-full max-w-md bg-white h-full overflow-y-auto shadow-2xl flex flex-col">
+    <!-- Header -->
+    <div class="sticky top-0 bg-white border-b px-5 py-4 flex items-center justify-between z-10">
+      <div>
+        <h2 id="wd-name" class="text-lg font-bold text-gray-800"></h2>
+        <p id="wd-phone" class="text-sm text-gray-500"></p>
+      </div>
+      <button onclick="closeWorkerDrawer()" class="w-9 h-9 flex items-center justify-center rounded-xl hover:bg-gray-100 text-gray-400 hover:text-gray-700">
+        <i class="fas fa-times text-lg"></i>
+      </button>
+    </div>
+    <!-- Stats strip -->
+    <div class="grid grid-cols-3 gap-3 px-5 py-4 bg-gray-50 border-b">
+      <div class="text-center">
+        <p class="text-xl font-bold text-indigo-600" id="wd-total-sessions">–</p>
+        <p class="text-xs text-gray-500 mt-0.5">Sessions</p>
+      </div>
+      <div class="text-center">
+        <p class="text-xl font-bold text-yellow-600" id="wd-total-hours">–</p>
+        <p class="text-xs text-gray-500 mt-0.5">Total Hours</p>
+      </div>
+      <div class="text-center">
+        <p class="text-xl font-bold text-green-600" id="wd-total-earned">–</p>
+        <p class="text-xs text-gray-500 mt-0.5">Total Earned</p>
+      </div>
+    </div>
+    <!-- Info row -->
+    <div class="px-5 py-3 border-b flex items-center gap-4 text-sm flex-wrap">
+      <span id="wd-rate" class="text-green-600 font-bold"></span>
+      <span id="wd-role" class="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-xs"></span>
+      <span id="wd-status-badge"></span>
+      <button id="wd-filter-sessions-btn" onclick="filterSessionsByWorker()" class="ml-auto text-xs text-indigo-600 hover:text-indigo-800 font-medium">
+        <i class="fas fa-filter mr-1"></i>Filter Sessions Tab
+      </button>
+    </div>
+    <!-- Sessions list -->
+    <div class="px-5 py-4 flex-1">
+      <h4 class="text-sm font-semibold text-gray-600 mb-3 flex items-center gap-2">
+        <i class="fas fa-history text-gray-400"></i> Recent Sessions
+      </h4>
+      <div id="wd-sessions" class="space-y-3">
+        <p class="text-gray-400 text-sm text-center py-6"><i class="fas fa-spinner fa-spin mr-2"></i>Loading...</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Session Detail Modal ────────────────────────────────────────── -->
+<div id="session-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" onclick="if(event.target===this)closeSessionModal()">
+  <div class="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm"></div>
+  <div class="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden">
+    <!-- Header -->
+    <div class="bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-5 flex items-start justify-between">
+      <div>
+        <h2 id="sm-worker-name" class="text-white text-lg font-bold"></h2>
+        <p id="sm-date" class="text-indigo-200 text-sm mt-0.5"></p>
+      </div>
+      <button onclick="closeSessionModal()" class="text-white opacity-70 hover:opacity-100 mt-0.5">
+        <i class="fas fa-times text-xl"></i>
+      </button>
+    </div>
+    <!-- Body -->
+    <div id="sm-body" class="p-6 space-y-4 max-h-[70vh] overflow-y-auto"></div>
+  </div>
+</div>
+
+<!-- ── Day Detail Modal ────────────────────────────────────────────── -->
+<div id="day-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" onclick="if(event.target===this)closeDayModal()">
+  <div class="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm"></div>
+  <div class="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden">
+    <!-- Header -->
+    <div class="bg-gradient-to-r from-emerald-500 to-teal-600 px-6 py-5 flex items-start justify-between">
+      <div>
+        <h2 id="dm-title" class="text-white text-lg font-bold"></h2>
+        <p id="dm-sub" class="text-emerald-100 text-sm mt-0.5"></p>
+      </div>
+      <button onclick="closeDayModal()" class="text-white opacity-70 hover:opacity-100 mt-0.5">
+        <i class="fas fa-times text-xl"></i>
+      </button>
+    </div>
+    <!-- Stats strip -->
+    <div id="dm-stats" class="grid grid-cols-3 gap-3 px-5 py-3 bg-gray-50 border-b text-center text-sm"></div>
+    <!-- Sessions -->
+    <div id="dm-sessions" class="p-5 space-y-3 max-h-[60vh] overflow-y-auto"></div>
+  </div>
+</div>
+
 <script>
 let adminMap = null
 let currentPeriod = 'today'
 let allSessionsData = []
+let sessionStore = {}  // id → session object for modal lookup
 
 // ── Admin Login ───────────────────────────────────────────────────────────────
 async function adminLogin() {
@@ -4175,6 +4270,292 @@ async function loadStats() {
   } catch(e) { console.error(e) }
 }
 
+// ── Worker Detail Drawer ──────────────────────────────────────────────────────
+async function openWorkerDrawer(workerId) {
+  const drawer = document.getElementById('worker-drawer')
+  drawer.classList.remove('hidden')
+  document.body.style.overflow = 'hidden'
+
+  // Reset
+  document.getElementById('wd-sessions').innerHTML = '<p class="text-gray-400 text-sm text-center py-6"><i class="fas fa-spinner fa-spin mr-2"></i>Loading...</p>'
+
+  try {
+    const [wRes, sRes] = await Promise.all([
+      fetch('/api/workers'),
+      fetch('/api/sessions/worker/' + workerId + '?limit=50')
+    ])
+    const wData = await wRes.json()
+    const sData = await sRes.json()
+
+    const worker = (wData.workers || []).find(w => w.id === workerId)
+    const sessions = sData.sessions || []
+
+    if (worker) {
+      document.getElementById('wd-name').textContent = worker.name
+      document.getElementById('wd-phone').textContent = worker.phone
+      document.getElementById('wd-rate').textContent = '$' + (worker.hourly_rate||0).toFixed(2) + '/hr'
+      document.getElementById('wd-role').textContent = worker.role || 'worker'
+      document.getElementById('wd-total-sessions').textContent = sessions.length
+      const totalH = sessions.reduce((s, x) => s + (x.total_hours || 0), 0)
+      const totalE = sessions.reduce((s, x) => s + (x.earnings || 0), 0)
+      document.getElementById('wd-total-hours').textContent = totalH.toFixed(1) + 'h'
+      document.getElementById('wd-total-earned').textContent = '$' + totalE.toFixed(2)
+      const statusBadge = worker.currently_clocked_in > 0
+        ? '<span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full pulse font-medium">● Working</span>'
+        : worker.active
+          ? '<span class="bg-gray-100 text-gray-600 text-xs px-2 py-0.5 rounded-full">Inactive</span>'
+          : '<span class="bg-red-100 text-red-600 text-xs px-2 py-0.5 rounded-full">Disabled</span>'
+      document.getElementById('wd-status-badge').innerHTML = statusBadge
+      document.getElementById('wd-filter-sessions-btn').dataset.workerId = workerId
+    }
+
+    if (sessions.length === 0) {
+      document.getElementById('wd-sessions').innerHTML = '<p class="text-gray-400 text-sm text-center py-6">No sessions yet</p>'
+      return
+    }
+    // Populate sessionStore
+    sessions.forEach(s => { if (s.id) sessionStore[s.id] = s })
+
+    document.getElementById('wd-sessions').innerHTML = sessions.map(s => {
+      const cin  = new Date(s.clock_in_time).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
+      const cout = s.clock_out_time ? new Date(s.clock_out_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : null
+      const isActive = s.status === 'active'
+      const flags = []
+      if (s.drift_flag)    flags.push('<span class="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded-full">⚠ Left Site</span>')
+      if (s.away_flag)     flags.push('<span class="bg-yellow-100 text-yellow-700 text-[10px] px-1.5 py-0.5 rounded-full">⏰ Away</span>')
+      if (s.auto_clockout) flags.push('<span class="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded-full">🔴 Auto Out</span>')
+
+      return \`<div class="bg-gray-50 border border-gray-100 rounded-xl p-3 hover:border-indigo-300 hover:shadow-sm transition-all cursor-pointer" onclick="closeWorkerDrawer();openSessionModal(\${JSON.stringify(s).replace(/"/g,'&quot;')})">
+        <div class="flex items-start justify-between gap-2">
+          <div class="flex-1 min-w-0">
+            <p class="text-xs font-semibold text-gray-700 truncate">\${s.job_location || 'No location'}</p>
+            <p class="text-[11px] text-gray-400 mt-0.5">\${cin}\${cout ? ' → ' + cout : isActive ? ' (Active)' : ''}</p>
+            \${flags.length ? \`<div class="flex gap-1 mt-1 flex-wrap">\${flags.join('')}</div>\` : ''}
+          </div>
+          <div class="text-right flex-shrink-0">
+            \${isActive
+              ? \`<span class="text-green-600 text-xs font-medium pulse">LIVE</span>\`
+              : \`<p class="text-sm font-bold text-gray-800">\${(s.total_hours||0).toFixed(1)}h</p>
+                 <p class="text-xs font-bold text-green-600">$\${(s.earnings||0).toFixed(2)}</p>\`
+            }
+          </div>
+        </div>
+      </div>\`
+    }).join('')
+
+  } catch(e) {
+    document.getElementById('wd-sessions').innerHTML = '<p class="text-red-400 text-sm text-center py-6">Error loading data</p>'
+    console.error(e)
+  }
+}
+
+function closeWorkerDrawer() {
+  document.getElementById('worker-drawer').classList.add('hidden')
+  document.body.style.overflow = ''
+}
+
+function openSessionById(id) {
+  const s = sessionStore[id]
+  if (!s) { console.warn('Session not found in store:', id); return }
+  openSessionModal(s)
+}
+
+function filterSessionsByWorker() {
+  const workerId = document.getElementById('wd-filter-sessions-btn').dataset.workerId
+  closeWorkerDrawer()
+  showTab('sessions')
+  setTimeout(() => {
+    const sel = document.getElementById('filter-worker')
+    if (sel) { sel.value = workerId; loadSessions() }
+  }, 100)
+}
+
+// ── Session Detail Modal ──────────────────────────────────────────────────────
+function openSessionModal(s) {
+  // s can be object or JSON string (from onclick attribute)
+  if (typeof s === 'string') {
+    try { s = JSON.parse(s.replace(/&quot;/g, '"')) } catch(e) { return }
+  }
+  const modal = document.getElementById('session-modal')
+  modal.classList.remove('hidden')
+  document.body.style.overflow = 'hidden'
+
+  const cin  = new Date(s.clock_in_time)
+  const cout = s.clock_out_time ? new Date(s.clock_out_time) : null
+  const isActive = s.status === 'active'
+
+  document.getElementById('sm-worker-name').textContent = s.worker_name || 'Worker'
+  document.getElementById('sm-date').textContent = cin.toLocaleDateString([],{weekday:'long',year:'numeric',month:'long',day:'numeric'})
+
+  const mapInLink = s.clock_in_lat
+    ? \`<a href="https://maps.google.com/?q=\${s.clock_in_lat},\${s.clock_in_lng}" target="_blank" class="text-blue-500 text-xs hover:underline"><i class="fas fa-external-link-alt mr-1"></i>Open in Maps</a>\`
+    : ''
+  const mapOutLink = s.clock_out_lat
+    ? \`<a href="https://maps.google.com/?q=\${s.clock_out_lat},\${s.clock_out_lng}" target="_blank" class="text-blue-500 text-xs hover:underline"><i class="fas fa-external-link-alt mr-1"></i>Open in Maps</a>\`
+    : ''
+
+  const flags = []
+  if (s.drift_flag)    flags.push(\`<span class="bg-orange-100 text-orange-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-exclamation-triangle mr-1"></i>Left Job Site\${s.drift_distance_meters ? ' (' + (s.drift_distance_meters >= 1000 ? (s.drift_distance_meters/1000).toFixed(1)+'km' : Math.round(s.drift_distance_meters)+'m') + ')' : ''}</span>\`)
+  if (s.away_flag)     flags.push('<span class="bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-wifi mr-1"></i>Away / No GPS</span>')
+  if (s.auto_clockout) flags.push(\`<span class="bg-red-100 text-red-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-clock mr-1"></i>Auto Clocked Out\${s.auto_clockout_reason ? ': ' + s.auto_clockout_reason : ''}</span>\`)
+
+  document.getElementById('sm-body').innerHTML = \`
+    <!-- Time block -->
+    <div class="grid grid-cols-2 gap-3">
+      <div class="bg-green-50 rounded-2xl p-4">
+        <p class="text-xs text-green-500 font-medium mb-1"><i class="fas fa-sign-in-alt mr-1"></i>Clock In</p>
+        <p class="text-lg font-bold text-green-700">\${cin.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</p>
+        \${s.clock_in_address ? \`<p class="text-xs text-green-600 mt-1 leading-tight">\${s.clock_in_address}</p>\` : ''}
+        \${mapInLink}
+      </div>
+      <div class="\${isActive ? 'bg-blue-50' : 'bg-red-50'} rounded-2xl p-4">
+        <p class="text-xs \${isActive ? 'text-blue-500' : 'text-red-500'} font-medium mb-1"><i class="fas fa-sign-out-alt mr-1"></i>Clock Out</p>
+        <p class="text-lg font-bold \${isActive ? 'text-blue-600' : 'text-red-700'}">\${isActive ? 'Still working' : cout.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</p>
+        \${s.clock_out_address && !isActive ? \`<p class="text-xs text-red-600 mt-1 leading-tight">\${s.clock_out_address}</p>\` : ''}
+        \${mapOutLink}
+      </div>
+    </div>
+
+    <!-- Hours & Earnings -->
+    \${!isActive ? \`
+    <div class="grid grid-cols-2 gap-3">
+      <div class="bg-yellow-50 rounded-2xl p-4 text-center">
+        <p class="text-2xl font-bold text-yellow-700">\${(s.total_hours||0).toFixed(2)}h</p>
+        <p class="text-xs text-yellow-500 mt-0.5">Hours Worked</p>
+      </div>
+      <div class="bg-purple-50 rounded-2xl p-4 text-center">
+        <p class="text-2xl font-bold text-purple-700">$\${(s.earnings||0).toFixed(2)}</p>
+        <p class="text-xs text-purple-500 mt-0.5">Earnings</p>
+      </div>
+    </div>\` : ''}
+
+    <!-- Job Info -->
+    \${s.job_location ? \`
+    <div class="bg-gray-50 rounded-2xl p-4 space-y-2">
+      <div class="flex items-start gap-2">
+        <i class="fas fa-map-marker-alt text-red-500 mt-0.5 flex-shrink-0"></i>
+        <div>
+          <p class="text-xs text-gray-400 font-medium">Job Location</p>
+          <p class="text-sm font-semibold text-gray-800">\${s.job_location}</p>
+        </div>
+      </div>
+      \${s.job_description ? \`
+      <div class="flex items-start gap-2">
+        <i class="fas fa-tools text-blue-400 mt-0.5 flex-shrink-0"></i>
+        <div>
+          <p class="text-xs text-gray-400 font-medium">Task Description</p>
+          <p class="text-sm text-gray-700">\${s.job_description}</p>
+        </div>
+      </div>\` : ''}
+    </div>\` : ''}
+
+    <!-- Guardrail Flags -->
+    \${flags.length ? \`
+    <div>
+      <p class="text-xs text-gray-400 font-medium mb-2"><i class="fas fa-shield-alt mr-1"></i>Guardrail Events</p>
+      <div class="flex flex-wrap gap-2">\${flags.join('')}</div>
+    </div>\` : ''}
+
+    <!-- Notes -->
+    \${s.notes ? \`
+    <div class="bg-yellow-50 rounded-2xl p-4">
+      <p class="text-xs text-yellow-500 font-medium mb-1"><i class="fas fa-sticky-note mr-1"></i>Notes</p>
+      <p class="text-sm text-gray-700">\${s.notes}</p>
+    </div>\` : ''}
+
+    <!-- Action row -->
+    <div class="flex gap-2 pt-2">
+      <button onclick="closeSessionModal();openWorkerDrawer(\${s.worker_id})" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-medium py-2.5 rounded-xl text-sm transition-colors">
+        <i class="fas fa-user mr-1"></i>View Worker
+      </button>
+      <button onclick="closeSessionModal();document.getElementById('filter-date').value='\${new Date(s.clock_in_time).toISOString().split('T')[0]}';document.getElementById('filter-worker').value=\${s.worker_id};showTab('sessions');setTimeout(loadSessions,100)" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2.5 rounded-xl text-sm transition-colors">
+        <i class="fas fa-list mr-1"></i>Filter Sessions
+      </button>
+    </div>
+  \`
+}
+
+function closeSessionModal() {
+  document.getElementById('session-modal').classList.add('hidden')
+  document.body.style.overflow = ''
+}
+
+// ── Day Detail Modal ──────────────────────────────────────────────────────────
+function openDayModal(dateStr) {
+  const sessions = (calCurrentData.sessions_by_date || {})[dateStr] || []
+  if (sessions.length === 0) return
+
+  // Populate sessionStore
+  sessions.forEach(s => { if (s.id) sessionStore[s.id] = s })
+
+  const modal = document.getElementById('day-modal')
+  modal.classList.remove('hidden')
+  document.body.style.overflow = 'hidden'
+
+  const d = new Date(dateStr + 'T12:00:00')
+  const label = d.toLocaleDateString([],{weekday:'long',year:'numeric',month:'long',day:'numeric'})
+  document.getElementById('dm-title').textContent = label
+  document.getElementById('dm-sub').textContent = sessions.length + ' shift' + (sessions.length > 1 ? 's' : '') + ' recorded'
+
+  const totalH = sessions.reduce((s, x) => s + (x.total_hours || 0), 0)
+  const totalE = sessions.reduce((s, x) => s + (x.earnings || 0), 0)
+  const workers = [...new Set(sessions.map(s => s.worker_name))].filter(Boolean)
+  document.getElementById('dm-stats').innerHTML = \`
+    <div class="bg-white rounded-xl py-2 px-3">
+      <p class="text-xl font-bold text-indigo-700">\${sessions.length}</p>
+      <p class="text-xs text-gray-400 mt-0.5">Shifts</p>
+    </div>
+    <div class="bg-white rounded-xl py-2 px-3">
+      <p class="text-xl font-bold text-yellow-600">\${totalH.toFixed(1)}h</p>
+      <p class="text-xs text-gray-400 mt-0.5">Hours</p>
+    </div>
+    <div class="bg-white rounded-xl py-2 px-3">
+      <p class="text-xl font-bold text-green-600">$\${totalE.toFixed(2)}</p>
+      <p class="text-xs text-gray-400 mt-0.5">Earned</p>
+    </div>
+  \`
+
+  document.getElementById('dm-sessions').innerHTML = sessions.map(s => {
+    const cin  = new Date(s.clock_in_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})
+    const cout = s.clock_out_time ? new Date(s.clock_out_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : null
+    const isActive = s.status === 'active'
+    const flags = []
+    if (s.drift_flag)    flags.push('<span class="text-orange-600 text-[10px]">⚠ Left Site</span>')
+    if (s.away_flag)     flags.push('<span class="text-yellow-600 text-[10px]">⏰ Away</span>')
+    if (s.auto_clockout) flags.push('<span class="text-red-600 text-[10px]">🔴 Auto Out</span>')
+
+    return \`<div class="bg-gray-50 border border-gray-100 rounded-xl p-4 hover:border-indigo-300 hover:shadow-sm transition-all cursor-pointer" onclick="closeDayModal();openSessionModal(\${JSON.stringify(s).replace(/"/g,'&quot;')})">
+      <div class="flex items-start justify-between gap-3">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-1.5">
+            <span class="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 text-xs font-bold flex-shrink-0">\${(s.worker_name||'?').charAt(0).toUpperCase()}</span>
+            <span class="font-bold text-gray-800 text-sm">\${s.worker_name || 'Unknown'}</span>
+          </div>
+          \${s.job_location ? \`<p class="text-xs text-gray-500 mb-1 ml-9"><i class="fas fa-map-marker-alt text-red-400 mr-1"></i>\${s.job_location}</p>\` : ''}
+          \${s.job_description ? \`<p class="text-xs text-gray-400 mb-1 ml-9 truncate"><i class="fas fa-tools text-blue-300 mr-1"></i>\${s.job_description}</p>\` : ''}
+          <p class="text-xs text-gray-400 ml-9">
+            \${cin} → \${isActive ? '<span class="text-green-600 font-medium">Active</span>' : cout}
+          </p>
+          \${flags.length ? \`<div class="flex gap-2 mt-1 ml-9">\${flags.join(' · ')}</div>\` : ''}
+        </div>
+        <div class="text-right flex-shrink-0">
+          \${isActive
+            ? \`<span class="text-green-500 text-xs pulse">LIVE</span>\`
+            : \`<p class="font-bold text-gray-800">\${(s.total_hours||0).toFixed(1)}h</p>
+               <p class="text-green-600 font-bold text-sm">$\${(s.earnings||0).toFixed(2)}</p>\`
+          }
+          <p class="text-gray-300 text-[10px] mt-1">tap for details</p>
+        </div>
+      </div>
+    </div>\`
+  }).join('')
+}
+
+function closeDayModal() {
+  document.getElementById('day-modal').classList.add('hidden')
+  document.body.style.overflow = ''
+}
+
 async function loadLive() {
   try {
     const res = await fetch('/api/sessions/active')
@@ -4185,7 +4566,9 @@ async function loadLive() {
       el.innerHTML = '<p class="text-gray-400 text-center py-8 col-span-full"><i class="fas fa-moon mr-2"></i>No workers currently clocked in</p>'
       return
     }
-    
+    // Populate sessionStore for modal lookups
+    data.sessions.forEach(s => { if (s.id) sessionStore[s.id] = s })
+
     el.innerHTML = data.sessions.map(s => {
       const start = new Date(s.clock_in_time)
       const now = new Date()
@@ -4216,7 +4599,7 @@ async function loadLive() {
         ? \`<p class="text-xs text-red-600 mt-1 italic"><i class="fas fa-info-circle mr-1"></i>\${s.auto_clockout_reason}</p>\`
         : ''
       
-      return \`<div class="border \${s.drift_flag ? 'border-orange-300' : s.away_flag ? 'border-yellow-300' : 'border-gray-100'} rounded-xl p-4 hover:shadow-md transition-shadow \${s.auto_clockout ? 'opacity-60' : ''}">
+      return \`<div class="border \${s.drift_flag ? 'border-orange-300' : s.away_flag ? 'border-yellow-300' : 'border-gray-100'} rounded-xl p-4 hover:shadow-md transition-shadow cursor-pointer hover:border-indigo-300 \${s.auto_clockout ? \'opacity-60\' : \'\'}" onclick="openWorkerDrawer(\${s.worker_id})">
         <div class="flex items-start justify-between mb-2">
           <div class="flex-1 min-w-0">
             <h4 class="font-bold text-gray-800">\${s.worker_name}</h4>
@@ -4273,14 +4656,19 @@ async function loadWorkers() {
           ? '<span class="bg-gray-100 text-gray-600 text-xs px-2 py-1 rounded-full">Inactive</span>'
           : '<span class="bg-red-100 text-red-600 text-xs px-2 py-1 rounded-full">Disabled</span>'
       
-      return \`<tr class="border-b border-gray-50 hover:bg-gray-50">
-        <td class="py-3 font-medium text-gray-800">\${w.name}</td>
+      return \`<tr class="border-b border-gray-50 hover:bg-indigo-50 cursor-pointer transition-colors" onclick="openWorkerDrawer(\${w.id})">
+        <td class="py-3 font-medium text-gray-800 pl-1">
+          <span class="flex items-center gap-2">
+            <span class="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 text-xs font-bold flex-shrink-0">\${w.name.charAt(0).toUpperCase()}</span>
+            \${w.name}
+          </span>
+        </td>
         <td class="py-3 text-gray-500">\${w.phone}</td>
         <td class="py-3 text-right font-medium text-green-600">$\${(w.hourly_rate||0).toFixed(2)}</td>
         <td class="py-3 text-right text-gray-700">\${(w.total_hours_all_time||0).toFixed(1)}h</td>
         <td class="py-3 text-right font-bold text-gray-800">$\${(w.total_earnings_all_time||0).toFixed(2)}</td>
         <td class="py-3 text-center">\${status}</td>
-        <td class="py-3 text-right">
+        <td class="py-3 text-right" onclick="event.stopPropagation()">
           <button onclick="editWorkerRate(\${w.id}, '\${w.name}', \${w.hourly_rate})" class="text-indigo-600 hover:text-indigo-800 text-xs mr-2">
             <i class="fas fa-edit"></i>
           </button>
@@ -4304,6 +4692,8 @@ async function loadSessions() {
     const res = await fetch(url)
     const data = await res.json()
     allSessionsData = data.sessions || []
+    // Populate sessionStore for modal lookups
+    allSessionsData.forEach(s => { if (s.id) sessionStore[s.id] = s })
     const container = document.getElementById('sessions-by-day')
 
     if (allSessionsData.length === 0) {
@@ -4345,7 +4735,7 @@ async function loadSessions() {
           ? \`<a href="https://maps.google.com/?q=\${s.clock_in_lat},\${s.clock_in_lng}" target="_blank" class="text-blue-500 hover:text-blue-700 text-xs ml-2"><i class="fas fa-map-marker-alt mr-0.5"></i>Map</a>\`
           : ''
 
-        return \`<div class="bg-gray-50 rounded-xl p-4 border border-gray-100 hover:border-indigo-200 hover:shadow-sm transition-all">
+        return \`<div class="bg-gray-50 rounded-xl p-4 border border-gray-100 hover:border-indigo-300 hover:shadow-md transition-all cursor-pointer" onclick="openSessionModal(\${JSON.stringify(s).replace(/'/g,"\\'").replace(/"/g,'&quot;')})">
           <div class="flex items-start justify-between gap-2">
             <div class="flex-1">
               <!-- Worker name -->
@@ -4389,6 +4779,7 @@ async function loadSessions() {
                 : \`<p class="text-base font-bold text-gray-800">\${(s.total_hours||0).toFixed(2)}h</p>
                    <p class="text-sm font-bold text-green-600">$\${(s.earnings||0).toFixed(2)}</p>\`
               }
+              <p class="text-xs text-gray-400 mt-1"><i class="fas fa-info-circle"></i></p>
             </div>
           </div>
         </div>\`
@@ -4565,6 +4956,7 @@ let calYear = new Date().getFullYear()
 let calMonth = new Date().getMonth() + 1  // 1-based
 let calHolidays = []
 let calSchedule = {}
+let calCurrentData = {}  // stored for day modal drill-down
 
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December']
 
@@ -4604,6 +4996,7 @@ async function loadCalendar() {
 
     calSchedule = calData.settings || {}
     calHolidays = holData.holidays || []
+    calCurrentData = calData  // save for day modal
 
     renderCalendar(calData)
     renderCalendarSummary(calData)
@@ -4644,16 +5037,21 @@ function renderCalendar(calData) {
     const totalEarnings = sessions.reduce((s, x) => s + (x.earnings || 0), 0)
     const hasActive = sessions.some(s => s.status === 'active')
 
-    let cellClass = 'min-h-[80px] rounded-xl p-2 border text-xs cursor-default transition-all hover:shadow-sm '
+    let cellClass = 'min-h-[80px] rounded-xl p-2 border text-xs transition-all hover:shadow-sm '
     if (isToday)          cellClass += 'bg-yellow-50 border-yellow-400 ring-2 ring-yellow-300 '
     else if (isHoliday)   cellClass += 'bg-red-50 border-red-300 '
     else if (isWeekend)   cellClass += 'bg-gray-100 border-gray-200 '
     else if (hasSessions) cellClass += 'bg-green-50 border-green-300 '
     else                  cellClass += 'bg-blue-50 border-blue-100 '
 
+    // Add clickable style if has sessions
+    const clickAttr = hasSessions
+      ? \`onclick="openDayModal('\${dateStr}')" style="cursor:pointer" class="\${cellClass} hover:ring-2 hover:ring-indigo-300"\`
+      : \`class="\${cellClass} cursor-default"\`
+
     const holiday = holidayMap[dateStr]
 
-    html += \`<div class="\${cellClass}">
+    html += \`<div \${clickAttr}>
       <div class="flex items-start justify-between mb-1">
         <span class="font-bold text-sm \${isToday ? 'text-yellow-700' : isHoliday ? 'text-red-700' : isWeekend ? 'text-gray-400' : 'text-gray-700'}">\${d}</span>
         \${isHoliday ? \`<span class="text-red-500" title="\${holiday.name}"><i class="fas fa-star" style="font-size:9px"></i></span>\` : ''}
