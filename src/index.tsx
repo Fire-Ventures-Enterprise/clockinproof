@@ -104,6 +104,13 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('last_weekly_email_sent', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('geofence_radius_meters', '300')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('gps_fraud_check', '1')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_phone', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('notify_email', '1')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('notify_sms', '0')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('twilio_account_sid', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('twilio_auth_token', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('twilio_from_number', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('app_host', '')`,
   ]
   for (const sql of statements) {
     await db.prepare(sql).run()
@@ -233,6 +240,188 @@ async function geocodeAddress(address: string): Promise<{ lat: number; lng: numb
   } catch { return null }
 }
 
+// ─── OVERRIDE NOTIFICATION HELPER ────────────────────────────────────────────
+// Sends email (Resend) and/or SMS (Twilio) to admin when a worker is blocked.
+// Both channels are optional and configured in Settings.
+// The notification contains a deep-link directly to /admin#overrides so the
+// admin can tap the message on any device and land straight on the approval card.
+async function sendOverrideNotification(
+  settings: Record<string, string>,
+  env: any,
+  req: {
+    id: number
+    worker_name: string
+    worker_phone: string
+    job_location: string
+    job_description: string
+    distance_meters: number
+    worker_address: string | null
+    worker_lat: number | null
+    worker_lng: number | null
+  }
+): Promise<{ emailSent: boolean; smsSent: boolean; errors: string[] }> {
+  const result = { emailSent: false, smsSent: false, errors: [] as string[] }
+
+  const appName    = settings.app_name    || 'WorkTracker'
+  const adminEmail = settings.admin_email || ''
+  const adminPhone = settings.admin_phone || ''
+  const notifyEmail = settings.notify_email !== '0'
+  const notifySms   = settings.notify_sms  === '1'
+
+  const distM   = Math.round(req.distance_meters || 0)
+  const distTxt = distM >= 1000 ? (distM / 1000).toFixed(1) + ' km' : distM + ' m'
+
+  // Deep-link URL → opens admin dashboard at the Overrides tab
+  // Works on desktop browser, Android Chrome, iOS Safari — the hash fragment
+  // triggers showTab('overrides') on page load via the window.onload handler.
+  const appHost   = env.APP_HOST || ''   // set this Cloudflare secret to your deployed URL
+  const deepLink  = appHost ? `${appHost}/admin#overrides` : '/admin#overrides'
+  const approveLink = appHost ? `${appHost}/admin#overrides` : '/admin#overrides'
+
+  const workerMapLink = (req.worker_lat && req.worker_lng)
+    ? `https://www.google.com/maps?q=${req.worker_lat},${req.worker_lng}`
+    : null
+
+  // ── EMAIL via Resend ────────────────────────────────────────────────────────
+  if (notifyEmail && adminEmail && env.RESEND_API_KEY) {
+    const emailHtml = `
+<!DOCTYPE html>
+<html>
+<head><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <div style="max-width:560px;margin:0 auto;padding:24px 16px;">
+
+    <!-- Header -->
+    <div style="background:#dc2626;border-radius:16px 16px 0 0;padding:24px;text-align:center;">
+      <div style="font-size:36px;margin-bottom:8px;">🛡️</div>
+      <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700;">Clock-In Blocked</h1>
+      <p style="color:#fca5a5;margin:6px 0 0;font-size:14px;">Admin approval required — GPS mismatch detected</p>
+    </div>
+
+    <!-- Body -->
+    <div style="background:#fff;padding:24px;border-left:1px solid #e5e7eb;border-right:1px solid #e5e7eb;">
+
+      <!-- Worker info -->
+      <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
+        <tr>
+          <td style="padding:10px;background:#fef2f2;border-radius:10px 0 0 10px;width:50%;">
+            <p style="margin:0;font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px;">Worker</p>
+            <p style="margin:4px 0 0;font-size:15px;font-weight:700;color:#111827;">${req.worker_name}</p>
+            <p style="margin:2px 0 0;font-size:13px;color:#6b7280;">${req.worker_phone}</p>
+          </td>
+          <td style="padding:10px;background:#fef2f2;border-radius:0 10px 10px 0;border-left:4px solid #dc2626;">
+            <p style="margin:0;font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px;">Distance from job site</p>
+            <p style="margin:4px 0 0;font-size:22px;font-weight:800;color:#dc2626;">${distTxt}</p>
+            <p style="margin:2px 0 0;font-size:12px;color:#6b7280;">away from "${req.job_location}"</p>
+          </td>
+        </tr>
+      </table>
+
+      <!-- Location comparison -->
+      <div style="background:#f9fafb;border-radius:12px;padding:16px;margin-bottom:20px;">
+        <p style="margin:0 0 12px;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;letter-spacing:.5px;">Location Comparison</p>
+        <div style="margin-bottom:12px;">
+          <p style="margin:0;font-size:12px;color:#6b7280;">📍 <strong>Worker's actual GPS location</strong></p>
+          <p style="margin:4px 0 0;font-size:13px;color:#111827;">${req.worker_address || 'Unknown address'}</p>
+          ${workerMapLink ? `<a href="${workerMapLink}" style="font-size:12px;color:#3b82f6;">View on Google Maps →</a>` : ''}
+        </div>
+        <div style="border-top:1px solid #e5e7eb;padding-top:12px;">
+          <p style="margin:0;font-size:12px;color:#6b7280;">🏗️ <strong>Job site entered by worker</strong></p>
+          <p style="margin:4px 0 0;font-size:13px;color:#111827;">${req.job_location}</p>
+        </div>
+      </div>
+
+      <!-- Task -->
+      <div style="background:#eff6ff;border-left:4px solid #3b82f6;border-radius:0 8px 8px 0;padding:12px;margin-bottom:24px;">
+        <p style="margin:0;font-size:12px;color:#6b7280;">📋 <strong>Task description</strong></p>
+        <p style="margin:4px 0 0;font-size:13px;color:#1e40af;">${req.job_description || 'Not specified'}</p>
+      </div>
+
+      <!-- CTA Button -->
+      <div style="text-align:center;margin-bottom:20px;">
+        <a href="${deepLink}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:16px;padding:16px 40px;border-radius:12px;letter-spacing:.3px;">
+          👉 Review &amp; Approve / Deny
+        </a>
+        <p style="margin:12px 0 0;font-size:12px;color:#9ca3af;">Tap the button — opens the Overrides tab directly on any device</p>
+      </div>
+
+      <!-- Info note -->
+      <div style="background:#ffffbf;border:1px solid #fde68a;border-radius:8px;padding:12px;font-size:12px;color:#92400e;">
+        <strong>Note:</strong> The worker is waiting on their phone and will be automatically clocked in the moment you approve, or shown a denial message if you deny.
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:0 0 16px 16px;padding:16px;text-align:center;">
+      <p style="margin:0;font-size:12px;color:#9ca3af;">${appName} · Override Request #${req.id} · ${new Date().toLocaleString()}</p>
+      <p style="margin:6px 0 0;font-size:11px;color:#d1d5db;">Sent to ${adminEmail}</p>
+    </div>
+  </div>
+</body>
+</html>`
+
+    try {
+      const emailRes = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: `${appName} Alerts <alerts@worktracker.app>`,
+          to: [adminEmail],
+          subject: `🚨 [${appName}] Clock-In Blocked: ${req.worker_name} is ${distTxt} from "${req.job_location}"`,
+          html: emailHtml
+        })
+      })
+      if (emailRes.ok) {
+        result.emailSent = true
+      } else {
+        const errData = await emailRes.json() as any
+        result.errors.push(`Email failed: ${errData?.message || emailRes.status}`)
+      }
+    } catch (e: any) {
+      result.errors.push(`Email error: ${e.message}`)
+    }
+  }
+
+  // ── SMS via Twilio ──────────────────────────────────────────────────────────
+  // Free alternative: Twilio trial gives $15.50 credit (~1000 SMS messages)
+  // Sign up at twilio.com → get Account SID, Auth Token, and a free phone number
+  if (notifySms && adminPhone && env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM_NUMBER) {
+    const smsBody =
+      `🚨 ${appName} ALERT\n` +
+      `Worker ${req.worker_name} tried to clock in but is ${distTxt} from "${req.job_location}".\n` +
+      `Task: ${(req.job_description || '').substring(0, 60)}\n` +
+      `Tap to approve/deny: ${approveLink}`
+
+    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`
+    const twilioAuth = btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)
+
+    try {
+      const smsRes = await fetch(twilioUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${twilioAuth}`,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({
+          From: env.TWILIO_FROM_NUMBER,
+          To: adminPhone.startsWith('+') ? adminPhone : `+${adminPhone}`,
+          Body: smsBody
+        }).toString()
+      })
+      if (smsRes.ok) {
+        result.smsSent = true
+      } else {
+        const errData = await smsRes.json() as any
+        result.errors.push(`SMS failed: ${errData?.message || smsRes.status}`)
+      }
+    } catch (e: any) {
+      result.errors.push(`SMS error: ${e.message}`)
+    }
+  }
+
+  return result
+}
+
 // Clock In — with GPS fraud detection
 app.post('/api/sessions/clock-in', async (c) => {
   const db = c.env.DB
@@ -290,6 +479,20 @@ app.post('/api/sessions/clock-in', async (c) => {
         ).run()
 
         const requestId = reqResult.meta.last_row_id
+
+        // ── SEND ADMIN NOTIFICATION (email + SMS) ────────────────────────────
+        // Fire-and-forget — don't block the response while notification sends
+        sendOverrideNotification(settings, c.env as any, {
+          id: requestId as number,
+          worker_name: worker?.name || '',
+          worker_phone: worker?.phone || '',
+          job_location: job_location.trim(),
+          job_description: job_description.trim(),
+          distance_meters: Math.round(distanceM),
+          worker_address: address || null,
+          worker_lat: latitude,
+          worker_lng: longitude
+        }).catch(() => { /* ignore notification errors — don't block the user */ })
 
         return c.json({
           error: 'location_mismatch',
@@ -471,6 +674,40 @@ app.post('/api/override/:id/deny', async (c) => {
   ).bind(admin_note || 'Denied by admin', id).run()
 
   return c.json({ success: true, message: 'Override denied' })
+})
+
+// Admin: manually re-send notification for a pending request
+app.post('/api/override/:id/notify', async (c) => {
+  const db  = c.env.DB
+  const env = c.env as any
+  const id  = c.req.param('id')
+  await ensureSchema(db)
+
+  const req = await db.prepare('SELECT * FROM clock_in_requests WHERE id = ?').bind(id).first<any>()
+  if (!req) return c.json({ error: 'Request not found' }, 404)
+
+  const settingsRaw = await db.prepare('SELECT * FROM settings').all()
+  const settings: Record<string, string> = {}
+  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+
+  const result = await sendOverrideNotification(settings, env, {
+    id: req.id,
+    worker_name: req.worker_name,
+    worker_phone: req.worker_phone,
+    job_location: req.job_location,
+    job_description: req.job_description,
+    distance_meters: req.distance_meters,
+    worker_address: req.worker_address,
+    worker_lat: req.worker_lat,
+    worker_lng: req.worker_lng
+  })
+
+  return c.json({
+    success: true,
+    email_sent: result.emailSent,
+    sms_sent: result.smsSent,
+    errors: result.errors
+  })
 })
 
 // Get current session status for a worker
@@ -3074,6 +3311,101 @@ function getAdminHTML(): string {
         </div>
       </div>
 
+      <!-- Override Notifications -->
+      <div class="space-y-4">
+        <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2 flex items-center gap-2">
+          <i class="fas fa-bell text-amber-500"></i> Override Notifications
+          <span class="text-xs font-normal text-gray-400 normal-case tracking-normal">Get alerted the moment a worker is blocked</span>
+        </h4>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Email notification -->
+          <div class="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+            <div class="flex items-center justify-between mb-3">
+              <div class="flex items-center gap-2">
+                <i class="fas fa-envelope text-amber-500"></i>
+                <span class="text-sm font-semibold text-gray-700">Email Alert</span>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="s-notify-email" class="sr-only peer" checked/>
+                <div class="w-10 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+              </label>
+            </div>
+            <p class="text-xs text-gray-500 mb-2">Sends a rich HTML email with map link, worker details, and a direct approval link.</p>
+            <p class="text-xs text-green-600 font-medium"><i class="fas fa-check-circle mr-1"></i>Uses Resend (already configured for weekly reports)</p>
+          </div>
+
+          <!-- SMS notification -->
+          <div class="bg-blue-50 border border-blue-200 rounded-2xl p-4">
+            <div class="flex items-center justify-between mb-3">
+              <div class="flex items-center gap-2">
+                <i class="fas fa-sms text-blue-500"></i>
+                <span class="text-sm font-semibold text-gray-700">SMS / Text Alert</span>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="s-notify-sms" class="sr-only peer"/>
+                <div class="w-10 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500"></div>
+              </label>
+            </div>
+            <p class="text-xs text-gray-500 mb-2">Sends an SMS with a deep-link to the Overrides tab. Works on Android &amp; iOS.</p>
+            <p class="text-xs text-amber-600 font-medium"><i class="fas fa-exclamation-circle mr-1"></i>Requires Twilio credentials (see below)</p>
+          </div>
+        </div>
+
+        <!-- Admin phone number -->
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">
+            Admin Phone Number <span class="text-gray-400 font-normal">(for SMS — include country code e.g. +1 613 555 0100)</span>
+          </label>
+          <input id="s-admin-phone" type="tel" placeholder="+1 613 555 0100"
+            class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-400 text-sm"/>
+        </div>
+
+        <!-- Twilio credentials (collapsible) -->
+        <details class="bg-gray-50 border border-gray-200 rounded-2xl overflow-hidden">
+          <summary class="flex items-center gap-2 cursor-pointer px-4 py-3 font-medium text-sm text-gray-700 hover:bg-gray-100">
+            <i class="fas fa-key text-gray-400"></i> Twilio SMS Setup
+            <span class="text-xs text-gray-400 font-normal ml-auto">Free trial gives ~1000 texts</span>
+          </summary>
+          <div class="px-4 pb-4 space-y-3 border-t border-gray-200 pt-3">
+            <div class="bg-blue-50 rounded-xl p-3 text-xs text-blue-700 mb-3">
+              <strong>Setup in 3 steps:</strong>
+              <ol class="list-decimal list-inside mt-1 space-y-1">
+                <li>Sign up free at <a href="https://twilio.com" target="_blank" class="underline">twilio.com</a> — get $15 credit (~1000 SMS)</li>
+                <li>Copy your Account SID, Auth Token, and free phone number from the Twilio Console</li>
+                <li>In production: add <code class="bg-white px-1 rounded">TWILIO_ACCOUNT_SID</code>, <code class="bg-white px-1 rounded">TWILIO_AUTH_TOKEN</code>, <code class="bg-white px-1 rounded">TWILIO_FROM_NUMBER</code> as Cloudflare secrets — or enter them below for local dev</li>
+              </ol>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">Account SID</label>
+              <input id="s-twilio-sid" type="text" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                class="w-full px-3 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-400"/>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">Auth Token</label>
+              <input id="s-twilio-token" type="password" placeholder="Your Twilio Auth Token"
+                class="w-full px-3 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-400"/>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">From Number (Twilio number)</label>
+              <input id="s-twilio-from" type="tel" placeholder="+15005550006"
+                class="w-full px-3 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-400"/>
+            </div>
+            <p class="text-xs text-gray-400">Note: For production deployment, use Cloudflare secrets instead of saving here for security.</p>
+          </div>
+        </details>
+
+        <!-- App Host URL -->
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">
+            App URL <span class="text-gray-400 font-normal">(used in notification deep-links — e.g. https://yourapp.pages.dev)</span>
+          </label>
+          <input id="s-app-host" type="url" placeholder="https://yourapp.pages.dev"
+            class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-400 text-sm"/>
+          <p class="text-xs text-gray-400 mt-1">When you tap the notification link, it opens this URL + /admin#overrides directly.</p>
+        </div>
+      </div>
+
       <div class="mt-6 flex gap-3">
         <button onclick="saveSettings()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl">
           <i class="fas fa-save mr-2"></i>Save Settings
@@ -3299,6 +3631,11 @@ async function adminLogin() {
       document.getElementById('admin-dashboard').classList.remove('hidden')
       await refreshAll()
       setInterval(refreshAll, 60000) // Auto-refresh every minute
+      // Deep-link: if URL has #overrides (from notification tap), go straight there
+      const hash = window.location.hash.replace('#', '')
+      if (hash && ['live','workers','sessions','map','calendar','settings','export','overrides'].includes(hash)) {
+        showTab(hash)
+      }
     } else {
       document.getElementById('admin-login-error').textContent = 'Incorrect PIN. Try again.'
       document.getElementById('admin-login-error').classList.remove('hidden')
@@ -3309,6 +3646,10 @@ async function adminLogin() {
       document.getElementById('admin-login').classList.add('hidden')
       document.getElementById('admin-dashboard').classList.remove('hidden')
       await refreshAll()
+      const hash = window.location.hash.replace('#', '')
+      if (hash && ['live','workers','sessions','map','calendar','settings','export','overrides'].includes(hash)) {
+        showTab(hash)
+      }
     }
   }
 }
@@ -3983,6 +4324,22 @@ async function loadSettings() {
     const geofenceEl = document.getElementById('s-geofence-radius')
     if (geofenceEl) geofenceEl.value = currentSettings.geofence_radius_meters || '300'
 
+    // Notification settings
+    const notifyEmailEl = document.getElementById('s-notify-email')
+    if (notifyEmailEl) notifyEmailEl.checked = currentSettings.notify_email !== '0'
+    const notifySmsEl = document.getElementById('s-notify-sms')
+    if (notifySmsEl) notifySmsEl.checked = currentSettings.notify_sms === '1'
+    const adminPhoneEl = document.getElementById('s-admin-phone')
+    if (adminPhoneEl) adminPhoneEl.value = currentSettings.admin_phone || ''
+    const twilioSidEl = document.getElementById('s-twilio-sid')
+    if (twilioSidEl) twilioSidEl.value = currentSettings.twilio_account_sid || ''
+    const twilioTokenEl = document.getElementById('s-twilio-token')
+    if (twilioTokenEl) twilioTokenEl.value = currentSettings.twilio_auth_token || ''
+    const twilioFromEl = document.getElementById('s-twilio-from')
+    if (twilioFromEl) twilioFromEl.value = currentSettings.twilio_from_number || ''
+    const appHostEl = document.getElementById('s-app-host')
+    if (appHostEl) appHostEl.value = currentSettings.app_host || ''
+
     // Country dropdown
     const country = currentSettings.country_code || 'CA'
     document.getElementById('s-country').value = country
@@ -4072,7 +4429,14 @@ async function saveSettings() {
     stat_pay_multiplier: mult,
     work_days: activeDays.join(','),
     gps_fraud_check: document.getElementById('s-gps-fraud-check')?.checked ? '1' : '0',
-    geofence_radius_meters: document.getElementById('s-geofence-radius')?.value || '300'
+    geofence_radius_meters: document.getElementById('s-geofence-radius')?.value || '300',
+    notify_email: document.getElementById('s-notify-email')?.checked ? '1' : '0',
+    notify_sms: document.getElementById('s-notify-sms')?.checked ? '1' : '0',
+    admin_phone: document.getElementById('s-admin-phone')?.value?.trim() || '',
+    twilio_account_sid: document.getElementById('s-twilio-sid')?.value?.trim() || '',
+    twilio_auth_token: document.getElementById('s-twilio-token')?.value?.trim() || '',
+    twilio_from_number: document.getElementById('s-twilio-from')?.value?.trim() || '',
+    app_host: document.getElementById('s-app-host')?.value?.trim() || ''
   }
 
   try {
@@ -4276,6 +4640,10 @@ async function loadOverrides() {
             class="flex-1 bg-red-500 hover:bg-red-600 text-white font-bold py-3 rounded-xl text-sm shadow-sm">
             Deny
           </button>
+          <button onclick="resendNotify(\${r.id})" title="Resend email/SMS notification"
+            class="px-3 py-3 bg-amber-100 hover:bg-amber-200 text-amber-700 rounded-xl text-sm border border-amber-200">
+            <i class="fas fa-bell"></i>
+          </button>
         </div>
       </div>\`
     }).join('')
@@ -4352,6 +4720,24 @@ async function showOverrideHistory() {
 }
 
 // Poll for pending override badge every 60s
+async function resendNotify(id) {
+  try {
+    const res = await fetch('/api/override/' + id + '/notify', { method: 'POST' })
+    const data = await res.json()
+    if (data.email_sent && data.sms_sent) {
+      showAdminToast('Email + SMS sent to admin', 'success')
+    } else if (data.email_sent) {
+      showAdminToast('Email alert sent to admin', 'success')
+    } else if (data.sms_sent) {
+      showAdminToast('SMS alert sent to admin', 'success')
+    } else if (data.errors && data.errors.length > 0) {
+      showAdminToast('Notify failed: ' + data.errors[0], 'error')
+    } else {
+      showAdminToast('No channels configured — add email/Twilio in Settings', 'info')
+    }
+  } catch(e) { showAdminToast('Connection error', 'error') }
+}
+
 setInterval(async () => {
   try {
     const res = await fetch('/api/override/pending')
