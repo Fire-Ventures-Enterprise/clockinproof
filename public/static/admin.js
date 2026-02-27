@@ -1483,6 +1483,35 @@ async function initExportTab() {
   setExportWeek(0)  // default to current week
   document.getElementById('export-week-date').addEventListener('change', updateExportWeekLabel)
 
+  // Populate worker dropdown
+  try {
+    const wRes = await fetch('/api/workers')
+    const wData = await wRes.json()
+    const sel = document.getElementById('export-worker-select')
+    if (sel) {
+      const workers = (wData.workers || []).filter(w => w.active)
+      workers.sort((a,b) => a.name.localeCompare(b.name))
+      workers.forEach(w => {
+        const opt = document.createElement('option')
+        opt.value = w.id
+        opt.textContent = `👤 ${w.name} ($${(w.hourly_rate||0).toFixed(2)}/hr)`
+        sel.appendChild(opt)
+      })
+      sel.addEventListener('change', () => {
+        const badge = document.getElementById('export-worker-badge')
+        if (!badge) return
+        if (!sel.value) {
+          badge.textContent = 'All Workers'
+          badge.className = 'px-3 py-1.5 bg-indigo-50 text-indigo-700 text-xs font-bold rounded-full border border-indigo-200'
+        } else {
+          const opt = sel.options[sel.selectedIndex]
+          badge.textContent = opt.textContent.replace('👤 ','')
+          badge.className = 'px-3 py-1.5 bg-green-50 text-green-700 text-xs font-bold rounded-full border border-green-200'
+        }
+      })
+    }
+  } catch(e) {}
+
   // Load last email sent time
   try {
     const res = await fetch('/api/settings')
@@ -1501,22 +1530,31 @@ async function initExportTab() {
   } catch(e) {}
 }
 
+function getExportWorkerParam() {
+  const sel = document.getElementById('export-worker-select')
+  return sel && sel.value ? '&worker_id=' + sel.value : ''
+}
+
 function viewWeeklyReport() {
   const week = document.getElementById('export-week-date').value
   if (!week) { showAdminToast('Select a week first', 'error'); return }
-  window.open('/api/export/weekly/html?week=' + week, '_blank')
+  window.open('/api/export/weekly/html?week=' + week + getExportWorkerParam(), '_blank')
 }
 
 function downloadCSV() {
   const week = document.getElementById('export-week-date').value
   if (!week) { showAdminToast('Select a week first', 'error'); return }
-  window.location.href = '/api/export/csv?week=' + week
+  window.location.href = '/api/export/csv?week=' + week + getExportWorkerParam()
   showAdminToast('CSV download started!', 'success')
 }
 
 async function emailWeeklyReport() {
   const week = document.getElementById('export-week-date').value
   if (!week) { showAdminToast('Select a week first', 'error'); return }
+
+  const workerSel = document.getElementById('export-worker-select')
+  const workerId  = workerSel ? workerSel.value : ''
+  const workerName = workerId ? workerSel.options[workerSel.selectedIndex].textContent.replace('👤 ','').split(' (')[0] : 'All Staff'
 
   const btn = document.getElementById('email-report-btn')
   btn.disabled = true
@@ -1525,20 +1563,20 @@ async function emailWeeklyReport() {
   const statusEl = document.getElementById('export-email-status')
   statusEl.className = 'rounded-xl p-4 mb-4 text-sm bg-blue-50 border border-blue-200 text-blue-700'
   statusEl.classList.remove('hidden')
-  statusEl.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Sending email report...'
+  statusEl.innerHTML = `<i class="fas fa-circle-notch fa-spin mr-2"></i>Sending report for <strong>${workerName}</strong>...`
 
   try {
     const res = await fetch('/api/export/email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ week })
+      body: JSON.stringify({ week, worker_id: workerId || null })
     })
     const data = await res.json()
 
     if (data.success) {
       statusEl.className = 'rounded-xl p-4 mb-4 text-sm bg-green-50 border border-green-200 text-green-800'
-      statusEl.innerHTML = `<i class="fas fa-check-circle mr-2"></i><strong>Report sent!</strong> ${data.message}`
-      showAdminToast('Weekly report emailed! ✅', 'success')
+      statusEl.innerHTML = `<i class="fas fa-check-circle mr-2"></i><strong>Report sent for ${workerName}!</strong> ${data.message}`
+      showAdminToast(`✅ Report sent — ${workerName}`, 'success')
       document.getElementById('last-email-sent-info').textContent = 'Last sent: ' + new Date().toLocaleString()
     } else {
       statusEl.className = 'rounded-xl p-4 mb-4 text-sm bg-amber-50 border border-amber-200 text-amber-800'

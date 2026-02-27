@@ -1473,10 +1473,14 @@ function getWeekBounds(refDate?: Date): { start: string; end: string; label: str
 app.get('/api/export/weekly', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const weekParam = c.req.query('week')
+  const weekParam   = c.req.query('week')
+  const workerIdRaw = c.req.query('worker_id')
+  const workerId    = workerIdRaw ? parseInt(workerIdRaw) : null
   const bounds = getWeekBounds(weekParam ? new Date(weekParam) : undefined)
 
-  // All completed + active sessions in the week
+  const workerFilter = workerId ? 'AND s.worker_id = ?' : ''
+  const sessionBinds = workerId ? [bounds.start, bounds.end, workerId] : [bounds.start, bounds.end]
+
   const sessions = await db.prepare(`
     SELECT s.*,
            w.name  AS worker_name,
@@ -1486,8 +1490,9 @@ app.get('/api/export/weekly', async (c) => {
     JOIN workers w ON s.worker_id = w.id
     WHERE DATE(s.clock_in_time) >= ?
       AND DATE(s.clock_in_time) <= ?
+      ${workerFilter}
     ORDER BY w.name, s.clock_in_time ASC
-  `).bind(bounds.start, bounds.end).all()
+  `).bind(...sessionBinds).all()
 
   // GPS pings for every session in the week
   const pings = await db.prepare(`
@@ -1542,15 +1547,18 @@ app.get('/api/export/weekly', async (c) => {
 app.get('/api/export/weekly/html', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const weekParam = c.req.query('week')
-  const bounds    = getWeekBounds(weekParam ? new Date(weekParam) : undefined)
+  const weekParam   = c.req.query('week')
+  const workerIdRaw = c.req.query('worker_id')
+  const workerId    = workerIdRaw ? parseInt(workerIdRaw) : null
+  const bounds      = getWeekBounds(weekParam ? new Date(weekParam) : undefined)
 
-  // Settings
   const settingsRaw = await db.prepare('SELECT * FROM settings').all()
   const settings: Record<string, string> = {}
   ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
 
-  // Sessions
+  const workerFilter  = workerId ? 'AND s.worker_id = ?' : ''
+  const sessionBinds  = workerId ? [bounds.start, bounds.end, workerId] : [bounds.start, bounds.end]
+
   const sessions = await db.prepare(`
     SELECT s.*,
            w.name  AS worker_name,
@@ -1560,8 +1568,9 @@ app.get('/api/export/weekly/html', async (c) => {
     JOIN workers w ON s.worker_id = w.id
     WHERE DATE(s.clock_in_time) >= ?
       AND DATE(s.clock_in_time) <= ?
+      ${workerFilter}
     ORDER BY w.name, s.clock_in_time ASC
-  `).bind(bounds.start, bounds.end).all()
+  `).bind(...sessionBinds).all()
 
   // GPS pings
   const pings = await db.prepare(`
@@ -1595,16 +1604,18 @@ app.get('/api/export/weekly/html', async (c) => {
   return c.html(html)
 })
 
-// POST /api/export/email  { week?: 'YYYY-MM-DD' }
-// Sends the weekly report to admin email via Resend (or falls back to log)
+// POST /api/export/email  { week?: 'YYYY-MM-DD', worker_id?: number }
+// Sends the weekly report to admin email via Resend (or falls back to preview)
 app.post('/api/export/email', async (c) => {
   const db  = c.env.DB
   const env = c.env as any
   await ensureSchema(db)
 
-  const body       = await c.req.json().catch(() => ({})) as any
-  const weekParam  = body.week
-  const bounds     = getWeekBounds(weekParam ? new Date(weekParam) : undefined)
+  const body        = await c.req.json().catch(() => ({})) as any
+  const weekParam   = body.week
+  const workerIdRaw = body.worker_id
+  const workerId    = workerIdRaw ? parseInt(workerIdRaw) : null
+  const bounds      = getWeekBounds(weekParam ? new Date(weekParam) : undefined)
 
   const settingsRaw = await db.prepare('SELECT * FROM settings').all()
   const settings: Record<string, string> = {}
@@ -1615,13 +1626,24 @@ app.post('/api/export/email', async (c) => {
     return c.json({ error: 'No admin email configured. Go to Settings → General and add your email.' }, 400)
   }
 
-  // Build sessions data
+  // Build sessions data — optionally filtered by worker
+  const workerFilter  = workerId ? 'AND s.worker_id = ?' : ''
+  const sessionBinds  = workerId ? [bounds.start, bounds.end, workerId] : [bounds.start, bounds.end]
+
+  // Fetch worker name for single-worker subject line
+  let workerLabel = 'All Staff'
+  if (workerId) {
+    const wRow = await db.prepare('SELECT name FROM workers WHERE id = ?').bind(workerId).first() as any
+    if (wRow) workerLabel = wRow.name
+  }
+
   const sessions = await db.prepare(`
     SELECT s.*, w.name AS worker_name, w.phone AS worker_phone, w.hourly_rate
     FROM sessions s JOIN workers w ON s.worker_id = w.id
     WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+    ${workerFilter}
     ORDER BY w.name, s.clock_in_time ASC
-  `).bind(bounds.start, bounds.end).all()
+  `).bind(...sessionBinds).all()
 
   const pings = await db.prepare(`
     SELECT lp.* FROM location_pings lp
@@ -1650,7 +1672,9 @@ app.post('/api/export/email', async (c) => {
 
   const htmlBody = buildWeeklyReportHTML(bounds, settings, Object.values(byWorker))
   const appName  = settings.app_name || 'WorkTracker'
-  const subject  = `${appName} — Weekly Report: ${bounds.label}`
+  const subject  = workerId
+    ? `${appName} — Timesheet for ${workerLabel}: ${bounds.label}`
+    : `${appName} — Weekly Report: ${bounds.label}`
 
   // Try Resend API (set RESEND_API_KEY in Cloudflare secrets)
   const resendKey = env.RESEND_API_KEY || ''
@@ -1678,7 +1702,7 @@ app.post('/api/export/email', async (c) => {
         `INSERT OR IGNORE INTO settings (key, value) VALUES ('last_weekly_email_sent', ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
       ).bind(new Date().toISOString()).run()
-      return c.json({ success: true, message: `Weekly report sent to ${adminEmail}`, week: bounds.label, email_id: result.id })
+      return c.json({ success: true, message: `Report sent to ${adminEmail}`, week: bounds.label, email_id: result.id, worker: workerLabel })
     } catch (e: any) {
       return c.json({ error: 'Failed to send email', detail: e.message }, 500)
     }
@@ -1688,25 +1712,38 @@ app.post('/api/export/email', async (c) => {
   return c.json({
     success: false,
     message: 'Email not configured. Add RESEND_API_KEY secret and admin_email in Settings.',
-    preview_url: `/api/export/weekly/html?week=${bounds.start}`,
+    preview_url: `/api/export/weekly/html?week=${bounds.start}${workerId ? '&worker_id=' + workerId : ''}`,
     week: bounds.label
   }, 200)
 })
 
-// GET /api/export/csv?week=YYYY-MM-DD
-// Returns a CSV file attachment
+// GET /api/export/csv?week=YYYY-MM-DD&worker_id=N
+// Returns a CSV file attachment (all staff or a single worker)
 app.get('/api/export/csv', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const weekParam = c.req.query('week')
-  const bounds    = getWeekBounds(weekParam ? new Date(weekParam) : undefined)
+  const weekParam   = c.req.query('week')
+  const workerIdRaw = c.req.query('worker_id')
+  const workerId    = workerIdRaw ? parseInt(workerIdRaw) : null
+  const bounds      = getWeekBounds(weekParam ? new Date(weekParam) : undefined)
+
+  const workerFilter = workerId ? 'AND s.worker_id = ?' : ''
+  const sessionBinds = workerId ? [bounds.start, bounds.end, workerId] : [bounds.start, bounds.end]
+
+  // Filename: per-worker or all-staff
+  let filenameWorker = 'all-staff'
+  if (workerId) {
+    const wRow = await db.prepare('SELECT name FROM workers WHERE id = ?').bind(workerId).first() as any
+    if (wRow) filenameWorker = wRow.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+  }
 
   const sessions = await db.prepare(`
     SELECT s.*, w.name AS worker_name, w.phone AS worker_phone, w.hourly_rate
     FROM sessions s JOIN workers w ON s.worker_id = w.id
     WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+    ${workerFilter}
     ORDER BY w.name, s.clock_in_time ASC
-  `).bind(bounds.start, bounds.end).all()
+  `).bind(...sessionBinds).all()
 
   const pings = await db.prepare(`
     SELECT lp.* FROM location_pings lp
@@ -1762,7 +1799,7 @@ app.get('/api/export/csv', async (c) => {
   })
 
   const csv = [csvHeader.map(escape).join(','), ...rows].join('\n')
-  const filename = `worktracker-week-${bounds.start}.csv`
+  const filename = `worktracker-${filenameWorker}-${bounds.start}.csv`
 
   return new Response(csv, {
     headers: {
@@ -4211,7 +4248,7 @@ function getAdminHTML(): string {
     <!-- Tab: Export -->
     <div id="tab-export" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <h3 class="font-bold text-gray-700 mb-5 flex items-center gap-2">
-        <i class="fas fa-file-export text-indigo-500"></i> Weekly Export & Email Report
+        <i class="fas fa-file-export text-indigo-500"></i> Payroll Timesheets & Export
       </h3>
 
       <!-- Week selector -->
@@ -4240,50 +4277,89 @@ function getAdminHTML(): string {
         </div>
       </div>
 
-      <!-- Export actions -->
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-
-        <!-- View HTML Report -->
-        <div class="border-2 border-indigo-100 rounded-2xl p-5 hover:border-indigo-300 transition-colors">
-          <div class="w-12 h-12 bg-indigo-100 rounded-xl flex items-center justify-center mb-3">
-            <i class="fas fa-eye text-indigo-600 text-xl"></i>
-          </div>
-          <h4 class="font-bold text-gray-800 mb-1">View Report</h4>
-          <p class="text-xs text-gray-500 mb-4">Full proof report with GPS timeline. Print or save as PDF directly from browser.</p>
-          <button onclick="viewWeeklyReport()"
-            class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl text-sm">
-            <i class="fas fa-external-link-alt mr-1"></i>Open Report
-          </button>
+      <!-- Worker selector -->
+      <div class="bg-white border-2 border-gray-100 rounded-2xl p-4 mb-5">
+        <label class="block text-sm font-semibold text-gray-700 mb-2">
+          <i class="fas fa-user-hard-hat text-indigo-400 mr-1"></i> Export For
+        </label>
+        <div class="flex items-center gap-3 flex-wrap">
+          <select id="export-worker-select"
+            class="flex-1 min-w-[200px] border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white">
+            <option value="">📋 All Staff (Combined Report)</option>
+          </select>
+          <span id="export-worker-badge"
+            class="px-3 py-1.5 bg-indigo-50 text-indigo-700 text-xs font-bold rounded-full border border-indigo-200">
+            All Workers
+          </span>
         </div>
-
-        <!-- Download CSV -->
-        <div class="border-2 border-green-100 rounded-2xl p-5 hover:border-green-300 transition-colors">
-          <div class="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center mb-3">
-            <i class="fas fa-file-csv text-green-600 text-xl"></i>
-          </div>
-          <h4 class="font-bold text-gray-800 mb-1">Download CSV</h4>
-          <p class="text-xs text-gray-500 mb-4">Spreadsheet with all sessions, GPS coordinates, hours and earnings. Opens in Excel.</p>
-          <button onclick="downloadCSV()"
-            class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 rounded-xl text-sm">
-            <i class="fas fa-download mr-1"></i>Download .CSV
-          </button>
-        </div>
-
-        <!-- Email Report -->
-        <div class="border-2 border-amber-100 rounded-2xl p-5 hover:border-amber-300 transition-colors">
-          <div class="w-12 h-12 bg-amber-100 rounded-xl flex items-center justify-center mb-3">
-            <i class="fas fa-envelope text-amber-600 text-xl"></i>
-          </div>
-          <h4 class="font-bold text-gray-800 mb-1">Email Report</h4>
-          <p class="text-xs text-gray-500 mb-4">Send the full HTML report to admin email. Requires RESEND_API_KEY secret.</p>
-          <button onclick="emailWeeklyReport()" id="email-report-btn"
-            class="w-full bg-amber-500 hover:bg-amber-600 text-white font-semibold py-2.5 rounded-xl text-sm">
-            <i class="fas fa-paper-plane mr-1"></i>Send Email
-          </button>
-        </div>
+        <p class="text-xs text-gray-400 mt-2">
+          <i class="fas fa-info-circle mr-1"></i>
+          Select a specific worker for an individual timesheet, or leave as "All Staff" for the full payroll report.
+        </p>
       </div>
 
-      <!-- Email config status -->
+      <!-- Export actions -->
+      <div class="grid grid-cols-1 gap-3 mb-5">
+
+        <!-- Row 1: View + CSV side by side -->
+        <div class="grid grid-cols-2 gap-3">
+          <!-- View HTML Report -->
+          <div class="border-2 border-indigo-100 rounded-2xl p-4 hover:border-indigo-300 transition-colors">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-eye text-indigo-600"></i>
+              </div>
+              <div>
+                <h4 class="font-bold text-gray-800 text-sm">View Report</h4>
+                <p class="text-xs text-gray-400">Full timesheet + GPS proof</p>
+              </div>
+            </div>
+            <button onclick="viewWeeklyReport()"
+              class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl text-sm">
+              <i class="fas fa-external-link-alt mr-1"></i>Open
+            </button>
+          </div>
+
+          <!-- Download CSV -->
+          <div class="border-2 border-green-100 rounded-2xl p-4 hover:border-green-300 transition-colors">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-file-csv text-green-600"></i>
+              </div>
+              <div>
+                <h4 class="font-bold text-gray-800 text-sm">Download CSV</h4>
+                <p class="text-xs text-gray-400">Excel-ready spreadsheet</p>
+              </div>
+            </div>
+            <button onclick="downloadCSV()"
+              class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 rounded-xl text-sm">
+              <i class="fas fa-download mr-1"></i>Download
+            </button>
+          </div>
+        </div>
+
+        <!-- Row 2: Email full width -->
+        <div class="border-2 border-amber-100 rounded-2xl p-4 hover:border-amber-300 transition-colors">
+          <div class="flex items-center justify-between gap-3 flex-wrap">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-envelope text-amber-600"></i>
+              </div>
+              <div>
+                <h4 class="font-bold text-gray-800 text-sm">Email Report</h4>
+                <p class="text-xs text-gray-400">Send to admin email (requires RESEND_API_KEY)</p>
+              </div>
+            </div>
+            <button onclick="emailWeeklyReport()" id="email-report-btn"
+              class="px-5 py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded-xl text-sm">
+              <i class="fas fa-paper-plane mr-1"></i>Send Email
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Export status -->
       <div id="export-email-status" class="hidden rounded-xl p-4 mb-4 text-sm"></div>
 
       <!-- Auto schedule info -->
@@ -4294,11 +4370,11 @@ function getAdminHTML(): string {
         <div class="space-y-2 text-sm text-gray-600">
           <div class="flex items-start gap-2">
             <i class="fas fa-check-circle text-green-500 mt-0.5 flex-shrink-0"></i>
-            <span><strong>Schedule:</strong> Every Friday at 11:59 PM (end of workweek) — covers Monday 12:00 AM to Friday 11:59 PM</span>
+            <span><strong>Schedule:</strong> Every Friday at 11:59 PM — covers Monday 12:00 AM to Friday 11:59 PM</span>
           </div>
           <div class="flex items-start gap-2">
             <i class="fas fa-check-circle text-green-500 mt-0.5 flex-shrink-0"></i>
-            <span><strong>Content:</strong> Full GPS proof for every shift + hours + earnings per worker</span>
+            <span><strong>Content:</strong> Full timesheet + hours + earnings per worker</span>
           </div>
           <div class="flex items-start gap-2" id="auto-email-config-status">
             <i class="fas fa-exclamation-circle text-yellow-500 mt-0.5 flex-shrink-0"></i>
@@ -4308,15 +4384,6 @@ function getAdminHTML(): string {
             <i class="fas fa-clock text-blue-500 mt-0.5 flex-shrink-0"></i>
             <span id="last-email-sent-info" class="text-gray-500">Last sent: —</span>
           </div>
-        </div>
-        <div class="mt-4 bg-white border border-gray-200 rounded-xl p-3">
-          <p class="text-xs font-semibold text-gray-500 mb-2">To enable automatic emails:</p>
-          <ol class="text-xs text-gray-600 space-y-1 list-decimal list-inside">
-            <li>Go to <strong>Settings</strong> tab → General → enter your admin email</li>
-            <li>In Cloudflare dashboard → Workers → your app → Settings → Variables → add <code class="bg-gray-100 px-1 rounded">RESEND_API_KEY</code></li>
-            <li>Get a free API key at <a href="https://resend.com" target="_blank" class="text-blue-500 hover:underline">resend.com</a> (free tier: 100 emails/day)</li>
-            <li>Deploy app to Cloudflare Workers (cron triggers require Workers, not Pages)</li>
-          </ol>
         </div>
       </div>
     </div>
