@@ -60,6 +60,26 @@ async function ensureSchema(db: D1Database) {
       FOREIGN KEY (session_id) REFERENCES sessions(id),
       FOREIGN KEY (worker_id) REFERENCES workers(id)
     )`,
+    `CREATE TABLE IF NOT EXISTS clock_in_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      worker_id INTEGER NOT NULL,
+      worker_name TEXT,
+      worker_phone TEXT,
+      job_location TEXT NOT NULL,
+      job_description TEXT,
+      worker_lat REAL,
+      worker_lng REAL,
+      worker_address TEXT,
+      job_lat REAL,
+      job_lng REAL,
+      distance_meters REAL,
+      status TEXT DEFAULT 'pending',
+      override_by TEXT,
+      override_note TEXT,
+      requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      resolved_at DATETIME,
+      FOREIGN KEY (worker_id) REFERENCES workers(id)
+    )`,
     `CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
@@ -82,6 +102,8 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('stat_pay_multiplier', '1.5')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_email', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('last_weekly_email_sent', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('geofence_radius_meters', '300')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('gps_fraud_check', '1')`,
   ]
   for (const sql of statements) {
     await db.prepare(sql).run()
@@ -189,7 +211,29 @@ app.delete('/api/workers/:id', async (c) => {
 
 // ─── SESSIONS API (Clock In / Out) ────────────────────────────────────────────
 
-// Clock In
+// Haversine distance in meters between two lat/lng points
+function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000  // Earth radius in metres
+  const toRad = (d: number) => d * Math.PI / 180
+  const dLat = toRad(lat2 - lat1)
+  const dLng = toRad(lng2 - lng1)
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
+}
+
+// Geocode a free-text address → { lat, lng } using Nominatim (free, no key)
+async function geocodeAddress(address: string): Promise<{ lat: number; lng: number; display: string } | null> {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1&addressdetails=1`
+    const res = await fetch(url, { headers: { 'User-Agent': 'WorkTracker/1.0', 'Accept': 'application/json' } })
+    if (!res.ok) return null
+    const data: any[] = await res.json()
+    if (!data || data.length === 0) return null
+    return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), display: data[0].display_name }
+  } catch { return null }
+}
+
+// Clock In — with GPS fraud detection
 app.post('/api/sessions/clock-in', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -200,25 +244,81 @@ app.post('/api/sessions/clock-in', async (c) => {
   if (!job_description || !job_description.trim()) return c.json({ error: 'Job description is required' }, 400)
 
   // Check if already clocked in
-  const active = await db.prepare(
+  const already = await db.prepare(
     "SELECT * FROM sessions WHERE worker_id = ? AND status = 'active'"
   ).bind(worker_id).first()
+  if (already) return c.json({ error: 'Already clocked in', session: already }, 409)
 
-  if (active) {
-    return c.json({ error: 'Already clocked in', session: active }, 409)
+  // Load settings
+  const settingsRaw = await db.prepare('SELECT * FROM settings').all()
+  const settings: Record<string, string> = {}
+  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+
+  const fraudCheckEnabled = settings.gps_fraud_check !== '0'
+  const geofenceRadius    = parseFloat(settings.geofence_radius_meters || '300')
+
+  // ── GPS FRAUD CHECK ──────────────────────────────────────────────────────────
+  if (fraudCheckEnabled && latitude && longitude) {
+    // Geocode the job address the worker typed
+    const jobCoords = await geocodeAddress(job_location.trim())
+
+    if (jobCoords) {
+      const distanceM = haversineMeters(latitude, longitude, jobCoords.lat, jobCoords.lng)
+      const distanceKm = (distanceM / 1000).toFixed(2)
+
+      if (distanceM > geofenceRadius) {
+        // ── FRAUD DETECTED: worker is too far from job site ──────────────────
+        // Get worker info for the request
+        const worker = await db.prepare('SELECT * FROM workers WHERE id = ?').bind(worker_id).first<any>()
+
+        // Save a pending override request
+        const reqResult = await db.prepare(`
+          INSERT INTO clock_in_requests
+            (worker_id, worker_name, worker_phone, job_location, job_description,
+             worker_lat, worker_lng, worker_address,
+             job_lat, job_lng, distance_meters, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+        `).bind(
+          worker_id,
+          worker?.name || '',
+          worker?.phone || '',
+          job_location.trim(),
+          job_description.trim(),
+          latitude, longitude, address || null,
+          jobCoords.lat, jobCoords.lng,
+          Math.round(distanceM)
+        ).run()
+
+        const requestId = reqResult.meta.last_row_id
+
+        return c.json({
+          error: 'location_mismatch',
+          blocked: true,
+          request_id: requestId,
+          message: `Your current location does not match the job site. You appear to be ${distanceKm} km away from "${job_location}".`,
+          worker_location: { lat: latitude, lng: longitude, address: address || null },
+          job_location_coords: { lat: jobCoords.lat, lng: jobCoords.lng, address: jobCoords.display },
+          distance_km: distanceKm,
+          distance_meters: Math.round(distanceM),
+          geofence_radius_meters: geofenceRadius,
+          override_pending: true,
+          override_message: 'A clock-in override request has been sent to your admin. You may only clock in after admin approval.'
+        }, 403)
+      }
+      // Worker is within geofence — proceed, store job coords
+    }
+    // If geocoding failed (address not found) — allow clock-in but flag it
   }
 
+  // ── NORMAL CLOCK IN ──────────────────────────────────────────────────────────
   const now = new Date().toISOString()
   const result = await db.prepare(
-    `INSERT INTO sessions 
+    `INSERT INTO sessions
      (worker_id, clock_in_time, clock_in_lat, clock_in_lng, clock_in_address, notes, job_location, job_description, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`
   ).bind(worker_id, now, latitude || null, longitude || null, address || null, notes || null, job_location.trim(), job_description.trim()).run()
 
-  const session = await db.prepare(
-    'SELECT * FROM sessions WHERE id = ?'
-  ).bind(result.meta.last_row_id).first()
-
+  const session = await db.prepare('SELECT * FROM sessions WHERE id = ?').bind(result.meta.last_row_id).first()
   return c.json({ session, message: 'Clocked in successfully' }, 201)
 })
 
@@ -267,6 +367,110 @@ app.post('/api/sessions/clock-out', async (c) => {
 
   const updated = await db.prepare('SELECT * FROM sessions WHERE id = ?').bind(session.id).first()
   return c.json({ session: updated, total_hours: totalHours, earnings, message: 'Clocked out successfully' })
+})
+
+// ─── CLOCK-IN OVERRIDE REQUESTS ──────────────────────────────────────────────
+
+// Worker polls this to check if their override request was approved/denied
+app.get('/api/override/status/:request_id', async (c) => {
+  const db = c.env.DB
+  const req = await db.prepare(
+    'SELECT * FROM clock_in_requests WHERE id = ?'
+  ).bind(c.req.param('request_id')).first<any>()
+
+  if (!req) return c.json({ error: 'Request not found' }, 404)
+  return c.json({ request: req })
+})
+
+// Worker checks if they have a pending override request
+app.get('/api/override/worker/:worker_id', async (c) => {
+  const db = c.env.DB
+  const req = await db.prepare(
+    "SELECT * FROM clock_in_requests WHERE worker_id = ? AND status = 'pending' ORDER BY requested_at DESC LIMIT 1"
+  ).bind(c.req.param('worker_id')).first<any>()
+  return c.json({ request: req || null })
+})
+
+// Admin: get all pending override requests
+app.get('/api/override/pending', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const requests = await db.prepare(
+    "SELECT * FROM clock_in_requests WHERE status = 'pending' ORDER BY requested_at DESC"
+  ).all()
+  return c.json({ requests: requests.results })
+})
+
+// Admin: get all override requests (history)
+app.get('/api/override/all', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const requests = await db.prepare(
+    "SELECT * FROM clock_in_requests ORDER BY requested_at DESC LIMIT 100"
+  ).all()
+  return c.json({ requests: requests.results })
+})
+
+// Admin: approve override → actually clock the worker in
+app.post('/api/override/:id/approve', async (c) => {
+  const db = c.env.DB
+  const id = c.req.param('id')
+  const { admin_note } = await c.req.json().catch(() => ({} as any))
+
+  const req = await db.prepare('SELECT * FROM clock_in_requests WHERE id = ?').bind(id).first<any>()
+  if (!req) return c.json({ error: 'Request not found' }, 404)
+  if (req.status !== 'pending') return c.json({ error: 'Request already resolved' }, 409)
+
+  // Check not already clocked in
+  const already = await db.prepare(
+    "SELECT id FROM sessions WHERE worker_id = ? AND status = 'active'"
+  ).bind(req.worker_id).first()
+  if (already) {
+    await db.prepare(
+      "UPDATE clock_in_requests SET status='denied', override_note='Already clocked in', resolved_at=CURRENT_TIMESTAMP WHERE id=?"
+    ).bind(id).run()
+    return c.json({ error: 'Worker is already clocked in' }, 409)
+  }
+
+  // Create the session
+  const now = new Date().toISOString()
+  const sessionResult = await db.prepare(`
+    INSERT INTO sessions
+      (worker_id, clock_in_time, clock_in_lat, clock_in_lng, clock_in_address,
+       job_location, job_description, status, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
+  `).bind(
+    req.worker_id, now,
+    req.worker_lat, req.worker_lng, req.worker_address,
+    req.job_location, req.job_description,
+    `ADMIN OVERRIDE — Worker was ${Math.round(req.distance_meters)}m from job site. ${admin_note || ''}`
+  ).run()
+
+  const session = await db.prepare('SELECT * FROM sessions WHERE id = ?').bind(sessionResult.meta.last_row_id).first()
+
+  // Mark request approved
+  await db.prepare(
+    "UPDATE clock_in_requests SET status='approved', override_by='admin', override_note=?, resolved_at=CURRENT_TIMESTAMP WHERE id=?"
+  ).bind(admin_note || 'Approved by admin', id).run()
+
+  return c.json({ success: true, session, message: 'Override approved — worker clocked in' })
+})
+
+// Admin: deny override
+app.post('/api/override/:id/deny', async (c) => {
+  const db = c.env.DB
+  const id = c.req.param('id')
+  const { admin_note } = await c.req.json().catch(() => ({} as any))
+
+  const req = await db.prepare('SELECT * FROM clock_in_requests WHERE id = ?').bind(id).first<any>()
+  if (!req) return c.json({ error: 'Request not found' }, 404)
+  if (req.status !== 'pending') return c.json({ error: 'Request already resolved' }, 409)
+
+  await db.prepare(
+    "UPDATE clock_in_requests SET status='denied', override_by='admin', override_note=?, resolved_at=CURRENT_TIMESTAMP WHERE id=?"
+  ).bind(admin_note || 'Denied by admin', id).run()
+
+  return c.json({ success: true, message: 'Override denied' })
 })
 
 // Get current session status for a worker
@@ -1587,6 +1791,83 @@ function getWorkerHTML(): string {
   </div>
 </div>
 
+<!-- ── FRAUD BLOCKED MODAL ──────────────────────────────────────────────────── -->
+<div id="fraud-blocked-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4">
+  <div class="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl">
+    <!-- Header -->
+    <div class="flex items-center gap-3 mb-4">
+      <div class="w-12 h-12 bg-red-100 rounded-2xl flex items-center justify-center flex-shrink-0">
+        <i class="fas fa-shield-alt text-red-500 text-xl"></i>
+      </div>
+      <div>
+        <h3 class="text-lg font-bold text-gray-800">Location Mismatch</h3>
+        <p class="text-xs text-red-500 font-medium">Clock-in Blocked</p>
+      </div>
+    </div>
+
+    <!-- Map showing both points -->
+    <div id="fraud-map" class="w-full h-48 rounded-2xl mb-4 bg-gray-100 overflow-hidden"></div>
+
+    <!-- Distance info -->
+    <div class="bg-red-50 border border-red-200 rounded-2xl p-4 mb-4">
+      <div class="flex items-start gap-3">
+        <i class="fas fa-map-marker-alt text-red-500 mt-0.5"></i>
+        <div>
+          <p class="text-sm font-bold text-red-700 mb-1">You are too far from the job site</p>
+          <p id="fraud-distance-msg" class="text-xs text-red-600 mb-2"></p>
+          <div class="grid grid-cols-2 gap-2 text-xs">
+            <div class="bg-white rounded-xl p-2 border border-red-100">
+              <p class="text-gray-500 mb-0.5">📍 Your location</p>
+              <p id="fraud-your-loc" class="font-medium text-gray-700 text-[11px] leading-snug"></p>
+            </div>
+            <div class="bg-white rounded-xl p-2 border border-red-100">
+              <p class="text-gray-500 mb-0.5">🏗️ Job site</p>
+              <p id="fraud-job-loc" class="font-medium text-gray-700 text-[11px] leading-snug"></p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Override request status -->
+    <div id="fraud-override-section">
+      <!-- Pending state -->
+      <div id="fraud-pending" class="hidden bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4">
+        <div class="flex items-center gap-3">
+          <i class="fas fa-clock text-amber-500 text-lg animate-pulse"></i>
+          <div>
+            <p class="text-sm font-bold text-amber-700">Waiting for Admin Approval</p>
+            <p class="text-xs text-amber-600 mt-0.5">Your override request has been sent to the admin. You will be clocked in as soon as they approve.</p>
+            <p id="fraud-poll-status" class="text-xs text-amber-500 mt-1">Checking every 15 seconds...</p>
+          </div>
+        </div>
+      </div>
+      <!-- Request sent confirmation -->
+      <div id="fraud-request-sent" class="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-4">
+        <div class="flex items-center gap-3">
+          <i class="fas fa-paper-plane text-blue-500 text-lg"></i>
+          <div>
+            <p class="text-sm font-bold text-blue-700">Override Request Sent</p>
+            <p class="text-xs text-blue-600 mt-0.5">Admin has been notified. Tap "Wait for Approval" to track the status.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Buttons -->
+    <div class="flex flex-col gap-2">
+      <button id="fraud-wait-btn" onclick="startOverridePolling()"
+        class="w-full bg-amber-500 hover:bg-amber-600 text-white font-bold py-3.5 rounded-2xl text-sm shadow-sm">
+        <i class="fas fa-hourglass-half mr-2"></i>Wait for Admin Approval
+      </button>
+      <button onclick="closeFraudModal()"
+        class="w-full border-2 border-gray-200 text-gray-600 font-semibold py-3 rounded-2xl text-sm hover:bg-gray-50">
+        <i class="fas fa-times mr-2"></i>Cancel — Go Back
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
@@ -1601,6 +1882,10 @@ let marker = null
 let durationTimer = null
 let pingInterval = null
 let recentLocations = []
+// GPS fraud override state
+let pendingOverrideId = null
+let overridePollTimer = null
+let fraudMap = null
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 window.onload = async () => {
@@ -1818,7 +2103,7 @@ async function confirmClockIn() {
   if (!jobDescription) { showToast('Please describe what you are doing', 'error'); document.getElementById('job-description-input').focus(); return }
 
   const btn = document.getElementById('confirm-clock-in-btn')
-  btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch spinner mr-2"></i>Clocking in...'
+  btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch spinner mr-2"></i>Verifying location...'
 
   try {
     const res = await fetch('/api/sessions/clock-in', {
@@ -1834,6 +2119,16 @@ async function confirmClockIn() {
       })
     })
     const data = await res.json()
+
+    // ── GPS FRAUD BLOCKED ─────────────────────────────────────────────────────
+    if (res.status === 403 && data.error === 'location_mismatch') {
+      btn.disabled = false; btn.innerHTML = '<i class="fas fa-play-circle mr-2"></i>Start Working'
+      closeJobModal()
+      showFraudBlockedModal(data)
+      return
+    }
+
+    // ── NORMAL SUCCESS ────────────────────────────────────────────────────────
     if (data.session) {
       activeSession = data.session
       // Save location to recent list
@@ -1846,7 +2141,7 @@ async function confirmClockIn() {
       setClockedInUI(true)
       startDurationTimer()
       startPingInterval()
-      showToast('Clocked in! Have a great shift 💪', 'success')
+      showToast('Clocked in! Have a great shift \u{1F4AA}', 'success')
       await loadStats()
       await loadWorkLog()
     } else {
@@ -1855,6 +2150,116 @@ async function confirmClockIn() {
   } catch(e) { showToast('Connection error', 'error') }
 
   btn.disabled = false; btn.innerHTML = '<i class="fas fa-play-circle mr-2"></i>Start Working'
+}
+
+// ── Fraud Blocked Modal ────────────────────────────────────────────────────────
+function showFraudBlockedModal(data) {
+  pendingOverrideId = data.request_id || null
+
+  // Populate distance message
+  const distKm = parseFloat(data.distance_km || 0)
+  const distM  = parseInt(data.distance_meters || 0)
+  const radius = parseInt(data.geofence_radius_meters || 300)
+  document.getElementById('fraud-distance-msg').textContent =
+    'You are ' + (distM >= 1000 ? distKm + ' km' : distM + ' m') + ' from the job site. Required: within ' + radius + ' m.'
+
+  // Your location label
+  const yourLoc = data.worker_location
+  document.getElementById('fraud-your-loc').textContent =
+    yourLoc && yourLoc.address ? yourLoc.address.substring(0, 60) + '...' :
+    (yourLoc ? yourLoc.lat.toFixed(5) + ', ' + yourLoc.lng.toFixed(5) : 'Unknown')
+
+  // Job site label
+  const jobLoc = data.job_location_coords
+  document.getElementById('fraud-job-loc').textContent =
+    jobLoc && jobLoc.address ? jobLoc.address.substring(0, 60) + '...' :
+    (jobLoc ? jobLoc.lat.toFixed(5) + ', ' + jobLoc.lng.toFixed(5) : 'Unknown')
+
+  // Show initial "request sent" panel, hide pending
+  document.getElementById('fraud-request-sent').classList.remove('hidden')
+  document.getElementById('fraud-pending').classList.add('hidden')
+  document.getElementById('fraud-wait-btn').classList.remove('hidden')
+
+  // Show modal
+  document.getElementById('fraud-blocked-modal').classList.remove('hidden')
+
+  // Draw map with two markers after a tick
+  setTimeout(() => {
+    if (fraudMap) { fraudMap.remove(); fraudMap = null }
+    const mapEl = document.getElementById('fraud-map')
+    if (yourLoc && jobLoc && window.L) {
+      const midLat = (yourLoc.lat + jobLoc.lat) / 2
+      const midLng = (yourLoc.lng + jobLoc.lng) / 2
+      fraudMap = L.map(mapEl).setView([midLat, midLng], 12)
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(fraudMap)
+      // Worker marker (blue)
+      const workerIcon = L.divIcon({ className: '', html: '<div style="background:#3b82f6;width:14px;height:14px;border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,.4)"></div>', iconSize:[14,14], iconAnchor:[7,7] })
+      L.marker([yourLoc.lat, yourLoc.lng], { icon: workerIcon }).addTo(fraudMap).bindPopup('You are here')
+      // Job site marker (red)
+      const jobIcon = L.divIcon({ className: '', html: '<div style="background:#ef4444;width:14px;height:14px;border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,.4)"></div>', iconSize:[14,14], iconAnchor:[7,7] })
+      L.marker([jobLoc.lat, jobLoc.lng], { icon: jobIcon }).addTo(fraudMap).bindPopup('Job site')
+      // Line between them
+      L.polyline([[yourLoc.lat, yourLoc.lng],[jobLoc.lat, jobLoc.lng]], { color:'#ef4444', weight:2, dashArray:'6,4' }).addTo(fraudMap)
+      // Fit bounds
+      fraudMap.fitBounds([[yourLoc.lat, yourLoc.lng],[jobLoc.lat, jobLoc.lng]], { padding:[20,20] })
+    } else {
+      mapEl.innerHTML = '<div class="flex items-center justify-center h-full text-gray-400 text-sm"><i class="fas fa-map-marked-alt mr-2"></i>Map unavailable</div>'
+    }
+  }, 200)
+}
+
+function closeFraudModal() {
+  document.getElementById('fraud-blocked-modal').classList.add('hidden')
+  stopOverridePolling()
+  if (fraudMap) { fraudMap.remove(); fraudMap = null }
+}
+
+function startOverridePolling() {
+  if (!pendingOverrideId) return
+  document.getElementById('fraud-request-sent').classList.add('hidden')
+  document.getElementById('fraud-pending').classList.remove('hidden')
+  document.getElementById('fraud-wait-btn').classList.add('hidden')
+  stopOverridePolling()
+  pollOverrideStatus()
+  overridePollTimer = setInterval(pollOverrideStatus, 15000)
+}
+
+function stopOverridePolling() {
+  if (overridePollTimer) { clearInterval(overridePollTimer); overridePollTimer = null }
+}
+
+async function pollOverrideStatus() {
+  if (!pendingOverrideId) return
+  document.getElementById('fraud-poll-status').textContent = 'Checking... ' + new Date().toLocaleTimeString()
+  try {
+    const res = await fetch('/api/override/status/' + pendingOverrideId)
+    const data = await res.json()
+    const req = data.request
+    if (!req) return
+
+    if (req.status === 'approved') {
+      stopOverridePolling()
+      closeFraudModal()
+      // Fetch the newly created session
+      const sRes = await fetch('/api/sessions/status/' + currentWorker.id)
+      const sData = await sRes.json()
+      if (sData.active_session) {
+        activeSession = sData.active_session
+        setClockedInUI(true)
+        startDurationTimer()
+        startPingInterval()
+        showToast('\u2705 Admin approved! You are now clocked in.', 'success')
+        await loadStats()
+        await loadWorkLog()
+      }
+    } else if (req.status === 'denied') {
+      stopOverridePolling()
+      closeFraudModal()
+      showToast('\u274C Admin denied your clock-in request. Contact your supervisor.', 'error')
+    }
+  } catch(e) {
+    document.getElementById('fraud-poll-status').textContent = 'Checking every 15 seconds...'
+  }
 }
 
 // ── Clock Out ─────────────────────────────────────────────────────────────────
@@ -2358,6 +2763,10 @@ function getAdminHTML(): string {
       <button onclick="showTab('export')" class="tab-btn px-5 py-4 text-sm font-medium text-gray-600" data-tab="export">
         <i class="fas fa-file-export mr-1"></i>Export
       </button>
+      <button onclick="showTab('overrides')" class="tab-btn px-5 py-4 text-sm font-medium text-gray-600 relative" data-tab="overrides">
+        <i class="fas fa-shield-alt mr-1"></i>Overrides
+        <span id="override-badge" class="hidden absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center">0</span>
+      </button>
     </div>
 
     <!-- Tab: Live -->
@@ -2624,6 +3033,47 @@ function getAdminHTML(): string {
         </div>
       </div>
 
+      <!-- GPS Fraud Prevention -->
+      <div class="space-y-4">
+        <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2 flex items-center gap-2">
+          <i class="fas fa-shield-alt text-red-500"></i> GPS Fraud Prevention
+        </h4>
+        <div class="bg-red-50 border border-red-200 rounded-2xl p-4">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <p class="text-sm font-semibold text-gray-700">Enable GPS Location Check</p>
+              <p class="text-xs text-gray-500">Block clock-in if worker is too far from the job site</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="s-gps-fraud-check" class="sr-only peer" checked/>
+              <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-red-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-red-500"></div>
+            </label>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">
+              Geofence Radius <span class="text-gray-400 font-normal">(metres — worker must be within this distance)</span>
+            </label>
+            <div class="flex items-center gap-3">
+              <input id="s-geofence-radius" type="number" min="50" max="5000" step="50" value="300"
+                class="flex-1 px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-red-400 text-sm"/>
+              <div class="flex gap-1">
+                <button onclick="document.getElementById('s-geofence-radius').value='100'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">100m</button>
+                <button onclick="document.getElementById('s-geofence-radius').value='300'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">300m</button>
+                <button onclick="document.getElementById('s-geofence-radius').value='500'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">500m</button>
+                <button onclick="document.getElementById('s-geofence-radius').value='1000'" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">1km</button>
+              </div>
+            </div>
+            <p class="text-xs text-gray-400 mt-1">
+              Recommended: 300m in cities, 500-1000m in suburban areas. Currently: when a worker enters "29 Birchbank Cres" but is actually at home, they will be blocked.
+            </p>
+          </div>
+        </div>
+        <div class="text-xs text-gray-500 flex items-start gap-2">
+          <i class="fas fa-info-circle text-blue-400 mt-0.5 flex-shrink-0"></i>
+          <span>When blocked, the worker sees a map showing their actual location vs the job site and must wait for admin approval under the <strong>Overrides</strong> tab.</span>
+        </div>
+      </div>
+
       <div class="mt-6 flex gap-3">
         <button onclick="saveSettings()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl">
           <i class="fas fa-save mr-2"></i>Save Settings
@@ -2747,6 +3197,47 @@ function getAdminHTML(): string {
       </div>
     </div>
 
+  </div>
+</div>
+
+<!-- Tab: Overrides -->
+<div id="tab-overrides" class="tab-content hidden bg-white rounded-b-2xl rounded-tr-2xl shadow-sm p-5">
+  <div class="flex items-center justify-between mb-5">
+    <h3 class="font-bold text-gray-700 flex items-center gap-2">
+      <i class="fas fa-shield-alt text-red-500"></i>
+      Clock-In Override Requests
+      <span id="overrides-count" class="bg-red-100 text-red-600 text-xs font-bold px-2 py-0.5 rounded-full ml-1">0</span>
+    </h3>
+    <div class="flex gap-2">
+      <button onclick="loadOverrides()" class="text-sm text-gray-500 hover:text-gray-700 px-3 py-1.5 border border-gray-200 rounded-xl">
+        <i class="fas fa-sync-alt mr-1"></i>Refresh
+      </button>
+      <button onclick="showOverrideHistory()" class="text-sm text-indigo-600 hover:text-indigo-700 px-3 py-1.5 border border-indigo-200 rounded-xl">
+        <i class="fas fa-history mr-1"></i>History
+      </button>
+    </div>
+  </div>
+
+  <!-- Explanation banner -->
+  <div class="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-5">
+    <div class="flex items-start gap-3">
+      <i class="fas fa-info-circle text-blue-500 mt-0.5"></i>
+      <div>
+        <p class="text-sm font-semibold text-blue-700 mb-1">How GPS Fraud Prevention Works</p>
+        <p class="text-xs text-blue-600">When a worker tries to clock in, the app compares their <strong>actual GPS position</strong> against the job site address they entered. If the distance exceeds the geofence radius (set in Settings), the clock-in is <strong>blocked</strong> and an override request is sent here. You can <strong>Approve</strong> or <strong>Deny</strong> each request below.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pending overrides list -->
+  <div id="overrides-list">
+    <p class="text-gray-400 text-center py-12"><i class="fas fa-check-circle text-green-400 text-3xl mb-3 block"></i>No pending override requests. All workers are clocking in from their job sites.</p>
+  </div>
+
+  <!-- History section (hidden by default) -->
+  <div id="overrides-history" class="hidden mt-6">
+    <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2 mb-4">Override History (Last 100)</h4>
+    <div id="overrides-history-list" class="space-y-2"></div>
   </div>
 </div>
 
@@ -3199,6 +3690,7 @@ function showTab(name) {
   if (name === 'calendar') loadCalendar()
   if (name === 'settings') loadSettings()
   if (name === 'export') initExportTab()
+  if (name === 'overrides') loadOverrides()
 }
 
 function changePeriod(period) {
@@ -3485,6 +3977,12 @@ async function loadSettings() {
     document.getElementById('s-paid-hours').value = currentSettings.paid_hours_per_day || '7.5'
     document.getElementById('s-stat-multiplier').value = currentSettings.stat_pay_multiplier || '1.5'
 
+    // GPS Fraud Prevention
+    const fraudCheck = document.getElementById('s-gps-fraud-check')
+    if (fraudCheck) fraudCheck.checked = currentSettings.gps_fraud_check !== '0'
+    const geofenceEl = document.getElementById('s-geofence-radius')
+    if (geofenceEl) geofenceEl.value = currentSettings.geofence_radius_meters || '300'
+
     // Country dropdown
     const country = currentSettings.country_code || 'CA'
     document.getElementById('s-country').value = country
@@ -3572,7 +4070,9 @@ async function saveSettings() {
     break_afternoon_min: document.getElementById('s-break-afternoon').value,
     paid_hours_per_day: document.getElementById('s-paid-hours').value,
     stat_pay_multiplier: mult,
-    work_days: activeDays.join(',')
+    work_days: activeDays.join(','),
+    gps_fraud_check: document.getElementById('s-gps-fraud-check')?.checked ? '1' : '0',
+    geofence_radius_meters: document.getElementById('s-geofence-radius')?.value || '300'
   }
 
   try {
@@ -3696,6 +4196,173 @@ async function emailWeeklyReport() {
   btn.disabled = false
   btn.innerHTML = '<i class="fas fa-paper-plane mr-1"></i>Send Email'
 }
+
+// ── GPS Override Management ───────────────────────────────────────────────────
+let overrideHistoryVisible = false
+
+async function loadOverrides() {
+  try {
+    const res = await fetch('/api/override/pending')
+    const data = await res.json()
+    const requests = data.requests || []
+    const listEl = document.getElementById('overrides-list')
+    const countEl = document.getElementById('overrides-count')
+    const badge = document.getElementById('override-badge')
+
+    countEl.textContent = requests.length
+    if (requests.length > 0) {
+      badge.textContent = requests.length
+      badge.classList.remove('hidden')
+    } else {
+      badge.classList.add('hidden')
+    }
+
+    if (requests.length === 0) {
+      listEl.innerHTML = '<p class="text-gray-400 text-center py-12"><i class="fas fa-check-circle text-green-400 text-3xl mb-3 block"></i>No pending override requests.</p>'
+      return
+    }
+
+    listEl.innerHTML = requests.map(r => {
+      const distM = Math.round(r.distance_meters || 0)
+      const distTxt = distM >= 1000 ? (distM/1000).toFixed(1) + ' km' : distM + ' m'
+      const reqTime = new Date(r.requested_at).toLocaleString()
+      const gmapsWorker = (r.worker_lat && r.worker_lng) ? 'https://www.google.com/maps?q=' + r.worker_lat + ',' + r.worker_lng : null
+      const gmapsJob   = (r.job_lat && r.job_lng)    ? 'https://www.google.com/maps?q=' + r.job_lat + ',' + r.job_lng   : null
+      return \`
+      <div class="border-2 border-red-200 rounded-2xl p-5 mb-4 bg-red-50" id="override-card-\${r.id}">
+        <div class="flex items-start justify-between gap-3 mb-3">
+          <div class="flex items-center gap-3">
+            <div class="w-11 h-11 bg-red-100 rounded-2xl flex items-center justify-center flex-shrink-0">
+              <i class="fas fa-user-slash text-red-500 text-lg"></i>
+            </div>
+            <div>
+              <p class="font-bold text-gray-800">\${r.worker_name || 'Worker'}</p>
+              <p class="text-xs text-gray-500">\${r.worker_phone || ''} &bull; \${reqTime}</p>
+            </div>
+          </div>
+          <span class="bg-red-500 text-white text-xs font-bold px-2.5 py-1 rounded-full flex-shrink-0">BLOCKED</span>
+        </div>
+        <div class="bg-white rounded-xl border border-red-200 p-3 mb-3">
+          <div class="flex items-center gap-2 mb-2">
+            <i class="fas fa-exclamation-triangle text-red-500"></i>
+            <span class="text-sm font-semibold text-red-700">Worker is \${distTxt} from job site</span>
+          </div>
+          <div class="grid grid-cols-2 gap-2 text-xs">
+            <div class="bg-blue-50 rounded-lg p-2">
+              <p class="text-gray-500 mb-0.5">Your location</p>
+              <p class="font-medium text-gray-700">\${r.worker_address ? r.worker_address.substring(0,50)+'...' : (r.worker_lat ? r.worker_lat.toFixed(5)+', '+r.worker_lng.toFixed(5) : 'No GPS')}</p>
+              \${gmapsWorker ? '<a href="'+gmapsWorker+'" target="_blank" class="text-blue-500 hover:underline text-[11px]">View on map</a>' : ''}
+            </div>
+            <div class="bg-green-50 rounded-lg p-2">
+              <p class="text-gray-500 mb-0.5">Job site entered</p>
+              <p class="font-medium text-gray-700">\${r.job_location}</p>
+              \${gmapsJob ? '<a href="'+gmapsJob+'" target="_blank" class="text-blue-500 hover:underline text-[11px]">View on map</a>' : ''}
+            </div>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl border border-gray-200 p-3 mb-3 text-xs text-gray-600">
+          <span class="font-medium text-gray-700">Task: </span>\${r.job_description || 'Not specified'}
+        </div>
+        <div class="mb-3">
+          <input type="text" id="override-note-\${r.id}" placeholder="Admin note (optional — e.g. verified by phone call)"
+            class="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"/>
+        </div>
+        <div class="flex gap-3">
+          <button onclick="approveOverride(\${r.id})"
+            class="flex-1 bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-xl text-sm shadow-sm">
+            Approve &amp; Clock In
+          </button>
+          <button onclick="denyOverride(\${r.id})"
+            class="flex-1 bg-red-500 hover:bg-red-600 text-white font-bold py-3 rounded-xl text-sm shadow-sm">
+            Deny
+          </button>
+        </div>
+      </div>\`
+    }).join('')
+  } catch(e) {
+    showAdminToast('Failed to load override requests', 'error')
+  }
+}
+
+async function approveOverride(id) {
+  const noteEl = document.getElementById('override-note-' + id)
+  const note = noteEl ? noteEl.value : ''
+  if (!confirm('Approve this clock-in override? The worker will be clocked in immediately.')) return
+  try {
+    const res = await fetch('/api/override/' + id + '/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ admin_note: note || 'Approved by admin' })
+    })
+    const data = await res.json()
+    if (data.success) {
+      showAdminToast('Override approved — worker clocked in', 'success')
+      loadOverrides()
+      loadLive()
+      loadStats()
+    } else { showAdminToast(data.error || 'Failed to approve', 'error') }
+  } catch(e) { showAdminToast('Connection error', 'error') }
+}
+
+async function denyOverride(id) {
+  const noteEl = document.getElementById('override-note-' + id)
+  const note = noteEl ? noteEl.value : ''
+  if (!confirm('Deny this clock-in override? The worker will not be clocked in.')) return
+  try {
+    const res = await fetch('/api/override/' + id + '/deny', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ admin_note: note || 'Denied by admin' })
+    })
+    const data = await res.json()
+    if (data.success) {
+      showAdminToast('Override denied', 'info')
+      loadOverrides()
+    } else { showAdminToast(data.error || 'Failed to deny', 'error') }
+  } catch(e) { showAdminToast('Connection error', 'error') }
+}
+
+async function showOverrideHistory() {
+  overrideHistoryVisible = !overrideHistoryVisible
+  const histEl = document.getElementById('overrides-history')
+  if (!overrideHistoryVisible) { histEl.classList.add('hidden'); return }
+  histEl.classList.remove('hidden')
+  try {
+    const res = await fetch('/api/override/all')
+    const data = await res.json()
+    const requests = data.requests || []
+    const listEl = document.getElementById('overrides-history-list')
+    if (requests.length === 0) {
+      listEl.innerHTML = '<p class="text-gray-400 text-sm text-center py-4">No override history yet.</p>'
+      return
+    }
+    const statusColor = { approved: 'text-green-600 bg-green-100', denied: 'text-red-600 bg-red-100', pending: 'text-amber-600 bg-amber-100' }
+    listEl.innerHTML = requests.map(r => {
+      const distM = Math.round(r.distance_meters || 0)
+      const distTxt = distM >= 1000 ? (distM/1000).toFixed(1)+' km' : distM+'m'
+      const sc = statusColor[r.status] || 'text-gray-600 bg-gray-100'
+      return \`<div class="flex items-center justify-between bg-gray-50 rounded-xl px-4 py-3 border border-gray-200 text-sm">
+        <div>
+          <span class="font-semibold text-gray-800">\${r.worker_name || 'Worker'}</span>
+          <span class="text-gray-500 ml-2 text-xs">\${r.job_location} &bull; \${distTxt} away</span>
+          <p class="text-xs text-gray-400 mt-0.5">\${new Date(r.requested_at).toLocaleString()}\${r.override_note ? ' &bull; ' + r.override_note : ''}</p>
+        </div>
+        <span class="text-xs font-bold px-2.5 py-1 rounded-full flex-shrink-0 \${sc}">\${r.status.toUpperCase()}</span>
+      </div>\`
+    }).join('')
+  } catch(e) { showAdminToast('Failed to load history', 'error') }
+}
+
+// Poll for pending override badge every 60s
+setInterval(async () => {
+  try {
+    const res = await fetch('/api/override/pending')
+    const data = await res.json()
+    const count = (data.requests || []).length
+    const badge = document.getElementById('override-badge')
+    if (!badge) return
+    if (count > 0) { badge.textContent = count; badge.classList.remove('hidden') }
+    else { badge.classList.add('hidden') }
+  } catch(e) {}
+}, 60000)
 
 function showAdminToast(msg, type = 'info') {
   const t = document.getElementById('admin-toast')
