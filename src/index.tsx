@@ -2160,9 +2160,9 @@ function renderWorkerCalGrid(calData) {
 function renderWorkerCalStats(calData) {
   const sessionsByDate = calData.sessions_by_date || {}
   let totalHours = 0, totalEarnings = 0, daysWorked = 0
-  Object.values(sessionsByDate).forEach((sessions: any) => {
-    totalHours += (sessions as any[]).reduce((s: number, x: any) => s + (x.total_hours || 0), 0)
-    totalEarnings += (sessions as any[]).reduce((s: number, x: any) => s + (x.earnings || 0), 0)
+  Object.values(sessionsByDate).forEach((sessions) => {
+    totalHours += sessions.reduce((s, x) => s + (x.total_hours || 0), 0)
+    totalEarnings += sessions.reduce((s, x) => s + (x.earnings || 0), 0)
     daysWorked++
   })
   document.getElementById('worker-cal-stats').innerHTML = \`
@@ -3346,9 +3346,9 @@ function renderCalendarSummary(calData) {
   }
 
   let totalHours = 0, totalEarnings = 0, daysWorked = 0
-  Object.values(sessionsByDate).forEach((sessions: any) => {
-    const dayH = (sessions as any[]).reduce((s: number, x: any) => s + (x.total_hours || 0), 0)
-    const dayE = (sessions as any[]).reduce((s: number, x: any) => s + (x.earnings || 0), 0)
+  Object.values(sessionsByDate).forEach((sessions) => {
+    const dayH = sessions.reduce((s, x) => s + (x.total_hours || 0), 0)
+    const dayE = sessions.reduce((s, x) => s + (x.earnings || 0), 0)
     totalHours += dayH; totalEarnings += dayE; daysWorked++
   })
 
@@ -3448,16 +3448,16 @@ const STAT_MULTIPLIERS = {
 }
 
 const STAT_PAY_NOTES = {
-  'CA-ON': 'Ontario: 1.5× for working on stat holidays + regular pay for the day.',
-  'CA-BC': 'BC: Must receive regular day\'s pay for stat; 1.5× if working.',
-  'CA-AB': 'Alberta: General holidays — regular pay off or 1.5× if working.',
+  'CA-ON': 'Ontario: 1.5x for working on stat holidays + regular pay for the day off.',
+  'CA-BC': 'BC: Must receive regular day pay for stat; 1.5x if working on the holiday.',
+  'CA-AB': 'Alberta: General holidays — regular pay off or 1.5x if working.',
   'CA-QC': 'Quebec: Regular pay for the stat day; no premium for working (unless collective agreement).',
-  'CA-MB': 'Manitoba: 1.5× for working on a general holiday.',
-  'CA-SK': 'Saskatchewan: 1.5× for working on statutory holidays.',
-  'CA-NL': 'Newfoundland: 2× pay for working on public holidays.',
-  'US-CA': 'California: No state mandate; federal FLSA has no holiday premium. Industry standard 1.5×.',
-  'US-NY': 'New York: No state mandate for holiday premium pay. 1.5× is common practice.',
-  'US-TX': 'Texas: Follows federal FLSA — no holiday pay mandate. 1.5× by employer policy.',
+  'CA-MB': 'Manitoba: 1.5x for working on a general holiday.',
+  'CA-SK': 'Saskatchewan: 1.5x for working on statutory holidays.',
+  'CA-NL': 'Newfoundland: 2x pay for working on public holidays.',
+  'US-CA': 'California: No state mandate; federal FLSA has no holiday premium. Industry standard 1.5x.',
+  'US-NY': 'New York: No state mandate for holiday premium pay. 1.5x is common practice.',
+  'US-TX': 'Texas: Follows federal FLSA — no holiday pay mandate. 1.5x by employer policy.',
   'AU-NSW': 'NSW: Double time for working on public holidays (penalty rates).',
   'AU-VIC': 'Victoria: Double time for public holiday work.',
   'GB-ENG': 'England: No legal right to extra pay on bank holidays (contract dependent).'
