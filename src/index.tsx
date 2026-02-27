@@ -5264,8 +5264,15 @@ async function loadMap() {
   if (!adminMap) {
     adminMap = L.map('admin-map', { attributionControl: false })
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(adminMap)
+  } else {
+    // Clear previous markers before reloading
+    adminMap.eachLayer(layer => {
+      if (layer instanceof L.CircleMarker) adminMap.removeLayer(layer)
+    })
   }
-  
+  // Remove any stale "no sessions" overlay
+  document.querySelectorAll('#admin-map > div[style*="pointer-events:none"]').forEach(el => el.remove())
+
   try {
     const today = new Date().toISOString().split('T')[0]
     const res = await fetch('/api/sessions?date=' + today + '&limit=200')
@@ -5274,7 +5281,11 @@ async function loadMap() {
     const sessions = (data.sessions || []).filter(s => s.clock_in_lat && s.clock_in_lng)
     
     if (sessions.length === 0) {
-      adminMap.setView([25.2048, 55.2708], 10) // Default: Dubai
+      // No sessions today — show world view, no pin
+      adminMap.setView([20, 0], 2)
+      document.getElementById('admin-map').insertAdjacentHTML('beforeend',
+        '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,0.9);padding:12px 20px;border-radius:12px;font-size:13px;color:#6b7280;pointer-events:none;z-index:999;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.1)"><i class=\'fas fa-map-marker-slash\' style=\'color:#9ca3af;margin-right:6px\'></i>No clock-ins recorded today</div>'
+      )
       return
     }
     
