@@ -514,7 +514,7 @@ async function sendOverrideNotification(
         method: 'POST',
         headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from: `${appName} Alerts <alerts@clockinproof.app>`,
+          from: `${appName} Alerts <alerts@clockinproof.com>`,
           to: [adminEmail],
           subject: `🚨 [${appName}] Clock-In Blocked: ${req.worker_name} is ${distTxt} from "${req.job_location}"`,
           html: emailHtml
@@ -1810,7 +1810,7 @@ app.post('/api/export/email', async (c) => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          from: `${appName} <reports@clockinproof.app>`,
+          from: `${appName} <reports@clockinproof.com>`,
           to: [adminEmail],
           subject,
           html: htmlBody
@@ -1984,7 +1984,7 @@ async function runWeeklyEmailJob(db: D1Database, env: any) {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      from: `${appName} <reports@clockinproof.app>`,
+      from: `${appName} <reports@clockinproof.com>`,
       to: [adminEmail],
       subject,
       html: htmlBody
