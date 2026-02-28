@@ -2267,7 +2267,7 @@ async function loadAcctPreview() {
   previewEl.innerHTML = '<p class="text-gray-400 text-center py-8"><i class="fas fa-spinner fa-spin mr-2"></i>Loading preview...</p>'
 
   try {
-    const res  = await fetch('/api/export/report?week=' + dateInput.value)
+    const res  = await fetch('/api/export/weekly?week=' + dateInput.value)
     const data = await res.json()
     const workers = data.workers || []
 
@@ -2366,12 +2366,22 @@ async function initQbTab() {
     const data = await res.json()
     qbPayPeriods = data.periods || []
     renderQbPeriodList()
-    // Default to most recent completed period
+    // Default to most recent completed period; if none, use current month
     const today = new Date().toISOString().split('T')[0]
     const past = qbPayPeriods.filter(p => p.end <= today)
-    if (past.length) setQbPeriod(past[past.length - 1].start, past[past.length - 1].end)
+    const current = qbPayPeriods.find(p => p.start <= today && p.end >= today)
+    if (past.length) {
+      setQbPeriod(past[past.length - 1].start, past[past.length - 1].end)
+    } else if (current) {
+      setQbPeriod(current.start, current.end)
+    } else {
+      // No past or current pay periods — default to this month
+      setQbCustomRange('this_month')
+    }
   } catch(e) {
     console.error('Failed to load pay periods', e)
+    // Fallback to this month
+    setQbCustomRange('this_month')
   }
 }
 
@@ -2382,14 +2392,15 @@ function renderQbPeriodList() {
   container.innerHTML = qbPayPeriods.map((p, i) => {
     const isCurrent = p.start <= today && p.end >= today
     const isPast    = p.end < today
+    const isFuture  = p.start > today
     const cls = isCurrent
-      ? 'bg-indigo-600 text-white border-indigo-600'
+      ? 'bg-indigo-600 text-white border-indigo-600 cursor-pointer'
       : isPast
-        ? 'bg-white border-gray-200 text-gray-700 hover:bg-indigo-50 hover:border-indigo-300'
-        : 'bg-gray-50 border-gray-100 text-gray-400 cursor-default'
-    return `<button onclick="${isPast || isCurrent ? `setQbPeriod('${p.start}','${p.end}')` : 'void(0)'}"
+        ? 'bg-white border-gray-200 text-gray-700 hover:bg-indigo-50 hover:border-indigo-300 cursor-pointer'
+        : 'bg-gray-50 border-gray-200 text-gray-400 hover:bg-gray-100 cursor-pointer'
+    return `<button onclick="setQbPeriod('${p.start}','${p.end}')"
       class="px-3 py-1.5 rounded-xl border text-xs font-medium transition-all ${cls}">
-      ${isCurrent ? '▶ ' : ''}${p.label}${p.payday ? ` · Pay: ${p.payday}` : ''}
+      ${isCurrent ? '▶ ' : isFuture ? '⏳ ' : ''}${p.label}
     </button>`
   }).join('')
 }
@@ -2443,18 +2454,10 @@ async function loadQbPreview() {
   el.innerHTML = '<p class="text-gray-400 text-center py-8"><i class="fas fa-spinner fa-spin mr-2"></i>Loading...</p>'
 
   try {
-    const res  = await fetch(`/api/export/qb-csv?start=${start}&end=${end}`)
-    // Parse the CSV for display (we re-fetch JSON data for display)
-    const jRes  = await fetch(`/api/export/weekly?week=${start}`)
-    const data  = await jRes.json()
-
-    // We need payroll data — use the payroll API
-    const pRes = await fetch(`/api/payroll/2026/01?start=${start}&end=${end}`)
-
-    // Use a simpler approach: parse our own report endpoint
-    const rRes  = await fetch(`/api/export/report?week=${start}`)
-    const rData = await rRes.json()
-    const workers = rData.workers || []
+    // Use dedicated /api/export/period endpoint with exact start + end dates
+    const res    = await fetch(`/api/export/period?start=${start}&end=${end}`)
+    const data   = await res.json()
+    const workers = data.workers || []
 
     if (!workers.length) {
       el.innerHTML = '<div class="text-center py-10 text-gray-400"><i class="fas fa-calendar-times text-3xl mb-3 block text-gray-200"></i><p class="text-sm">No completed shifts in this period</p></div>'
@@ -2512,9 +2515,9 @@ function downloadQbFile(type) {
   if (!start || !end) { showAdminToast('Select a pay period first', 'error'); return }
 
   let url
-  if (type === 'iif')    url = `/api/export/qb-iif?start=${start}&end=${end}`
+  if (type === 'iif')      url = `/api/export/qb-iif?start=${start}&end=${end}`
   else if (type === 'csv') url = `/api/export/qb-csv?start=${start}&end=${end}`
-  else                   url = `/api/export/csv?week=${start}`  // detail CSV
+  else                     url = `/api/export/csv?week=${start}&end=${end}`  // detail CSV
 
   const a = document.createElement('a')
   a.href = url

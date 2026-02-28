@@ -2138,6 +2138,47 @@ app.get('/api/export/weekly', async (c) => {
   })
 })
 
+// GET /api/export/period?start=YYYY-MM-DD&end=YYYY-MM-DD
+// Returns JSON for any arbitrary date range — used by QB preview and email
+app.get('/api/export/period', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const start       = c.req.query('start') || new Date().toISOString().split('T')[0]
+  const end         = c.req.query('end')   || start
+  const workerIdRaw = c.req.query('worker_id')
+  const workerId    = workerIdRaw ? parseInt(workerIdRaw) : null
+
+  const workerFilter = workerId ? 'AND s.worker_id = ?' : ''
+  const binds = workerId ? [start, end, workerId] : [start, end]
+
+  const sessions = await db.prepare(`
+    SELECT s.*, w.name AS worker_name, w.phone AS worker_phone, w.hourly_rate
+    FROM sessions s JOIN workers w ON s.worker_id = w.id
+    WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+    ${workerFilter}
+    ORDER BY w.name, s.clock_in_time ASC
+  `).bind(...binds).all()
+
+  const byWorker: Record<string, any> = {}
+  ;(sessions.results as any[]).forEach((s: any) => {
+    const wid = s.worker_id
+    if (!byWorker[wid]) {
+      byWorker[wid] = { worker_id: wid, worker_name: s.worker_name, worker_phone: s.worker_phone, hourly_rate: s.hourly_rate, sessions: [], total_hours: 0, total_earnings: 0 }
+    }
+    byWorker[wid].sessions.push(s)
+    byWorker[wid].total_hours    += s.total_hours || 0
+    byWorker[wid].total_earnings += s.earnings    || 0
+  })
+
+  const fmtLabel = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' })
+  return c.json({
+    start, end,
+    label: `${fmtLabel(start)} – ${fmtLabel(end)}`,
+    generated_at: new Date().toISOString(),
+    workers: Object.values(byWorker)
+  })
+})
+
 // GET /api/export/weekly/html?week=YYYY-MM-DD
 // Returns a printable HTML proof report
 app.get('/api/export/weekly/html', async (c) => {
@@ -2313,15 +2354,17 @@ app.post('/api/export/email', async (c) => {
   }, 200)
 })
 
-// GET /api/export/csv?week=YYYY-MM-DD&worker_id=N
+// GET /api/export/csv?week=YYYY-MM-DD&end=YYYY-MM-DD&worker_id=N
 // Returns a CSV file attachment (all staff or a single worker)
 app.get('/api/export/csv', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
   const weekParam   = c.req.query('week')
+  const endParam    = c.req.query('end')
   const workerIdRaw = c.req.query('worker_id')
   const workerId    = workerIdRaw ? parseInt(workerIdRaw) : null
   const bounds      = getWeekBounds(weekParam ? new Date(weekParam) : undefined)
+  if (endParam) bounds.end = endParam   // optional end override for pay-period exports
 
   const workerFilter = workerId ? 'AND s.worker_id = ?' : ''
   const sessionBinds = workerId ? [bounds.start, bounds.end, workerId] : [bounds.start, bounds.end]
