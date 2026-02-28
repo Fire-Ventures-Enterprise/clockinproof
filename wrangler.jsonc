@@ -12,7 +12,27 @@
       "database_name": "clockinproof-production",
       "database_id": "local-dev-placeholder"
     }
-  ]
+  ],
+
+  // ── SUBDOMAIN ROUTING ──────────────────────────────────────────────────────
+  // After deploying to Cloudflare Pages, add these Custom Domains in the
+  // Cloudflare Pages dashboard (Settings → Custom Domains):
+  //
+  //   clockinproof.com          → Landing page  (/)
+  //   www.clockinproof.com      → Landing page  (/)
+  //   app.clockinproof.com      → Worker app    (/)  ← subdomain detected in code
+  //   admin.clockinproof.com    → Admin portal  (/)  ← subdomain detected in code
+  //
+  // In Cloudflare DNS (clockinproof.com zone), add CNAME records:
+  //   app    CNAME  clockinproof.pages.dev   (Proxied ✅)
+  //   admin  CNAME  clockinproof.pages.dev   (Proxied ✅)
+  //   www    CNAME  clockinproof.pages.dev   (Proxied ✅)
+  //
+  // The app uses the Host header to detect which subdomain is being accessed
+  // and serves the correct HTML (worker app / admin / landing page) accordingly.
+  // No separate deployments needed — one Pages project handles all three.
+  // ──────────────────────────────────────────────────────────────────────────
+
   // Uncomment below after deploying to Cloudflare Workers (not Pages) for cron support:
   // "triggers": {
   //   "crons": ["59 23 * * 5"]   // Every Friday 23:59 UTC → sends weekly email

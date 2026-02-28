@@ -949,7 +949,9 @@ async function generateInviteLink(id, name) {
     const res  = await fetch('/api/workers/' + id + '/invite', { method: 'POST' })
     const data = await res.json()
     if (!data.invite_code) { showAdminToast('Could not generate link', 'error'); return }
-    const link = window.location.origin + '/invite/' + data.invite_code
+    // Use app_host from settings if configured (e.g. app.clockinproof.com), else fallback to current origin
+    const appBase = (currentSettings && currentSettings.app_host) ? currentSettings.app_host.replace(/\/$/, '') : window.location.origin
+    const link = appBase + '/invite/' + data.invite_code
     // Show modal with the link
     const existing = document.getElementById('invite-modal')
     if (existing) existing.remove()
@@ -1397,6 +1399,8 @@ async function loadSettings() {
     if (twilioFromEl) twilioFromEl.value = currentSettings.twilio_from_number || ''
     const appHostEl = document.getElementById('s-app-host')
     if (appHostEl) appHostEl.value = currentSettings.app_host || ''
+    const adminHostEl = document.getElementById('s-admin-host')
+    if (adminHostEl) adminHostEl.value = currentSettings.admin_host || ''
 
     // Country dropdown
     const country = currentSettings.country_code || 'CA'
@@ -1498,7 +1502,8 @@ async function saveSettings() {
     twilio_account_sid: document.getElementById('s-twilio-sid')?.value?.trim() || '',
     twilio_auth_token: document.getElementById('s-twilio-token')?.value?.trim() || '',
     twilio_from_number: document.getElementById('s-twilio-from')?.value?.trim() || '',
-    app_host: document.getElementById('s-app-host')?.value?.trim() || ''
+    app_host: document.getElementById('s-app-host')?.value?.trim() || '',
+    admin_host: document.getElementById('s-admin-host')?.value?.trim() || ''
   }
 
   try {
