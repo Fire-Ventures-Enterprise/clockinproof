@@ -54,6 +54,9 @@ document.getElementById('admin-pin-input').addEventListener('keyup', e => {
 async function refreshAll() {
   document.getElementById('admin-last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString()
   await Promise.all([loadStats(), loadLive(), loadWorkers(), loadSessions()])
+  // Silently refresh badges for overrides and disputes
+  loadOverrides().catch(() => {})
+  loadDisputes().catch(() => {})
 }
 
 async function loadStats() {
@@ -307,7 +310,7 @@ function openSessionModal(s) {
       <button onclick="closeSessionModal();filterSessionsByDateFromSession(${s.id})" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2.5 rounded-xl text-sm transition-colors">
         <i class="fas fa-list mr-1"></i>Filter Sessions
       </button>
-      ${isActive ? `<button onclick="closeSessionModal();openAdminClockoutModal(${s.id})" class="w-full bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2.5 rounded-xl text-sm transition-colors border border-red-200"><i class="fas fa-stop-circle mr-1.5"></i>Admin Clock-Out</button>` : ''}
+      ${isActive ? `<button onclick="closeSessionModal();openAdminClockoutModal(${s.id})" class="w-full bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2.5 rounded-xl text-sm transition-colors border border-red-200"><i class="fas fa-stop-circle mr-1.5"></i>Admin Clock-Out</button>` : `<button onclick="closeSessionModal();openSessionEditModal(${s.id})" class="w-full bg-amber-50 hover:bg-amber-100 text-amber-700 font-bold py-2.5 rounded-xl text-sm transition-colors border border-amber-200"><i class="fas fa-edit mr-1.5"></i>Edit Session Times</button>`}
     </div>
   `
 }
@@ -1043,6 +1046,8 @@ function showTab(name) {
   if (name === 'overrides') loadOverrides()
   if (name === 'payroll') loadPayrollTab()
   if (name === 'accountant') initAcctTab()
+  if (name === 'job-sites') loadJobSites()
+  if (name === 'disputes') loadDisputes()
   // Close sidebar on mobile after navigation
   const sidebar = document.getElementById('admin-sidebar')
   if (sidebar && window.innerWidth < 1024) {
@@ -2066,3 +2071,368 @@ function showAdminToast(msg, type = 'info') {
   t.classList.remove('hidden')
   setTimeout(() => t.classList.add('hidden'), 3500)
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FEATURE 1 — SESSION TIME EDITOR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let editingSessionId = null
+let editingSessionData = null
+
+function openSessionEditModal(sessionId) {
+  const s = allSessionsData ? allSessionsData.find(x => x.id === sessionId) : null
+  if (!s && !sessionId) return
+
+  editingSessionId = sessionId
+  editingSessionData = s
+
+  // Fetch fresh session data if not in store
+  fetch('/api/sessions?limit=500')
+    .then(r => r.json())
+    .then(data => {
+      const sess = (data.sessions || []).find(x => x.id === sessionId)
+      if (!sess) { showAdminToast('Session not found', 'error'); return }
+      editingSessionData = sess
+
+      document.getElementById('sem-worker-label').textContent = sess.worker_name || 'Worker'
+
+      // Convert UTC timestamps to local datetime-local format
+      const toLocal = (dt) => {
+        if (!dt) return ''
+        const d = new Date(dt)
+        const pad = n => String(n).padStart(2,'0')
+        return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+      }
+      document.getElementById('sem-clock-in').value  = toLocal(sess.clock_in_time)
+      document.getElementById('sem-clock-out').value = toLocal(sess.clock_out_time)
+      document.getElementById('sem-reason').value    = ''
+      document.getElementById('sem-new-hours').classList.add('hidden')
+
+      document.getElementById('session-edit-modal').classList.remove('hidden')
+      document.body.style.overflow = 'hidden'
+
+      // Live preview of new hours
+      const preview = () => {
+        const inVal  = document.getElementById('sem-clock-in').value
+        const outVal = document.getElementById('sem-clock-out').value
+        const el     = document.getElementById('sem-new-hours')
+        if (inVal && outVal) {
+          const h = Math.round(((new Date(outVal) - new Date(inVal)) / 3600000) * 100) / 100
+          const rate = sess.hourly_rate || 0
+          if (h > 0) {
+            el.textContent = `New total: ${h.toFixed(2)}h → $${(h * rate).toFixed(2)} earnings`
+            el.classList.remove('hidden')
+          } else {
+            el.textContent = '⚠ Clock-out must be after clock-in'
+            el.classList.remove('hidden')
+          }
+        } else {
+          el.classList.add('hidden')
+        }
+      }
+      document.getElementById('sem-clock-in').addEventListener('input', preview)
+      document.getElementById('sem-clock-out').addEventListener('input', preview)
+    })
+    .catch(() => showAdminToast('Failed to load session', 'error'))
+}
+
+function closeSessionEditModal() {
+  document.getElementById('session-edit-modal').classList.add('hidden')
+  document.body.style.overflow = ''
+  editingSessionId = null
+  editingSessionData = null
+}
+
+async function confirmSessionEdit() {
+  const btn = document.getElementById('sem-confirm-btn')
+  const reason = document.getElementById('sem-reason').value.trim()
+  if (!reason) { showAdminToast('Please enter a reason for the edit', 'error'); return }
+
+  const inVal  = document.getElementById('sem-clock-in').value
+  const outVal = document.getElementById('sem-clock-out').value
+
+  if (!inVal) { showAdminToast('Clock-in time is required', 'error'); return }
+
+  // Validate out > in if out provided
+  if (outVal && new Date(outVal) <= new Date(inVal)) {
+    showAdminToast('Clock-out must be after clock-in', 'error'); return
+  }
+
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Saving...'
+
+  try {
+    const toISO = (localStr) => localStr ? new Date(localStr).toISOString() : null
+    const res = await fetch(`/api/sessions/${editingSessionId}/edit`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clock_in_time:  toISO(inVal),
+        clock_out_time: toISO(outVal) || null,
+        reason
+      })
+    })
+    const data = await res.json()
+    if (data.success) {
+      showAdminToast(`✅ Session updated — ${data.new_hours}h / $${data.new_earnings.toFixed(2)}`, 'success')
+      closeSessionEditModal()
+      loadSessions()
+      loadStats()
+    } else {
+      showAdminToast(data.error || 'Save failed', 'error')
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-save mr-1.5"></i>Save Changes'
+    }
+  } catch(e) {
+    showAdminToast('Connection error', 'error')
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-save mr-1.5"></i>Save Changes'
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FEATURE 2 — JOB SITES MANAGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let editingSiteId = null
+
+async function loadJobSites() {
+  try {
+    const res  = await fetch('/api/job-sites')
+    const data = await res.json()
+    const sites = data.sites || []
+    const el = document.getElementById('job-sites-list')
+    if (!el) return
+
+    if (sites.length === 0) {
+      el.innerHTML = '<p class="text-gray-400 text-sm text-center py-8"><i class="fas fa-map-marker-alt text-3xl mb-3 block text-gray-300"></i>No job sites added yet. Click "Add Site" to get started.</p>'
+      return
+    }
+
+    el.innerHTML = sites.map(s => `
+      <div class="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-2xl p-4 hover:border-emerald-300 transition-colors group">
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center flex-shrink-0">
+            <i class="fas fa-map-marker-alt text-emerald-600"></i>
+          </div>
+          <div class="min-w-0">
+            <p class="font-semibold text-gray-800 text-sm">${s.name}</p>
+            <p class="text-xs text-gray-500 truncate">${s.address}</p>
+            ${s.lat ? `<a href="https://maps.google.com/?q=${s.lat},${s.lng}" target="_blank" class="text-xs text-blue-500 hover:underline"><i class="fas fa-external-link-alt mr-1"></i>View on map</a>` : ''}
+          </div>
+        </div>
+        <div class="flex gap-2 flex-shrink-0 ml-3">
+          <button onclick="openEditSiteModal(${s.id},'${encodeURIComponent(s.name)}','${encodeURIComponent(s.address)}')"
+            class="text-xs bg-white border border-gray-200 hover:border-amber-400 text-gray-600 hover:text-amber-600 px-3 py-1.5 rounded-lg transition-colors">
+            <i class="fas fa-edit mr-1"></i>Edit
+          </button>
+          <button onclick="deleteSite(${s.id},'${s.name.replace(/'/g,'\\\'')}')"
+            class="text-xs bg-white border border-gray-200 hover:border-red-400 text-gray-600 hover:text-red-600 px-3 py-1.5 rounded-lg transition-colors">
+            <i class="fas fa-trash-alt mr-1"></i>Remove
+          </button>
+        </div>
+      </div>
+    `).join('')
+  } catch(e) {
+    showAdminToast('Failed to load job sites', 'error')
+  }
+}
+
+function openAddSiteModal() {
+  editingSiteId = null
+  document.getElementById('site-modal-title').textContent = 'Add Job Site'
+  document.getElementById('site-name').value    = ''
+  document.getElementById('site-address').value = ''
+  document.getElementById('site-save-btn').innerHTML = '<i class="fas fa-save mr-1.5"></i>Save Site'
+  document.getElementById('site-modal').classList.remove('hidden')
+  document.body.style.overflow = 'hidden'
+  setTimeout(() => document.getElementById('site-name').focus(), 200)
+}
+
+function openEditSiteModal(id, name, address) {
+  editingSiteId = id
+  document.getElementById('site-modal-title').textContent = 'Edit Job Site'
+  document.getElementById('site-name').value    = decodeURIComponent(name)
+  document.getElementById('site-address').value = decodeURIComponent(address)
+  document.getElementById('site-save-btn').innerHTML = '<i class="fas fa-save mr-1.5"></i>Update Site'
+  document.getElementById('site-modal').classList.remove('hidden')
+  document.body.style.overflow = 'hidden'
+}
+
+function closeSiteModal() {
+  document.getElementById('site-modal').classList.add('hidden')
+  document.body.style.overflow = ''
+  editingSiteId = null
+}
+
+async function saveSite() {
+  const name    = document.getElementById('site-name').value.trim()
+  const address = document.getElementById('site-address').value.trim()
+  if (!name)    { showAdminToast('Site name is required', 'error'); return }
+  if (!address) { showAdminToast('Address is required', 'error'); return }
+
+  const btn = document.getElementById('site-save-btn')
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1.5"></i>Saving...'
+
+  try {
+    const url    = editingSiteId ? `/api/job-sites/${editingSiteId}` : '/api/job-sites'
+    const method = editingSiteId ? 'PUT' : 'POST'
+    const res    = await fetch(url, {
+      method, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, address })
+    })
+    const data = await res.json()
+    if (data.success || data.id) {
+      showAdminToast(editingSiteId ? '✅ Site updated' : '✅ Site added', 'success')
+      closeSiteModal()
+      loadJobSites()
+    } else {
+      showAdminToast(data.error || 'Save failed', 'error')
+    }
+  } catch(e) {
+    showAdminToast('Connection error', 'error')
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = editingSiteId ? '<i class="fas fa-save mr-1.5"></i>Update Site' : '<i class="fas fa-save mr-1.5"></i>Save Site'
+  }
+}
+
+async function deleteSite(id, name) {
+  if (!confirm(`Remove "${name}" from job sites? Workers will no longer see it in the dropdown.`)) return
+  try {
+    const res = await fetch(`/api/job-sites/${id}`, { method: 'DELETE' })
+    const data = await res.json()
+    if (data.success) {
+      showAdminToast('Site removed', 'info')
+      loadJobSites()
+    }
+  } catch(e) {
+    showAdminToast('Failed to remove site', 'error')
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FEATURE 3 — ISSUE REPORTS (DISPUTES)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function loadDisputes() {
+  try {
+    const res  = await fetch('/api/disputes?status=pending')
+    const data = await res.json()
+    const disputes = data.disputes || []
+    const listEl  = document.getElementById('disputes-list')
+    const badge   = document.getElementById('disputes-badge')
+    const countBadge = document.getElementById('disputes-count-badge')
+
+    // Update sidebar badge
+    if (badge) {
+      if (disputes.length > 0) { badge.textContent = disputes.length; badge.classList.remove('hidden') }
+      else badge.classList.add('hidden')
+    }
+    if (countBadge) {
+      countBadge.textContent = disputes.length > 0 ? `${disputes.length} pending` : 'All clear'
+      countBadge.className = disputes.length > 0
+        ? 'bg-rose-100 text-rose-700 text-sm font-bold px-3 py-1 rounded-full'
+        : 'bg-green-100 text-green-700 text-sm font-bold px-3 py-1 rounded-full'
+    }
+
+    if (!listEl) return
+    if (disputes.length === 0) {
+      listEl.innerHTML = '<p class="text-gray-400 text-sm text-center py-8"><i class="fas fa-check-circle text-green-400 text-3xl mb-3 block"></i>No pending issue reports.</p>'
+      return
+    }
+
+    listEl.innerHTML = disputes.map(d => {
+      const sessionDate = d.clock_in_time ? new Date(d.clock_in_time).toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'}) : '—'
+      const hours   = d.total_hours  ? d.total_hours.toFixed(2) + 'h'   : '—'
+      const earn    = d.earnings     ? '$' + d.earnings.toFixed(2) : '—'
+      return `
+      <div class="border-2 border-rose-200 rounded-2xl p-5 bg-rose-50" id="dispute-card-${d.id}">
+        <div class="flex items-start justify-between gap-3 mb-3">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 bg-rose-100 rounded-2xl flex items-center justify-center flex-shrink-0">
+              <i class="fas fa-flag text-rose-500"></i>
+            </div>
+            <div>
+              <p class="font-bold text-gray-800">${d.worker_name || 'Worker'}</p>
+              <p class="text-xs text-gray-500">${sessionDate} &bull; ${hours} &bull; ${earn}</p>
+              ${d.job_location ? `<p class="text-xs text-gray-500 mt-0.5"><i class="fas fa-map-marker-alt text-red-400 mr-1"></i>${d.job_location}</p>` : ''}
+            </div>
+          </div>
+          <span class="bg-rose-500 text-white text-xs font-bold px-2.5 py-1 rounded-full flex-shrink-0">REPORT</span>
+        </div>
+        <div class="bg-white border border-rose-200 rounded-xl p-3 mb-3">
+          <p class="text-xs text-gray-500 font-medium mb-1"><i class="fas fa-comment-alt mr-1 text-rose-400"></i>Worker's message</p>
+          <p class="text-sm text-gray-800">${d.message}</p>
+        </div>
+        <div class="mb-3">
+          <input type="text" id="dispute-response-${d.id}" placeholder="Optional response to worker (will be shown to them)"
+            class="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400"/>
+        </div>
+        <div class="flex gap-2 flex-wrap">
+          <button onclick="resolveDispute(${d.id}, 'resolved')" class="flex-1 bg-green-500 hover:bg-green-600 text-white font-bold py-2.5 rounded-xl text-sm">
+            <i class="fas fa-check mr-1"></i>Resolve
+          </button>
+          <button onclick="openSessionEditModal(${d.session_id})" class="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-bold py-2.5 rounded-xl text-sm">
+            <i class="fas fa-edit mr-1"></i>Edit Session
+          </button>
+          <button onclick="resolveDispute(${d.id}, 'dismissed')" class="px-4 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-xl text-sm border border-gray-200">
+            Dismiss
+          </button>
+        </div>
+      </div>`
+    }).join('')
+  } catch(e) {
+    showAdminToast('Failed to load issue reports', 'error')
+  }
+}
+
+async function resolveDispute(id, status) {
+  const responseEl = document.getElementById('dispute-response-' + id)
+  const admin_response = responseEl ? responseEl.value.trim() : ''
+  const label = status === 'resolved' ? 'resolve' : 'dismiss'
+  if (!confirm(`${label.charAt(0).toUpperCase() + label.slice(1)} this issue report?`)) return
+  try {
+    const res = await fetch(`/api/disputes/${id}/resolve`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, admin_response })
+    })
+    const data = await res.json()
+    if (data.success) {
+      showAdminToast(`Report ${status}`, 'success')
+      loadDisputes()
+    }
+  } catch(e) {
+    showAdminToast('Connection error', 'error')
+  }
+}
+
+async function loadDisputeHistory() {
+  try {
+    const el = document.getElementById('disputes-history')
+    if (!el) return
+    el.classList.toggle('hidden')
+    if (el.classList.contains('hidden')) return
+
+    const res  = await fetch('/api/disputes?status=resolved')
+    const data = await res.json()
+    const disputes = data.disputes || []
+    if (disputes.length === 0) { el.innerHTML = '<p class="text-xs text-gray-400 text-center py-3">No resolved reports.</p>'; return }
+
+    el.innerHTML = disputes.map(d => {
+      const sc = d.status === 'resolved' ? 'text-green-600 bg-green-100' : 'text-gray-500 bg-gray-100'
+      return `<div class="bg-gray-50 rounded-xl px-4 py-3 border border-gray-200 text-sm">
+        <div class="flex items-center justify-between mb-1">
+          <span class="font-semibold text-gray-800">${d.worker_name}</span>
+          <span class="text-xs font-bold px-2 py-0.5 rounded-full ${sc}">${d.status.toUpperCase()}</span>
+        </div>
+        <p class="text-xs text-gray-600">${d.message}</p>
+        ${d.admin_response ? `<p class="text-xs text-blue-600 mt-1"><i class="fas fa-reply mr-1"></i>${d.admin_response}</p>` : ''}
+        <p class="text-xs text-gray-400 mt-1">${new Date(d.created_at).toLocaleString()}</p>
+      </div>`
+    }).join('')
+  } catch(e) { /* silent */ }
+}
+

@@ -134,6 +134,44 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('geofence_exit_clockout_min', '0')`,
     // invite_code column on workers (safe to run on existing DBs)
     `ALTER TABLE workers ADD COLUMN invite_code TEXT`,
+    // ── Feature: session edit audit log ───────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS session_edits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL,
+      edited_by TEXT DEFAULT 'admin',
+      field TEXT NOT NULL,
+      old_value TEXT,
+      new_value TEXT,
+      reason TEXT,
+      edited_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (session_id) REFERENCES sessions(id)
+    )`,
+    // ── Feature: saved job sites ──────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS job_sites (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      address TEXT NOT NULL,
+      lat REAL,
+      lng REAL,
+      active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    // ── Feature: worker issue reports ─────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS session_disputes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL,
+      worker_id INTEGER NOT NULL,
+      worker_name TEXT,
+      message TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      admin_response TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      resolved_at DATETIME,
+      FOREIGN KEY (session_id) REFERENCES sessions(id),
+      FOREIGN KEY (worker_id) REFERENCES workers(id)
+    )`,
+    `ALTER TABLE sessions ADD COLUMN edited INTEGER DEFAULT 0`,
+    `ALTER TABLE sessions ADD COLUMN edit_reason TEXT`,
   ]
   for (const sql of statements) {
     try {
@@ -1301,6 +1339,192 @@ app.get('/api/sessions/watchdog', async (c) => {
   }
 
   return c.json({ checked: activeSessions.results.length, results })
+})
+
+// ─── FEATURE 1: SESSION TIME EDITOR ──────────────────────────────────────────
+
+// PUT /api/sessions/:id/edit  — admin adjusts clock_in_time / clock_out_time
+app.put('/api/sessions/:id/edit', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const body = await c.req.json().catch(() => ({})) as any
+  const { clock_in_time, clock_out_time, reason } = body
+
+  if (!reason || !reason.trim()) {
+    return c.json({ error: 'A reason is required for session edits' }, 400)
+  }
+
+  const session = await db.prepare(
+    'SELECT * FROM sessions WHERE id = ?'
+  ).bind(id).first() as any
+  if (!session) return c.json({ error: 'Session not found' }, 404)
+
+  const edits: any[] = []
+
+  if (clock_in_time && clock_in_time !== session.clock_in_time) {
+    edits.push({ field: 'clock_in_time', old: session.clock_in_time, new: clock_in_time })
+  }
+  if (clock_out_time && clock_out_time !== session.clock_out_time) {
+    edits.push({ field: 'clock_out_time', old: session.clock_out_time, new: clock_out_time })
+  }
+  if (edits.length === 0) return c.json({ error: 'No changes detected' }, 400)
+
+  // Calculate new hours & earnings based on final times
+  const finalIn  = new Date(clock_in_time  || session.clock_in_time)
+  const finalOut = new Date(clock_out_time || session.clock_out_time)
+  const newHours    = Math.round(((finalOut.getTime() - finalIn.getTime()) / 3600000) * 100) / 100
+  const newEarnings = Math.round(newHours * (session.hourly_rate || 0) * 100) / 100
+
+  await db.prepare(
+    `UPDATE sessions SET
+      clock_in_time  = COALESCE(?, clock_in_time),
+      clock_out_time = COALESCE(?, clock_out_time),
+      total_hours    = ?,
+      earnings       = ?,
+      edited         = 1,
+      edit_reason    = ?
+    WHERE id = ?`
+  ).bind(
+    clock_in_time  || null,
+    clock_out_time || null,
+    newHours,
+    newEarnings,
+    reason.trim(),
+    id
+  ).run()
+
+  // Write audit log for each changed field
+  for (const e of edits) {
+    await db.prepare(
+      `INSERT INTO session_edits (session_id, field, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?)`
+    ).bind(id, e.field, e.old, e.new, reason.trim()).run()
+  }
+
+  const updated = await db.prepare('SELECT * FROM sessions WHERE id = ?').bind(id).first()
+  return c.json({ success: true, session: updated, new_hours: newHours, new_earnings: newEarnings })
+})
+
+// GET /api/sessions/:id/edits  — audit trail for a session
+app.get('/api/sessions/:id/edits', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const edits = await db.prepare(
+    'SELECT * FROM session_edits WHERE session_id = ? ORDER BY edited_at DESC'
+  ).bind(id).all()
+  return c.json({ edits: edits.results })
+})
+
+// ─── FEATURE 2: JOB SITES MANAGER ────────────────────────────────────────────
+
+app.get('/api/job-sites', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const sites = await db.prepare(
+    'SELECT * FROM job_sites WHERE active = 1 ORDER BY name ASC'
+  ).all()
+  return c.json({ sites: sites.results })
+})
+
+app.post('/api/job-sites', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const { name, address } = await c.req.json().catch(() => ({})) as any
+  if (!name?.trim() || !address?.trim()) {
+    return c.json({ error: 'Name and address are required' }, 400)
+  }
+  // Geocode the address to get lat/lng
+  let lat: number | null = null, lng: number | null = null
+  try {
+    const geo = await geocodeAddress(address.trim())
+    if (geo) { lat = geo.lat; lng = geo.lng }
+  } catch(_) {}
+
+  const result = await db.prepare(
+    'INSERT INTO job_sites (name, address, lat, lng) VALUES (?, ?, ?, ?)'
+  ).bind(name.trim(), address.trim(), lat, lng).run()
+  return c.json({ success: true, id: result.meta.last_row_id })
+})
+
+app.put('/api/job-sites/:id', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const { name, address, active } = await c.req.json().catch(() => ({})) as any
+
+  let lat: number | null = null, lng: number | null = null
+  if (address) {
+    try {
+      const geo = await geocodeAddress(address.trim())
+      if (geo) { lat = geo.lat; lng = geo.lng }
+    } catch(_) {}
+  }
+
+  await db.prepare(
+    `UPDATE job_sites SET
+      name    = COALESCE(?, name),
+      address = COALESCE(?, address),
+      lat     = CASE WHEN ? IS NOT NULL THEN ? ELSE lat END,
+      lng     = CASE WHEN ? IS NOT NULL THEN ? ELSE lng END,
+      active  = COALESCE(?, active)
+    WHERE id = ?`
+  ).bind(
+    name?.trim() || null,
+    address?.trim() || null,
+    address ? lat : null, lat,
+    address ? lng : null, lng,
+    active !== undefined ? (active ? 1 : 0) : null,
+    id
+  ).run()
+  return c.json({ success: true })
+})
+
+app.delete('/api/job-sites/:id', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  await db.prepare('UPDATE job_sites SET active = 0 WHERE id = ?').bind(c.req.param('id')).run()
+  return c.json({ success: true })
+})
+
+// ─── FEATURE 3: WORKER DISPUTE / ISSUE REPORTS ───────────────────────────────
+
+app.post('/api/disputes', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const { session_id, worker_id, message } = await c.req.json().catch(() => ({})) as any
+  if (!session_id || !worker_id || !message?.trim()) {
+    return c.json({ error: 'session_id, worker_id and message are required' }, 400)
+  }
+  const worker = await db.prepare('SELECT name FROM workers WHERE id = ?').bind(worker_id).first() as any
+  await db.prepare(
+    `INSERT INTO session_disputes (session_id, worker_id, worker_name, message) VALUES (?, ?, ?, ?)`
+  ).bind(session_id, worker_id, worker?.name || 'Worker', message.trim()).run()
+  return c.json({ success: true, message: 'Your report has been sent to admin.' })
+})
+
+app.get('/api/disputes', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const status = c.req.query('status') || 'pending'
+  const disputes = await db.prepare(
+    `SELECT d.*, s.clock_in_time, s.clock_out_time, s.total_hours, s.earnings, s.job_location
+     FROM session_disputes d
+     LEFT JOIN sessions s ON s.id = d.session_id
+     WHERE d.status = ?
+     ORDER BY d.created_at DESC`
+  ).bind(status).all()
+  return c.json({ disputes: disputes.results })
+})
+
+app.put('/api/disputes/:id/resolve', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const { admin_response, status } = await c.req.json().catch(() => ({})) as any
+  await db.prepare(
+    `UPDATE session_disputes SET status = ?, admin_response = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ?`
+  ).bind(status || 'resolved', admin_response || '', c.req.param('id')).run()
+  return c.json({ success: true })
 })
 
 app.get('/api/location/session/:session_id', async (c) => {
@@ -2592,6 +2816,13 @@ function getWorkerHTML(): string {
       <label class="block text-sm font-semibold text-gray-700 mb-2">
         <i class="fas fa-map-marker-alt text-red-500 mr-1"></i>Job Location / Address
       </label>
+      <!-- Saved sites dropdown (shown when sites exist) -->
+      <div id="saved-sites-row" class="hidden mb-2">
+        <select id="saved-sites-select" onchange="pickSavedSite(this.value)"
+          class="w-full px-4 py-3 border-2 border-emerald-200 rounded-xl focus:outline-none focus:border-emerald-500 text-gray-800 text-sm bg-emerald-50">
+          <option value="">📍 Pick a saved job site...</option>
+        </select>
+      </div>
       <input id="job-location-input" type="text"
         placeholder="e.g. 123 Ryan Street, Building 4"
         class="w-full px-4 py-3.5 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 text-gray-800 text-sm"
@@ -2650,6 +2881,39 @@ function getWorkerHTML(): string {
 </div>
 
 <!-- ── FRAUD BLOCKED MODAL ──────────────────────────────────────────────────── -->
+<!-- ── Worker: Report Issue Modal ─────────────────────────────────────────── -->
+<div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4">
+  <div class="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl">
+    <div class="flex items-center gap-3 mb-4">
+      <div class="w-10 h-10 bg-rose-100 rounded-2xl flex items-center justify-center flex-shrink-0">
+        <i class="fas fa-flag text-rose-500"></i>
+      </div>
+      <div>
+        <h3 class="font-bold text-gray-800">Report an Issue</h3>
+        <p id="dispute-session-label" class="text-xs text-gray-500"></p>
+      </div>
+    </div>
+    <div class="bg-rose-50 border border-rose-200 rounded-xl p-3 mb-4 text-xs text-rose-700">
+      <i class="fas fa-info-circle mr-1"></i>
+      Your message will be sent to the admin for review. They can adjust your session if needed.
+    </div>
+    <textarea id="dispute-message" rows="3" placeholder="Describe the issue — e.g. 'I was clocked out by GPS but I was still on site'"
+      class="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none mb-3"></textarea>
+    <div class="flex flex-wrap gap-1.5 mb-4">
+      <button onclick="setDisputeMsg('GPS clocked me out but I was still on site')" class="text-xs bg-gray-100 text-gray-600 border px-2 py-1 rounded-lg hover:bg-gray-200">GPS error</button>
+      <button onclick="setDisputeMsg('Wrong clock-out time — I worked longer')" class="text-xs bg-gray-100 text-gray-600 border px-2 py-1 rounded-lg hover:bg-gray-200">Wrong time</button>
+      <button onclick="setDisputeMsg('Hours or earnings look incorrect')" class="text-xs bg-gray-100 text-gray-600 border px-2 py-1 rounded-lg hover:bg-gray-200">Wrong amount</button>
+      <button onclick="setDisputeMsg('I forgot to clock in but was on site')" class="text-xs bg-gray-100 text-gray-600 border px-2 py-1 rounded-lg hover:bg-gray-200">Missed clock-in</button>
+    </div>
+    <div class="flex gap-3">
+      <button onclick="closeDisputeModal()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 rounded-xl">Cancel</button>
+      <button id="dispute-submit-btn" onclick="submitDispute()" class="flex-1 bg-rose-500 hover:bg-rose-600 text-white font-bold py-3 rounded-xl">
+        <i class="fas fa-paper-plane mr-1.5"></i>Send Report
+      </button>
+    </div>
+  </div>
+</div>
+
 <div id="fraud-blocked-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4">
   <div class="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl">
     <!-- Header -->
@@ -2913,7 +3177,30 @@ function openJobModal() {
   if (recentLocations.length > 0) {
     document.getElementById('job-location-input').value = recentLocations[0]
   }
+  // Load saved job sites from admin
+  loadSavedSitesDropdown()
   setTimeout(() => document.getElementById('job-location-input').focus(), 300)
+}
+
+async function loadSavedSitesDropdown() {
+  try {
+    const res  = await fetch('/api/job-sites')
+    const data = await res.json()
+    const sites = data.sites || []
+    const row = document.getElementById('saved-sites-row')
+    const sel = document.getElementById('saved-sites-select')
+    if (!row || !sel) return
+    if (sites.length === 0) { row.classList.add('hidden'); return }
+    sel.innerHTML = '<option value="">📍 Pick a saved job site...</option>' +
+      sites.map(s => \`<option value="\${s.address}">\${s.name} — \${s.address}</option>\`).join('')
+    row.classList.remove('hidden')
+  } catch(_) {}
+}
+
+function pickSavedSite(address) {
+  if (!address) return
+  document.getElementById('job-location-input').value = address
+  document.getElementById('location-suggestions').classList.add('hidden')
 }
 
 function closeJobModal() {
@@ -3450,6 +3737,14 @@ async function loadWorkLog() {
               </a>
             </div>
           \` : ''}
+          \${!isActive ? \`
+            <div class="mt-2 pt-2 border-t border-gray-100">
+              <button onclick="openDisputeModal(\${s.id}, '\${(s.job_location||'').replace(/'/g,\\"\\\\\\\\'\\")}', '\${new Date(s.clock_in_time).toLocaleDateString()}')"
+                class="text-xs text-rose-500 hover:text-rose-700 flex items-center gap-1">
+                <i class="fas fa-flag mr-1"></i>Report an issue with this session
+              </button>
+            </div>
+          \` : ''}
         </div>\`
       }).join('')
 
@@ -3600,6 +3895,62 @@ function getDeviceId() {
   let id = localStorage.getItem('wt_device_id')
   if (!id) { id = 'dev_' + Math.random().toString(36).substr(2, 12) + '_' + Date.now(); localStorage.setItem('wt_device_id', id) }
   return id
+}
+
+// ── Worker: Report Issue (Dispute) ───────────────────────────────────────────
+let disputeSessionId = null
+
+function openDisputeModal(sessionId, jobLocation, dateLabel) {
+  disputeSessionId = sessionId
+  document.getElementById('dispute-session-label').textContent =
+    (jobLocation ? jobLocation + ' · ' : '') + (dateLabel || '')
+  document.getElementById('dispute-message').value = ''
+  document.getElementById('dispute-modal').classList.remove('hidden')
+  document.body.style.overflow = 'hidden'
+}
+
+function closeDisputeModal() {
+  document.getElementById('dispute-modal').classList.add('hidden')
+  document.body.style.overflow = ''
+  disputeSessionId = null
+}
+
+function setDisputeMsg(text) {
+  document.getElementById('dispute-message').value = text
+}
+
+async function submitDispute() {
+  const message = document.getElementById('dispute-message').value.trim()
+  if (!message) { showToast('Please describe the issue', 'error'); return }
+  if (!disputeSessionId || !currentWorker) return
+
+  const btn = document.getElementById('dispute-submit-btn')
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1.5"></i>Sending...'
+
+  try {
+    const res = await fetch('/api/disputes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: disputeSessionId,
+        worker_id: currentWorker.id,
+        message
+      })
+    })
+    const data = await res.json()
+    if (data.success) {
+      closeDisputeModal()
+      showToast('✅ Report sent to admin', 'success')
+    } else {
+      showToast(data.error || 'Failed to send report', 'error')
+    }
+  } catch(e) {
+    showToast('Connection error — try again', 'error')
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-paper-plane mr-1.5"></i>Send Report'
+  }
 }
 
 function showToast(msg, type = 'info') {
@@ -3843,6 +4194,23 @@ function getAdminHTML(): string {
 
         <!-- ADMIN -->
         <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2 mt-5">Admin</p>
+
+        <button onclick="showTab('job-sites')" data-tab="job-sites"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-emerald-100 text-emerald-600 flex-shrink-0">
+            <i class="fas fa-map-marker-alt text-sm"></i>
+          </span>
+          <span>Job Sites</span>
+        </button>
+
+        <button onclick="showTab('disputes')" data-tab="disputes"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-rose-100 text-rose-600 flex-shrink-0">
+            <i class="fas fa-flag text-sm"></i>
+          </span>
+          <span>Issue Reports</span>
+          <span id="disputes-badge" class="hidden ml-auto bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center"></span>
+        </button>
 
         <button onclick="showTab('settings')" data-tab="settings"
           class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
@@ -4702,9 +5070,72 @@ function getAdminHTML(): string {
   </div>
     </div><!-- /tab-overrides -->
 
+    <!-- ── Tab: Job Sites ──────────────────────────────────────────────────── -->
+    <div id="tab-job-sites" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
+      <div class="flex items-center justify-between mb-5">
+        <div>
+          <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-map-marker-alt text-emerald-500 mr-2"></i>Job Sites</h3>
+          <p class="text-xs text-gray-500 mt-0.5">Save job site addresses. Workers pick from this list when clocking in.</p>
+        </div>
+        <button onclick="openAddSiteModal()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold px-4 py-2 rounded-xl flex items-center gap-2 shadow-sm">
+          <i class="fas fa-plus"></i> Add Site
+        </button>
+      </div>
+      <div id="job-sites-list" class="space-y-3">
+        <p class="text-gray-400 text-sm text-center py-8"><i class="fas fa-map-marker-alt text-3xl mb-3 block text-gray-300"></i>No job sites added yet.</p>
+      </div>
+    </div>
+
+    <!-- ── Tab: Issue Reports (Disputes) ───────────────────────────────────── -->
+    <div id="tab-disputes" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
+      <div class="flex items-center justify-between mb-5">
+        <div>
+          <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-flag text-rose-500 mr-2"></i>Worker Issue Reports</h3>
+          <p class="text-xs text-gray-500 mt-0.5">Workers can flag sessions they believe are wrong. Review and respond here.</p>
+        </div>
+        <span id="disputes-count-badge" class="bg-rose-100 text-rose-700 text-sm font-bold px-3 py-1 rounded-full"></span>
+      </div>
+      <div id="disputes-list" class="space-y-4">
+        <p class="text-gray-400 text-sm text-center py-8"><i class="fas fa-check-circle text-green-400 text-3xl mb-3 block"></i>No issue reports yet.</p>
+      </div>
+      <div class="mt-6 border-t pt-4">
+        <button onclick="loadDisputeHistory()" class="text-xs text-gray-500 hover:text-gray-700 underline">View resolved reports</button>
+        <div id="disputes-history" class="hidden mt-3 space-y-2"></div>
+      </div>
+    </div>
+
     </main><!-- /main content -->
   </div><!-- /flex body -->
 </div><!-- /admin-dashboard -->
+
+<!-- ── Add / Edit Job Site Modal ─────────────────────────────────────────── -->
+<div id="site-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onclick="if(event.target===this)closeSiteModal()">
+  <div class="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md">
+    <div class="flex items-center justify-between mb-5">
+      <h3 id="site-modal-title" class="text-lg font-bold text-gray-800">Add Job Site</h3>
+      <button onclick="closeSiteModal()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="space-y-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Site Name *</label>
+        <input id="site-name" type="text" placeholder="e.g. Downtown Office, Warehouse A"
+          class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"/>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Address *</label>
+        <input id="site-address" type="text" placeholder="Full street address for GPS matching"
+          class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"/>
+        <p class="text-xs text-gray-400 mt-1">Be specific — this address is used for GPS geofence matching.</p>
+      </div>
+    </div>
+    <div class="flex gap-3 mt-6">
+      <button onclick="closeSiteModal()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 rounded-xl">Cancel</button>
+      <button id="site-save-btn" onclick="saveSite()" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-xl">
+        <i class="fas fa-save mr-1.5"></i>Save Site
+      </button>
+    </div>
+  </div>
+</div>
 
 <!-- Add Worker Modal -->
 <div id="add-worker-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -4813,6 +5244,53 @@ function getAdminHTML(): string {
     </div>
     <!-- Body -->
     <div id="sm-body" class="p-6 space-y-4 max-h-[70vh] overflow-y-auto"></div>
+  </div>
+</div>
+
+<!-- ── Session Edit Modal ──────────────────────────────────────────────── -->
+<div id="session-edit-modal" class="hidden fixed inset-0 z-[70] flex items-center justify-center p-4" onclick="if(event.target===this)closeSessionEditModal()">
+  <div class="absolute inset-0 bg-black bg-opacity-60 backdrop-blur-sm"></div>
+  <div class="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
+    <div class="bg-gradient-to-r from-amber-500 to-orange-500 px-6 py-5 text-center">
+      <div class="w-12 h-12 bg-white bg-opacity-20 rounded-full flex items-center justify-center mx-auto mb-2">
+        <i class="fas fa-edit text-white text-xl"></i>
+      </div>
+      <h2 class="text-white text-lg font-bold">Edit Session Times</h2>
+      <p id="sem-worker-label" class="text-amber-100 text-sm mt-0.5"></p>
+    </div>
+    <div class="p-6 space-y-4">
+      <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-700">
+        <i class="fas fa-exclamation-triangle mr-1"></i>
+        All edits are logged in the audit trail with your reason.
+      </div>
+      <div>
+        <label class="text-xs font-semibold text-gray-600 block mb-1.5"><i class="fas fa-sign-in-alt mr-1 text-green-500"></i>Clock In Time</label>
+        <input id="sem-clock-in" type="datetime-local" class="w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"/>
+      </div>
+      <div>
+        <label class="text-xs font-semibold text-gray-600 block mb-1.5"><i class="fas fa-sign-out-alt mr-1 text-red-500"></i>Clock Out Time</label>
+        <input id="sem-clock-out" type="datetime-local" class="w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"/>
+        <p class="text-xs text-gray-400 mt-1">Leave blank if session is still active.</p>
+      </div>
+      <div>
+        <label class="text-xs font-semibold text-gray-600 block mb-1.5"><i class="fas fa-comment-alt mr-1 text-gray-400"></i>Reason <span class="text-red-500">*</span></label>
+        <textarea id="sem-reason" rows="2" placeholder="Why are you editing this session? (required for audit trail)"
+          class="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 resize-none"></textarea>
+        <div class="flex flex-wrap gap-1.5 mt-2">
+          <button onclick="setVal('sem-reason','Worker forgot to clock out')" class="text-xs bg-gray-100 text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-200">Forgot clock-out</button>
+          <button onclick="setVal('sem-reason','GPS auto-clockout was incorrect')" class="text-xs bg-gray-100 text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-200">GPS error</button>
+          <button onclick="setVal('sem-reason','Worker dispute — time corrected')" class="text-xs bg-gray-100 text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-200">Worker dispute</button>
+          <button onclick="setVal('sem-reason','Payroll correction')" class="text-xs bg-gray-100 text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-200">Payroll fix</button>
+        </div>
+      </div>
+      <div id="sem-new-hours" class="hidden bg-green-50 border border-green-200 rounded-xl px-4 py-2.5 text-sm text-green-700 font-medium"></div>
+      <div class="flex gap-3 pt-1">
+        <button onclick="closeSessionEditModal()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 rounded-xl">Cancel</button>
+        <button id="sem-confirm-btn" onclick="confirmSessionEdit()" class="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-bold py-3 rounded-xl shadow-lg shadow-amber-200">
+          <i class="fas fa-save mr-1.5"></i>Save Changes
+        </button>
+      </div>
+    </div>
   </div>
 </div>
 
