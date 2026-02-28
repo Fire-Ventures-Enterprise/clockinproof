@@ -625,7 +625,7 @@ async function loadLive() {
           </button>`
         : ''
       
-      return `<div class="border ${s.session_type === 'material_pickup' ? 'border-amber-300' : s.session_type === 'emergency_job' ? 'border-rose-300' : s.drift_flag ? 'border-orange-300' : s.away_flag ? 'border-yellow-300' : 'border-gray-100'} rounded-xl p-4 hover:shadow-md transition-shadow cursor-pointer hover:border-indigo-300 ${s.auto_clockout ? 'opacity-70' : ''}" onclick="openWorkerDrawer(${s.worker_id})">`
+      return `<div class="border ${s.session_type === 'material_pickup' ? 'border-amber-300' : s.session_type === 'emergency_job' ? 'border-rose-300' : s.drift_flag ? 'border-orange-300' : s.away_flag ? 'border-yellow-300' : 'border-gray-100'} rounded-xl p-4 hover:shadow-md transition-shadow cursor-pointer hover:border-indigo-300 ${s.auto_clockout ? 'opacity-70' : ''}" onclick="openWorkerDrawer(${s.worker_id})">
         <div class="flex items-start justify-between mb-2">
           <div class="flex-1 min-w-0">
             <h4 class="font-bold text-gray-800">${s.worker_name}</h4>
