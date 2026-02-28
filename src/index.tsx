@@ -3984,7 +3984,111 @@ function dismissA2HS() {
   setTimeout(() => banner.classList.remove('hidden'), 2500)  // show after 2.5s
 })()
 
+// ── Feature 3: Worker Dispute / Report Issue ──────────────────────────────────
+let disputeSessionId = null
+
+function openDisputeModal(sessionId, jobLocation, dateStr) {
+  disputeSessionId = sessionId
+  const modal = document.getElementById('dispute-modal')
+  document.getElementById('dispute-session-label').textContent =
+    (jobLocation ? jobLocation + ' — ' : '') + dateStr
+  document.getElementById('dispute-message').value = ''
+  document.getElementById('dispute-send-btn').disabled = false
+  document.getElementById('dispute-send-btn').innerHTML =
+    '<i class="fas fa-paper-plane mr-1.5"></i>Send Report'
+  modal.classList.remove('hidden')
+  document.body.style.overflow = 'hidden'
+  setTimeout(() => document.getElementById('dispute-message').focus(), 200)
+}
+
+function closeDisputeModal() {
+  document.getElementById('dispute-modal').classList.add('hidden')
+  document.body.style.overflow = ''
+  disputeSessionId = null
+}
+
+async function sendDispute() {
+  const message = document.getElementById('dispute-message').value.trim()
+  if (!message) { showToast('Please describe the issue', 'error'); return }
+  if (!disputeSessionId || !currentWorker) return
+
+  const btn = document.getElementById('dispute-send-btn')
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1.5"></i>Sending...'
+
+  try {
+    const res = await fetch('/api/disputes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: disputeSessionId,
+        worker_id: currentWorker.id,
+        message
+      })
+    })
+    const data = await res.json()
+    if (data.success) {
+      closeDisputeModal()
+      showToast('Your report was sent to admin', 'success')
+    } else {
+      showToast(data.error || 'Failed to send report', 'error')
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-paper-plane mr-1.5"></i>Send Report'
+    }
+  } catch(e) {
+    showToast('Connection error', 'error')
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-paper-plane mr-1.5"></i>Send Report'
+  }
+}
+
+const DISPUTE_MSGS = [
+  '',
+  'I was auto clocked out but I was still working',
+  'The clock-out time is wrong. I worked longer than recorded',
+  'GPS showed wrong location. I was at the job site the whole time',
+  'Hours or earnings look incorrect'
+]
+function setDisputeMsg(n) {
+  document.getElementById('dispute-message').value = DISPUTE_MSGS[n] || ''
+}
+
 </script>
+
+<!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
+<div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
+  <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
+    <div class="w-10 h-1 bg-gray-300 rounded-full mx-auto mb-5"></div>
+    <div class="flex items-center gap-3 mb-4">
+      <div class="w-11 h-11 bg-rose-100 rounded-2xl flex items-center justify-center flex-shrink-0">
+        <i class="fas fa-flag text-rose-500 text-lg"></i>
+      </div>
+      <div>
+        <h3 class="text-base font-bold text-gray-800">Report a Session Issue</h3>
+        <p id="dispute-session-label" class="text-xs text-gray-500 mt-0.5"></p>
+      </div>
+    </div>
+    <p class="text-xs text-gray-500 mb-3">
+      Describe what happened — wrong clock-out time, GPS auto-clockout, missing hours, etc. Your admin will review and respond.
+    </p>
+    <textarea id="dispute-message" rows="4"
+      placeholder="e.g. I was auto clocked out at 2pm but I worked until 4pm. My GPS lost signal."
+      class="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-rose-400 resize-none mb-3"></textarea>
+    <div class="flex flex-wrap gap-2 mb-4">
+      <button onclick="setDisputeMsg(1)" class="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded-full border border-gray-200">Auto clock-out error</button>
+      <button onclick="setDisputeMsg(2)" class="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded-full border border-gray-200">Wrong end time</button>
+      <button onclick="setDisputeMsg(3)" class="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded-full border border-gray-200">GPS error</button>
+      <button onclick="setDisputeMsg(4)" class="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded-full border border-gray-200">Incorrect pay</button>
+    </div>
+    <div class="flex gap-3">
+      <button onclick="closeDisputeModal()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 rounded-xl">Cancel</button>
+      <button id="dispute-send-btn" onclick="sendDispute()" class="flex-1 bg-rose-500 hover:bg-rose-600 text-white font-bold py-3 rounded-xl shadow-lg shadow-rose-200">
+        <i class="fas fa-paper-plane mr-1.5"></i>Send Report
+      </button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>`
 }
