@@ -83,12 +83,14 @@ async function loadStats() {
 }
 
 // ── Worker Detail Drawer ──────────────────────────────────────────────────────
+let _currentDrawerWorker = null  // store full worker object for edit modal
+
 async function openWorkerDrawer(workerId) {
   const drawer = document.getElementById('worker-drawer')
   drawer.classList.remove('hidden')
   document.body.style.overflow = 'hidden'
+  wdTab('sessions')  // default to sessions tab
 
-  // Reset
   document.getElementById('wd-sessions').innerHTML = '<p class="text-gray-400 text-sm text-center py-6"><i class="fas fa-spinner fa-spin mr-2"></i>Loading...</p>'
 
   try {
@@ -101,12 +103,22 @@ async function openWorkerDrawer(workerId) {
 
     const worker = (wData.workers || []).find(w => w.id === workerId)
     const sessions = sData.sessions || []
+    _currentDrawerWorker = worker
 
     if (worker) {
       document.getElementById('wd-name').textContent = worker.name
       document.getElementById('wd-phone').textContent = worker.phone
-      document.getElementById('wd-rate').textContent = '$' + (worker.hourly_rate||0).toFixed(2) + '/hr'
-      document.getElementById('wd-role').textContent = worker.role || 'worker'
+
+      // Pay display: hourly vs salary
+      const payType = worker.pay_type || 'hourly'
+      const rateEl = document.getElementById('wd-rate')
+      if (payType === 'salary' && worker.salary_amount > 0) {
+        rateEl.textContent = '$' + Number(worker.salary_amount).toLocaleString() + '/yr'
+      } else {
+        rateEl.textContent = '$' + (worker.hourly_rate||0).toFixed(2) + '/hr'
+      }
+
+      document.getElementById('wd-role').textContent = worker.job_title || worker.role || 'worker'
       document.getElementById('wd-total-sessions').textContent = sessions.length
       const totalH = sessions.reduce((s, x) => s + (x.total_hours || 0), 0)
       const totalE = sessions.reduce((s, x) => s + (x.earnings || 0), 0)
@@ -120,7 +132,7 @@ async function openWorkerDrawer(workerId) {
       document.getElementById('wd-status-badge').innerHTML = statusBadge
       document.getElementById('wd-filter-sessions-btn').dataset.workerId = workerId
 
-      // If worker is currently clocked in, show Force Clock-Out button
+      // Force clock-out bar
       const wdActionBar = document.getElementById('wd-action-bar')
       if (wdActionBar) {
         const activeSession = sessions.find(s => s.status === 'active')
@@ -137,13 +149,48 @@ async function openWorkerDrawer(workerId) {
           wdActionBar.innerHTML = ''
         }
       }
+
+      // ── Populate Profile tab ──
+      document.getElementById('wd-p-phone').textContent     = worker.phone || '–'
+      document.getElementById('wd-p-email').textContent     = worker.email || '–'
+      document.getElementById('wd-p-address').textContent   = worker.home_address || '–'
+      document.getElementById('wd-p-emergency').textContent = worker.emergency_contact || '–'
+      document.getElementById('wd-p-title').textContent     = worker.job_title || '–'
+      document.getElementById('wd-p-start').textContent     = worker.start_date
+        ? new Date(worker.start_date + 'T00:00:00').toLocaleDateString('en-CA', {year:'numeric',month:'short',day:'numeric'})
+        : '–'
+      document.getElementById('wd-p-paytype').textContent   = payType === 'salary' ? 'Salary' : 'Hourly'
+      document.getElementById('wd-p-comp').textContent      = payType === 'salary'
+        ? '$' + Number(worker.salary_amount||0).toLocaleString() + ' / year'
+        : '$' + (worker.hourly_rate||0).toFixed(2) + ' / hour'
+      const notesBlock = document.getElementById('wd-p-notes-block')
+      if (worker.worker_notes) {
+        document.getElementById('wd-p-notes').textContent = worker.worker_notes
+        notesBlock.classList.remove('hidden')
+      } else {
+        notesBlock.classList.add('hidden')
+      }
+
+      // ── Populate License tab ──
+      document.getElementById('wd-l-number').textContent = worker.drivers_license_number || 'Not recorded'
+      const frontEl = document.getElementById('wd-l-front')
+      const backEl  = document.getElementById('wd-l-back')
+      if (worker.license_front_b64) {
+        frontEl.innerHTML = `<img src="${worker.license_front_b64}" class="w-full object-contain max-h-48 rounded-xl"/>`
+      } else {
+        frontEl.innerHTML = '<p class="text-gray-300 text-sm py-8"><i class="fas fa-image mr-1"></i>No image uploaded</p>'
+      }
+      if (worker.license_back_b64) {
+        backEl.innerHTML = `<img src="${worker.license_back_b64}" class="w-full object-contain max-h-48 rounded-xl"/>`
+      } else {
+        backEl.innerHTML = '<p class="text-gray-300 text-sm py-8"><i class="fas fa-image mr-1"></i>No image uploaded</p>'
+      }
     }
 
     if (sessions.length === 0) {
       document.getElementById('wd-sessions').innerHTML = '<p class="text-gray-400 text-sm text-center py-6">No sessions yet</p>'
       return
     }
-    // Populate sessionStore
     sessions.forEach(s => { if (s.id) sessionStore[s.id] = s })
 
     document.getElementById('wd-sessions').innerHTML = sessions.map(s => {
@@ -179,9 +226,118 @@ async function openWorkerDrawer(workerId) {
   }
 }
 
+function wdTab(tab) {
+  ;['sessions','profile','license'].forEach(t => {
+    document.getElementById('wd-tab-' + t)?.classList.toggle('hidden', t !== tab)
+    const btn = document.getElementById('wdt-' + t)
+    if (!btn) return
+    if (t === tab) {
+      btn.className = 'px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-indigo-500 text-indigo-600 bg-white'
+    } else {
+      btn.className = 'px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700'
+    }
+  })
+}
+
 function closeWorkerDrawer() {
   document.getElementById('worker-drawer').classList.add('hidden')
   document.body.style.overflow = ''
+}
+
+// ── Edit Worker Modal ─────────────────────────────────────────────────────────
+function openEditWorkerModal(focusTab) {
+  const w = _currentDrawerWorker
+  if (!w) return
+  document.getElementById('ew-worker-id').value  = w.id
+  document.getElementById('ew-subtitle').textContent = 'Editing: ' + w.name
+  document.getElementById('ew-name').value       = w.name || ''
+  document.getElementById('ew-phone').value      = w.phone || ''
+  document.getElementById('ew-email').value      = w.email || ''
+  document.getElementById('ew-address').value    = w.home_address || ''
+  document.getElementById('ew-emergency').value  = w.emergency_contact || ''
+  document.getElementById('ew-pin').value        = ''  // don't prefill PIN
+  document.getElementById('ew-job-title').value  = w.job_title || ''
+  document.getElementById('ew-start-date').value = w.start_date || ''
+  const pt = w.pay_type || 'hourly'
+  document.getElementById('ew-pay-type').value   = pt
+  document.getElementById('ew-rate').value       = w.hourly_rate || ''
+  document.getElementById('ew-salary').value     = w.salary_amount || ''
+  document.getElementById('ew-active').value     = String(w.active ?? 1)
+  document.getElementById('ew-license-num').value = w.drivers_license_number || ''
+  document.getElementById('ew-notes').value      = w.worker_notes || ''
+  toggleEwPayType()
+
+  // Preview existing license images
+  const frontPrev = document.getElementById('ew-lic-front-preview')
+  const backPrev  = document.getElementById('ew-lic-back-preview')
+  document.getElementById('ew-lic-front-b64').value = ''
+  document.getElementById('ew-lic-back-b64').value  = ''
+  frontPrev.innerHTML = w.license_front_b64
+    ? `<img src="${w.license_front_b64}" class="w-full h-full object-cover rounded-xl"/>`
+    : '<i class="fas fa-camera text-amber-400 text-xl mb-1"></i><span class="text-xs text-amber-500">Tap to change</span>'
+  backPrev.innerHTML = w.license_back_b64
+    ? `<img src="${w.license_back_b64}" class="w-full h-full object-cover rounded-xl"/>`
+    : '<i class="fas fa-camera text-amber-400 text-xl mb-1"></i><span class="text-xs text-amber-500">Tap to change</span>'
+
+  document.getElementById('edit-worker-modal').classList.remove('hidden')
+  // Scroll to license section if requested
+  if (focusTab === 'license') {
+    setTimeout(() => document.getElementById('ew-license-num')?.scrollIntoView({behavior:'smooth'}), 200)
+  }
+}
+
+function closeEditWorkerModal() {
+  document.getElementById('edit-worker-modal').classList.add('hidden')
+}
+
+function toggleEwPayType() {
+  const t = document.getElementById('ew-pay-type')?.value
+  document.getElementById('ew-hourly-block')?.classList.toggle('hidden', t === 'salary')
+  document.getElementById('ew-salary-block')?.classList.toggle('hidden', t !== 'salary')
+}
+
+async function saveEditWorker() {
+  const id   = document.getElementById('ew-worker-id').value
+  const name = document.getElementById('ew-name').value.trim()
+  if (!name) { showAdminToast('Name is required', 'error'); return }
+
+  const payType = document.getElementById('ew-pay-type').value
+  const pin     = document.getElementById('ew-pin').value.trim()
+
+  const payload = {
+    name,
+    hourly_rate:             parseFloat(document.getElementById('ew-rate').value) || 0,
+    salary_amount:           parseFloat(document.getElementById('ew-salary').value) || 0,
+    role:                    'worker',
+    active:                  parseInt(document.getElementById('ew-active').value),
+    email:                   document.getElementById('ew-email').value.trim() || null,
+    home_address:            document.getElementById('ew-address').value.trim() || null,
+    emergency_contact:       document.getElementById('ew-emergency').value.trim() || null,
+    job_title:               document.getElementById('ew-job-title').value.trim() || null,
+    start_date:              document.getElementById('ew-start-date').value || null,
+    pay_type:                payType,
+    drivers_license_number:  document.getElementById('ew-license-num').value.trim() || null,
+    license_front_b64:       document.getElementById('ew-lic-front-b64').value || '',
+    license_back_b64:        document.getElementById('ew-lic-back-b64').value || '',
+    worker_notes:            document.getElementById('ew-notes').value.trim() || null,
+  }
+  if (pin) payload.pin = pin
+
+  try {
+    const res = await fetch('/api/workers/' + id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (res.ok) {
+      showAdminToast('✅ Worker profile updated!', 'success')
+      closeEditWorkerModal()
+      await openWorkerDrawer(parseInt(id))
+      await loadWorkers()
+    } else {
+      showAdminToast('Failed to save', 'error')
+    }
+  } catch(e) { showAdminToast('Error saving worker', 'error'); console.error(e) }
 }
 
 function openSessionById(id) {
@@ -892,38 +1048,96 @@ async function loadMap() {
 }
 
 // ── Workers Management ────────────────────────────────────────────────────────
-function showAddWorkerModal() { document.getElementById('add-worker-modal').classList.remove('hidden') }
+function showAddWorkerModal() {
+  // Reset all fields
+  const ids = ['modal-name','modal-phone','modal-email','modal-address','modal-emergency',
+                'modal-pin','modal-job-title','modal-start-date','modal-rate','modal-salary',
+                'modal-license-num','modal-notes','modal-lic-front-b64','modal-lic-back-b64']
+  ids.forEach(id => { const el = document.getElementById(id); if(el) el.value = '' })
+  // Reset pay type
+  const ptEl = document.getElementById('modal-pay-type')
+  if (ptEl) { ptEl.value = 'hourly'; togglePayType() }
+  // Reset license previews
+  ;['modal-lic-front-preview','modal-lic-back-preview'].forEach((id, i) => {
+    const el = document.getElementById(id)
+    if (el) el.innerHTML = `<i class="fas fa-camera text-amber-400 text-2xl mb-1"></i><span class="text-xs text-amber-500 font-medium">Tap to upload ${i===0?'front':'back'}</span>`
+  })
+  document.getElementById('add-worker-modal').classList.remove('hidden')
+}
 function closeModal() { document.getElementById('add-worker-modal').classList.add('hidden') }
 
+function togglePayType() {
+  const t = document.getElementById('modal-pay-type')?.value
+  document.getElementById('modal-hourly-block')?.classList.toggle('hidden', t === 'salary')
+  document.getElementById('modal-salary-block')?.classList.toggle('hidden', t !== 'salary')
+}
+
+function previewLicense(input, previewId, hiddenId) {
+  const file = input.files[0]
+  if (!file) return
+  // Warn if file is very large
+  if (file.size > 3 * 1024 * 1024) {
+    showAdminToast('Image too large — use under 3MB', 'error')
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = e => {
+    const b64 = e.target.result  // data:image/...;base64,...
+    document.getElementById(hiddenId).value = b64
+    const prev = document.getElementById(previewId)
+    prev.innerHTML = `<img src="${b64}" class="w-full h-full object-cover rounded-xl"/>`
+  }
+  reader.readAsDataURL(file)
+}
+
 async function addWorker() {
-  const name = document.getElementById('modal-name').value.trim()
+  const name  = document.getElementById('modal-name').value.trim()
   const phone = document.getElementById('modal-phone').value.trim()
-  const rate = parseFloat(document.getElementById('modal-rate').value) || 15
-  const pin = document.getElementById('modal-pin').value.trim() || '0000'
-  
-  if (!name || !phone) { showAdminToast('Name and phone required', 'error'); return }
-  
+  if (!name || !phone) { showAdminToast('Name and phone are required', 'error'); return }
+
+  const payType = document.getElementById('modal-pay-type')?.value || 'hourly'
+  const rate    = payType === 'hourly' ? (parseFloat(document.getElementById('modal-rate').value) || 0) : 0
+  const salary  = payType === 'salary' ? (parseFloat(document.getElementById('modal-salary').value) || 0) : 0
+  const pin     = document.getElementById('modal-pin').value.trim() || '0000'
+
+  const payload = {
+    name, phone,
+    hourly_rate: rate,
+    pin,
+    email:                   document.getElementById('modal-email')?.value.trim() || null,
+    home_address:            document.getElementById('modal-address')?.value.trim() || null,
+    emergency_contact:       document.getElementById('modal-emergency')?.value.trim() || null,
+    job_title:               document.getElementById('modal-job-title')?.value.trim() || null,
+    start_date:              document.getElementById('modal-start-date')?.value || null,
+    pay_type:                payType,
+    salary_amount:           salary,
+    drivers_license_number:  document.getElementById('modal-license-num')?.value.trim() || null,
+    license_front_b64:       document.getElementById('modal-lic-front-b64')?.value || null,
+    license_back_b64:        document.getElementById('modal-lic-back-b64')?.value || null,
+    worker_notes:            document.getElementById('modal-notes')?.value.trim() || null,
+  }
+
   try {
+    // 1. Register (creates worker record with name + phone)
     const res = await fetch('/api/workers/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, phone, hourly_rate: rate, pin })
     })
     const data = await res.json()
-    if (data.worker) {
-      // Update hourly rate if different
-      if (rate !== data.worker.hourly_rate) {
-        await fetch('/api/workers/' + data.worker.id, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, hourly_rate: rate, role: 'worker', active: 1 })
-        })
-      }
-      closeModal()
-      showAdminToast('Worker added successfully!', 'success')
-      await loadWorkers()
-    }
-  } catch(e) { showAdminToast('Error adding worker', 'error') }
+    if (!data.worker) { showAdminToast(data.error || 'Could not add worker', 'error'); return }
+
+    // 2. Update with full profile data
+    await fetch('/api/workers/' + data.worker.id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, role: 'worker', active: 1 })
+    })
+
+    closeModal()
+    showAdminToast('✅ ' + name + ' added successfully!', 'success')
+    await loadWorkers()
+  } catch(e) { showAdminToast('Error adding worker', 'error'); console.error(e) }
 }
 
 async function editWorkerRate(id, name, currentRate) {

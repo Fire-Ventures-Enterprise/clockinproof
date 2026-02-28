@@ -138,6 +138,18 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('show_pay_to_workers', '1')`,
     // invite_code column on workers (safe to run on existing DBs)
     `ALTER TABLE workers ADD COLUMN invite_code TEXT`,
+    // ── Worker profile columns (migration 0004) ───────────────────────────────
+    `ALTER TABLE workers ADD COLUMN email TEXT`,
+    `ALTER TABLE workers ADD COLUMN home_address TEXT`,
+    `ALTER TABLE workers ADD COLUMN job_title TEXT`,
+    `ALTER TABLE workers ADD COLUMN start_date TEXT`,
+    `ALTER TABLE workers ADD COLUMN pay_type TEXT DEFAULT 'hourly'`,
+    `ALTER TABLE workers ADD COLUMN salary_amount REAL DEFAULT 0`,
+    `ALTER TABLE workers ADD COLUMN drivers_license_number TEXT`,
+    `ALTER TABLE workers ADD COLUMN license_front_b64 TEXT`,
+    `ALTER TABLE workers ADD COLUMN license_back_b64 TEXT`,
+    `ALTER TABLE workers ADD COLUMN emergency_contact TEXT`,
+    `ALTER TABLE workers ADD COLUMN worker_notes TEXT`,
     // ── Feature: session edit audit log ───────────────────────────────────────
     `CREATE TABLE IF NOT EXISTS session_edits (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -272,11 +284,46 @@ app.get('/api/workers', async (c) => {
 app.put('/api/workers/:id', async (c) => {
   const db = c.env.DB
   const id = c.req.param('id')
-  const { name, hourly_rate, role, active } = await c.req.json()
+  const body = await c.req.json()
 
-  await db.prepare(
-    `UPDATE workers SET name = ?, hourly_rate = ?, role = ?, active = ? WHERE id = ?`
-  ).bind(name, hourly_rate, role, active, id).run()
+  const {
+    name, hourly_rate, role, active,
+    email, home_address, job_title, start_date,
+    pay_type, salary_amount,
+    drivers_license_number, license_front_b64, license_back_b64,
+    emergency_contact, worker_notes, pin
+  } = body
+
+  await db.prepare(`
+    UPDATE workers SET
+      name = ?,
+      hourly_rate = ?,
+      role = ?,
+      active = ?,
+      email = ?,
+      home_address = ?,
+      job_title = ?,
+      start_date = ?,
+      pay_type = ?,
+      salary_amount = ?,
+      drivers_license_number = ?,
+      license_front_b64 = COALESCE(NULLIF(?, ''), license_front_b64),
+      license_back_b64  = COALESCE(NULLIF(?, ''), license_back_b64),
+      emergency_contact = ?,
+      worker_notes = ?
+      ${pin !== undefined ? ', pin = ?' : ''}
+    WHERE id = ?
+  `).bind(
+    name, hourly_rate ?? 0, role ?? 'worker', active ?? 1,
+    email ?? null, home_address ?? null, job_title ?? null, start_date ?? null,
+    pay_type ?? 'hourly', salary_amount ?? 0,
+    drivers_license_number ?? null,
+    license_front_b64 ?? '',
+    license_back_b64  ?? '',
+    emergency_contact ?? null, worker_notes ?? null,
+    ...(pin !== undefined ? [pin] : []),
+    id
+  ).run()
 
   const worker = await db.prepare('SELECT * FROM workers WHERE id = ?').bind(id).first()
   return c.json({ worker })
@@ -4891,37 +4938,153 @@ function getAdminHTML(): string {
 </div>
 
 <!-- Add Worker Modal -->
-<div id="add-worker-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-  <div class="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md">
-    <div class="flex items-center justify-between mb-5">
-      <h3 class="text-lg font-bold text-gray-800">Add New Worker</h3>
-      <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+<div id="add-worker-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 z-50">
+  <div class="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[92vh] overflow-y-auto">
+    <!-- Header -->
+    <div class="sticky top-0 bg-white border-b px-6 py-4 flex items-center justify-between rounded-t-2xl z-10">
+      <div>
+        <h3 class="text-lg font-bold text-gray-800">Add New Worker</h3>
+        <p class="text-xs text-gray-400 mt-0.5">Fill in the worker's profile information</p>
+      </div>
+      <button onclick="closeModal()" class="w-9 h-9 flex items-center justify-center rounded-xl hover:bg-gray-100 text-gray-400 hover:text-gray-600">
+        <i class="fas fa-times text-lg"></i>
+      </button>
     </div>
-    <div class="space-y-4">
+
+    <div class="p-6 space-y-6">
+
+      <!-- Section: Identity -->
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Full Name *</label>
-        <input id="modal-name" type="text" placeholder="Worker name"
-          class="w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
+        <h4 class="text-xs font-bold text-indigo-600 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <i class="fas fa-user-circle"></i> Basic Info
+        </h4>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div class="sm:col-span-2">
+            <label class="block text-sm font-medium text-gray-700 mb-1">Full Name <span class="text-red-500">*</span></label>
+            <input id="modal-name" type="text" placeholder="e.g. John Smith"
+              class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-indigo-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Phone Number <span class="text-red-500">*</span></label>
+            <input id="modal-phone" type="tel" placeholder="+1 613 555 0100"
+              class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-indigo-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
+            <input id="modal-email" type="email" placeholder="worker@email.com"
+              class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-indigo-500 text-sm"/>
+          </div>
+          <div class="sm:col-span-2">
+            <label class="block text-sm font-medium text-gray-700 mb-1">Home Address</label>
+            <input id="modal-address" type="text" placeholder="123 Main St, Ottawa, ON K1A 0A1"
+              class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-indigo-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Emergency Contact</label>
+            <input id="modal-emergency" type="text" placeholder="Jane Smith +1 613 555 0199"
+              class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-indigo-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Worker PIN</label>
+            <input id="modal-pin" type="text" placeholder="0000" maxlength="6"
+              class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-indigo-500 text-sm"/>
+          </div>
+        </div>
       </div>
+
+      <!-- Section: Employment -->
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Phone Number *</label>
-        <input id="modal-phone" type="tel" placeholder="+1 234 567 8900"
-          class="w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
+        <h4 class="text-xs font-bold text-emerald-600 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <i class="fas fa-briefcase"></i> Employment
+        </h4>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Job Title</label>
+            <input id="modal-job-title" type="text" placeholder="e.g. Electrician, Labourer"
+              class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
+            <input id="modal-start-date" type="date"
+              class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Pay Type</label>
+            <select id="modal-pay-type" onchange="togglePayType()"
+              class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm">
+              <option value="hourly">Hourly Rate</option>
+              <option value="salary">Annual Salary</option>
+            </select>
+          </div>
+          <div id="modal-hourly-block">
+            <label class="block text-sm font-medium text-gray-700 mb-1">Hourly Rate ($/hr)</label>
+            <input id="modal-rate" type="number" placeholder="18.00" step="0.50" min="0"
+              class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm"/>
+          </div>
+          <div id="modal-salary-block" class="hidden">
+            <label class="block text-sm font-medium text-gray-700 mb-1">Annual Salary ($)</label>
+            <input id="modal-salary" type="number" placeholder="55000" step="500" min="0"
+              class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm"/>
+          </div>
+        </div>
       </div>
+
+      <!-- Section: Driver's License -->
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Hourly Rate ($/hr)</label>
-        <input id="modal-rate" type="number" placeholder="15.00" step="0.50"
-          class="w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
+        <h4 class="text-xs font-bold text-amber-600 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <i class="fas fa-id-card"></i> Driver's License
+        </h4>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div class="sm:col-span-2">
+            <label class="block text-sm font-medium text-gray-700 mb-1">License Number</label>
+            <input id="modal-license-num" type="text" placeholder="A12345-67890-12345"
+              class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-amber-500 text-sm"/>
+          </div>
+          <!-- Front photo -->
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">License — Front</label>
+            <label for="modal-lic-front" class="block cursor-pointer">
+              <div id="modal-lic-front-preview" class="w-full h-32 bg-amber-50 border-2 border-dashed border-amber-300 rounded-xl flex flex-col items-center justify-center hover:bg-amber-100 transition-colors">
+                <i class="fas fa-camera text-amber-400 text-2xl mb-1"></i>
+                <span class="text-xs text-amber-500 font-medium">Tap to upload front</span>
+              </div>
+            </label>
+            <input type="file" id="modal-lic-front" accept="image/*" class="hidden" onchange="previewLicense(this,'modal-lic-front-preview','modal-lic-front-b64')"/>
+            <input type="hidden" id="modal-lic-front-b64"/>
+          </div>
+          <!-- Back photo -->
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">License — Back</label>
+            <label for="modal-lic-back" class="block cursor-pointer">
+              <div id="modal-lic-back-preview" class="w-full h-32 bg-amber-50 border-2 border-dashed border-amber-300 rounded-xl flex flex-col items-center justify-center hover:bg-amber-100 transition-colors">
+                <i class="fas fa-camera text-amber-400 text-2xl mb-1"></i>
+                <span class="text-xs text-amber-500 font-medium">Tap to upload back</span>
+              </div>
+            </label>
+            <input type="file" id="modal-lic-back" accept="image/*" class="hidden" onchange="previewLicense(this,'modal-lic-back-preview','modal-lic-back-b64')"/>
+            <input type="hidden" id="modal-lic-back-b64"/>
+          </div>
+        </div>
       </div>
+
+      <!-- Section: Notes -->
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">PIN (4 digits)</label>
-        <input id="modal-pin" type="text" placeholder="0000" maxlength="4"
-          class="w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
+        <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-2">
+          <i class="fas fa-sticky-note"></i> Notes
+        </h4>
+        <textarea id="modal-notes" rows="2" placeholder="Optional notes about this worker..."
+          class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-gray-400 text-sm resize-none"></textarea>
       </div>
-      <div class="flex gap-3 pt-2">
-        <button onclick="closeModal()" class="flex-1 border border-gray-300 text-gray-700 font-medium py-3 rounded-xl hover:bg-gray-50">Cancel</button>
-        <button onclick="addWorker()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl">Add Worker</button>
-      </div>
+    </div>
+
+    <!-- Footer buttons -->
+    <div class="sticky bottom-0 bg-white border-t px-6 py-4 flex gap-3 rounded-b-2xl">
+      <button onclick="closeModal()" class="flex-1 border-2 border-gray-200 text-gray-700 font-medium py-3 rounded-xl hover:bg-gray-50 text-sm">
+        Cancel
+      </button>
+      <button onclick="addWorker()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2">
+        <i class="fas fa-user-plus"></i> Add Worker
+      </button>
     </div>
   </div>
 </div>
@@ -4969,14 +5132,242 @@ function getAdminHTML(): string {
     </div>
     <!-- Force Clock-Out Action Bar (shown when worker is active) -->
     <div id="wd-action-bar" class="hidden px-5 py-3 border-b bg-red-50"></div>
-    <!-- Sessions list -->
-    <div class="px-5 py-4 flex-1">
-      <h4 class="text-sm font-semibold text-gray-600 mb-3 flex items-center gap-2">
-        <i class="fas fa-history text-gray-400"></i> Recent Sessions
-      </h4>
+
+    <!-- Tab navigation -->
+    <div class="flex border-b bg-gray-50 px-5 pt-3 gap-1">
+      <button onclick="wdTab('sessions')" id="wdt-sessions"
+        class="px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-indigo-500 text-indigo-600 bg-white">
+        <i class="fas fa-history mr-1"></i>Sessions
+      </button>
+      <button onclick="wdTab('profile')" id="wdt-profile"
+        class="px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+        <i class="fas fa-id-badge mr-1"></i>Profile
+      </button>
+      <button onclick="wdTab('license')" id="wdt-license"
+        class="px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+        <i class="fas fa-id-card mr-1"></i>License
+      </button>
+    </div>
+
+    <!-- Sessions tab -->
+    <div id="wd-tab-sessions" class="px-5 py-4 flex-1">
       <div id="wd-sessions" class="space-y-3">
         <p class="text-gray-400 text-sm text-center py-6"><i class="fas fa-spinner fa-spin mr-2"></i>Loading...</p>
       </div>
+    </div>
+
+    <!-- Profile tab (hidden by default) -->
+    <div id="wd-tab-profile" class="hidden px-5 py-4 flex-1 space-y-4">
+      <!-- Edit button -->
+      <div class="flex justify-end">
+        <button onclick="openEditWorkerModal()" class="flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold px-4 py-2 rounded-xl transition-colors">
+          <i class="fas fa-edit"></i> Edit Profile
+        </button>
+      </div>
+      <!-- Contact -->
+      <div class="bg-gray-50 rounded-2xl p-4 space-y-3">
+        <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Contact</p>
+        <div class="grid grid-cols-1 gap-2">
+          <div class="flex items-start gap-3">
+            <i class="fas fa-phone text-indigo-400 mt-0.5 w-4 flex-shrink-0"></i>
+            <div><p class="text-xs text-gray-400">Phone</p><p class="text-sm font-semibold text-gray-700" id="wd-p-phone">–</p></div>
+          </div>
+          <div class="flex items-start gap-3">
+            <i class="fas fa-envelope text-indigo-400 mt-0.5 w-4 flex-shrink-0"></i>
+            <div><p class="text-xs text-gray-400">Email</p><p class="text-sm font-semibold text-gray-700" id="wd-p-email">–</p></div>
+          </div>
+          <div class="flex items-start gap-3">
+            <i class="fas fa-home text-indigo-400 mt-0.5 w-4 flex-shrink-0"></i>
+            <div><p class="text-xs text-gray-400">Home Address</p><p class="text-sm font-semibold text-gray-700" id="wd-p-address">–</p></div>
+          </div>
+          <div class="flex items-start gap-3">
+            <i class="fas fa-heart text-red-400 mt-0.5 w-4 flex-shrink-0"></i>
+            <div><p class="text-xs text-gray-400">Emergency Contact</p><p class="text-sm font-semibold text-gray-700" id="wd-p-emergency">–</p></div>
+          </div>
+        </div>
+      </div>
+      <!-- Employment -->
+      <div class="bg-emerald-50 rounded-2xl p-4 space-y-3">
+        <p class="text-xs font-bold text-emerald-600 uppercase tracking-wider">Employment</p>
+        <div class="grid grid-cols-2 gap-3">
+          <div><p class="text-xs text-gray-400">Job Title</p><p class="text-sm font-semibold text-gray-700" id="wd-p-title">–</p></div>
+          <div><p class="text-xs text-gray-400">Start Date</p><p class="text-sm font-semibold text-gray-700" id="wd-p-start">–</p></div>
+          <div><p class="text-xs text-gray-400">Pay Type</p><p class="text-sm font-semibold text-gray-700" id="wd-p-paytype">–</p></div>
+          <div><p class="text-xs text-gray-400">Compensation</p><p class="text-sm font-bold text-emerald-700" id="wd-p-comp">–</p></div>
+        </div>
+      </div>
+      <!-- Notes -->
+      <div id="wd-p-notes-block" class="hidden bg-yellow-50 rounded-2xl p-4">
+        <p class="text-xs font-bold text-yellow-600 uppercase tracking-wider mb-2">Notes</p>
+        <p class="text-sm text-gray-700" id="wd-p-notes">–</p>
+      </div>
+    </div>
+
+    <!-- License tab (hidden by default) -->
+    <div id="wd-tab-license" class="hidden px-5 py-4 flex-1 space-y-4">
+      <div class="bg-amber-50 rounded-2xl p-4 space-y-3">
+        <p class="text-xs font-bold text-amber-600 uppercase tracking-wider">Driver's License</p>
+        <div class="flex items-center gap-3">
+          <i class="fas fa-id-card text-amber-500 text-2xl"></i>
+          <div>
+            <p class="text-xs text-gray-400">License Number</p>
+            <p class="text-sm font-bold text-gray-800" id="wd-l-number">–</p>
+          </div>
+        </div>
+      </div>
+      <!-- Front image -->
+      <div>
+        <p class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">License Front</p>
+        <div id="wd-l-front" class="w-full bg-gray-100 rounded-2xl overflow-hidden min-h-[120px] flex items-center justify-center">
+          <p class="text-gray-300 text-sm"><i class="fas fa-image mr-1"></i>No image</p>
+        </div>
+      </div>
+      <!-- Back image -->
+      <div>
+        <p class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">License Back</p>
+        <div id="wd-l-back" class="w-full bg-gray-100 rounded-2xl overflow-hidden min-h-[120px] flex items-center justify-center">
+          <p class="text-gray-300 text-sm"><i class="fas fa-image mr-1"></i>No image</p>
+        </div>
+      </div>
+      <!-- Update license photos button -->
+      <div class="pt-2">
+        <button onclick="openEditWorkerModal('license')" class="w-full flex items-center justify-center gap-2 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 font-bold py-3 px-4 rounded-2xl text-sm transition-colors">
+          <i class="fas fa-camera"></i> Update License Photos
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Edit Worker Modal ─────────────────────────────────────────────────── -->
+<div id="edit-worker-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 z-[60]">
+  <div class="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[92vh] overflow-y-auto">
+    <div class="sticky top-0 bg-white border-b px-6 py-4 flex items-center justify-between rounded-t-2xl z-10">
+      <div>
+        <h3 class="text-lg font-bold text-gray-800">Edit Worker</h3>
+        <p class="text-xs text-gray-400 mt-0.5" id="ew-subtitle">Update worker information</p>
+      </div>
+      <button onclick="closeEditWorkerModal()" class="w-9 h-9 flex items-center justify-center rounded-xl hover:bg-gray-100 text-gray-400 hover:text-gray-600">
+        <i class="fas fa-times text-lg"></i>
+      </button>
+    </div>
+    <input type="hidden" id="ew-worker-id"/>
+    <div class="p-6 space-y-6">
+      <!-- Basic Info -->
+      <div>
+        <h4 class="text-xs font-bold text-indigo-600 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <i class="fas fa-user-circle"></i> Basic Info
+        </h4>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div class="sm:col-span-2">
+            <label class="block text-sm font-medium text-gray-700 mb-1">Full Name *</label>
+            <input id="ew-name" type="text" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-indigo-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+            <input id="ew-phone" type="tel" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-indigo-500 text-sm bg-gray-50" readonly/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+            <input id="ew-email" type="email" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-indigo-500 text-sm"/>
+          </div>
+          <div class="sm:col-span-2">
+            <label class="block text-sm font-medium text-gray-700 mb-1">Home Address</label>
+            <input id="ew-address" type="text" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-indigo-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Emergency Contact</label>
+            <input id="ew-emergency" type="text" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-indigo-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">PIN</label>
+            <input id="ew-pin" type="text" maxlength="6" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-indigo-500 text-sm"/>
+          </div>
+        </div>
+      </div>
+      <!-- Employment -->
+      <div>
+        <h4 class="text-xs font-bold text-emerald-600 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <i class="fas fa-briefcase"></i> Employment
+        </h4>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Job Title</label>
+            <input id="ew-job-title" type="text" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
+            <input id="ew-start-date" type="date" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Pay Type</label>
+            <select id="ew-pay-type" onchange="toggleEwPayType()" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm">
+              <option value="hourly">Hourly Rate</option>
+              <option value="salary">Annual Salary</option>
+            </select>
+          </div>
+          <div id="ew-hourly-block">
+            <label class="block text-sm font-medium text-gray-700 mb-1">Hourly Rate ($/hr)</label>
+            <input id="ew-rate" type="number" step="0.50" min="0" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm"/>
+          </div>
+          <div id="ew-salary-block" class="hidden">
+            <label class="block text-sm font-medium text-gray-700 mb-1">Annual Salary ($)</label>
+            <input id="ew-salary" type="number" step="500" min="0" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
+            <select id="ew-active" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm">
+              <option value="1">Active</option>
+              <option value="0">Inactive</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <!-- License -->
+      <div>
+        <h4 class="text-xs font-bold text-amber-600 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <i class="fas fa-id-card"></i> Driver's License
+        </h4>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div class="sm:col-span-2">
+            <label class="block text-sm font-medium text-gray-700 mb-1">License Number</label>
+            <input id="ew-license-num" type="text" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-amber-500 text-sm"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Front Photo</label>
+            <label for="ew-lic-front" class="block cursor-pointer">
+              <div id="ew-lic-front-preview" class="w-full h-28 bg-amber-50 border-2 border-dashed border-amber-300 rounded-xl flex flex-col items-center justify-center hover:bg-amber-100 transition-colors overflow-hidden">
+                <i class="fas fa-camera text-amber-400 text-xl mb-1"></i>
+                <span class="text-xs text-amber-500">Tap to change</span>
+              </div>
+            </label>
+            <input type="file" id="ew-lic-front" accept="image/*" class="hidden" onchange="previewLicense(this,'ew-lic-front-preview','ew-lic-front-b64')"/>
+            <input type="hidden" id="ew-lic-front-b64"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Back Photo</label>
+            <label for="ew-lic-back" class="block cursor-pointer">
+              <div id="ew-lic-back-preview" class="w-full h-28 bg-amber-50 border-2 border-dashed border-amber-300 rounded-xl flex flex-col items-center justify-center hover:bg-amber-100 transition-colors overflow-hidden">
+                <i class="fas fa-camera text-amber-400 text-xl mb-1"></i>
+                <span class="text-xs text-amber-500">Tap to change</span>
+              </div>
+            </label>
+            <input type="file" id="ew-lic-back" accept="image/*" class="hidden" onchange="previewLicense(this,'ew-lic-back-preview','ew-lic-back-b64')"/>
+            <input type="hidden" id="ew-lic-back-b64"/>
+          </div>
+        </div>
+      </div>
+      <!-- Notes -->
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+        <textarea id="ew-notes" rows="2" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-gray-400 text-sm resize-none"></textarea>
+      </div>
+    </div>
+    <div class="sticky bottom-0 bg-white border-t px-6 py-4 flex gap-3 rounded-b-2xl">
+      <button onclick="closeEditWorkerModal()" class="flex-1 border-2 border-gray-200 text-gray-700 font-medium py-3 rounded-xl hover:bg-gray-50 text-sm">Cancel</button>
+      <button onclick="saveEditWorker()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2">
+        <i class="fas fa-save"></i> Save Changes
+      </button>
     </div>
   </div>
 </div>
