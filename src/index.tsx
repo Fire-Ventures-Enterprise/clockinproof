@@ -133,6 +133,9 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('drift_check_enabled', '1')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('drift_radius_meters', '500')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('geofence_exit_clockout_min', '0')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('pay_frequency', 'biweekly')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('pay_period_anchor', '2026-03-06')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('show_pay_to_workers', '1')`,
     // invite_code column on workers (safe to run on existing DBs)
     `ALTER TABLE workers ADD COLUMN invite_code TEXT`,
     // ── Feature: session edit audit log ───────────────────────────────────────
@@ -1599,17 +1602,105 @@ app.get('/api/stats/worker/:worker_id', async (c) => {
   const db = c.env.DB
   const worker_id = c.req.param('worker_id')
 
+  // Load pay period settings
+  const settingsRows = await db.prepare('SELECT key, value FROM settings WHERE key IN (\'pay_frequency\',\'pay_period_anchor\',\'show_pay_to_workers\',\'timezone\')').all()
+  const cfg: Record<string,string> = {}
+  settingsRows.results.forEach((r: any) => { cfg[r.key] = r.value })
+
+  const payFreq   = cfg.pay_frequency   || 'biweekly'
+  const anchor    = cfg.pay_period_anchor || '2026-03-06'  // first payday
+  const showPay   = cfg.show_pay_to_workers !== '0'
+
+  // Compute current pay period bounds
+  const now = new Date()
+  const anchorDate = new Date(anchor + 'T00:00:00')
+  const msPerDay = 86400000
+  const periodDays = payFreq === 'weekly' ? 7 : payFreq === 'monthly' ? 30 : 14
+
+  // Find start of current pay period
+  const daysSinceAnchor = Math.floor((now.getTime() - anchorDate.getTime()) / msPerDay)
+  const periodsSinceAnchor = Math.floor(daysSinceAnchor / periodDays)
+  const periodStart = new Date(anchorDate.getTime() + periodsSinceAnchor * periodDays * msPerDay)
+  const periodEnd   = new Date(periodStart.getTime() + periodDays * msPerDay)
+  // Next payday = periodEnd
+  const nextPayday  = periodEnd.toISOString().split('T')[0]
+
+  const fmtDate = (d: Date) => d.toISOString().split('T')[0]
+  const periodStartStr = fmtDate(periodStart)
+  const periodEndStr   = fmtDate(periodEnd)
+
+  // Today / week / month bounds
+  const todayStr = fmtDate(now)
+  const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay())
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const weekStartStr  = fmtDate(weekStart)
+  const monthStartStr = fmtDate(monthStart)
+
+  // All-time stats
   const stats = await db.prepare(`
     SELECT
       COUNT(*) as total_sessions,
       SUM(CASE WHEN status = 'completed' THEN total_hours ELSE 0 END) as total_hours,
       SUM(CASE WHEN status = 'completed' THEN earnings ELSE 0 END) as total_earnings,
       MAX(clock_in_time) as last_clock_in
-    FROM sessions
-    WHERE worker_id = ?
+    FROM sessions WHERE worker_id = ?
   `).bind(worker_id).first()
 
-  return c.json({ stats })
+  // Today
+  const today = await db.prepare(`
+    SELECT SUM(CASE WHEN status='completed' THEN total_hours ELSE 0 END) as hours,
+           SUM(CASE WHEN status='completed' THEN earnings ELSE 0 END) as earnings
+    FROM sessions WHERE worker_id = ? AND date(clock_in_time) = ?
+  `).bind(worker_id, todayStr).first()
+
+  // This week
+  const week = await db.prepare(`
+    SELECT SUM(CASE WHEN status='completed' THEN total_hours ELSE 0 END) as hours,
+           SUM(CASE WHEN status='completed' THEN earnings ELSE 0 END) as earnings
+    FROM sessions WHERE worker_id = ? AND date(clock_in_time) >= ?
+  `).bind(worker_id, weekStartStr).first()
+
+  // This month
+  const month = await db.prepare(`
+    SELECT SUM(CASE WHEN status='completed' THEN total_hours ELSE 0 END) as hours,
+           SUM(CASE WHEN status='completed' THEN earnings ELSE 0 END) as earnings
+    FROM sessions WHERE worker_id = ? AND date(clock_in_time) >= ?
+  `).bind(worker_id, monthStartStr).first()
+
+  // Current pay period
+  const period = await db.prepare(`
+    SELECT SUM(CASE WHEN status='completed' THEN total_hours ELSE 0 END) as hours,
+           SUM(CASE WHEN status='completed' THEN earnings ELSE 0 END) as earnings
+    FROM sessions WHERE worker_id = ? AND date(clock_in_time) >= ? AND date(clock_in_time) < ?
+  `).bind(worker_id, periodStartStr, periodEndStr).first()
+
+  // Daily breakdown for current pay period
+  const daily = await db.prepare(`
+    SELECT date(clock_in_time) as day,
+           SUM(CASE WHEN status='completed' THEN total_hours ELSE 0 END) as hours,
+           SUM(CASE WHEN status='completed' THEN earnings ELSE 0 END) as earnings,
+           COUNT(*) as sessions
+    FROM sessions WHERE worker_id = ? AND date(clock_in_time) >= ? AND date(clock_in_time) < ?
+    GROUP BY day ORDER BY day DESC
+  `).bind(worker_id, periodStartStr, periodEndStr).all()
+
+  return c.json({
+    stats,
+    breakdown: {
+      today:  { hours: (today as any)?.hours || 0,  earnings: (today as any)?.earnings || 0  },
+      week:   { hours: (week as any)?.hours  || 0,  earnings: (week as any)?.earnings  || 0  },
+      month:  { hours: (month as any)?.hours || 0,  earnings: (month as any)?.earnings || 0  },
+      period: { hours: (period as any)?.hours || 0, earnings: (period as any)?.earnings || 0 },
+    },
+    pay_info: {
+      show_pay: showPay,
+      frequency: payFreq,
+      period_start: periodStartStr,
+      period_end:   periodEndStr,
+      next_payday:  nextPayday,
+      daily: daily.results,
+    }
+  })
 })
 
 // ─── SETTINGS API ─────────────────────────────────────────────────────────────
@@ -3217,6 +3308,80 @@ function getWorkerHTML(): string {
       </div>
     </div>
 
+    <!-- ── My Hours & Pay ─────────────────────────────────────────────── -->
+    <div class="bg-white rounded-2xl shadow-sm p-4">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-semibold text-gray-700 flex items-center gap-2">
+          <i class="fas fa-wallet text-emerald-500"></i> My Hours &amp; Pay
+        </h3>
+        <!-- Period selector tabs -->
+        <div class="flex gap-1 bg-gray-100 p-1 rounded-xl">
+          <button onclick="switchPayView('today')" id="pv-today"
+            class="px-2.5 py-1 text-xs font-medium rounded-lg bg-white shadow-sm text-gray-700">Day</button>
+          <button onclick="switchPayView('week')" id="pv-week"
+            class="px-2.5 py-1 text-xs font-medium rounded-lg text-gray-500">Week</button>
+          <button onclick="switchPayView('month')" id="pv-month"
+            class="px-2.5 py-1 text-xs font-medium rounded-lg text-gray-500">Month</button>
+          <button onclick="switchPayView('period')" id="pv-period"
+            class="px-2.5 py-1 text-xs font-medium rounded-lg text-gray-500">Period</button>
+        </div>
+      </div>
+
+      <!-- Big hours + earnings display -->
+      <div class="grid grid-cols-2 gap-3 mb-4">
+        <div class="bg-blue-50 rounded-2xl p-4 text-center">
+          <p class="text-xs text-blue-500 font-medium uppercase tracking-wider mb-1">Hours</p>
+          <p class="text-3xl font-bold text-blue-700" id="pay-hours">–</p>
+          <p class="text-xs text-blue-400 mt-1" id="pay-hours-label">Today</p>
+        </div>
+        <div class="bg-emerald-50 rounded-2xl p-4 text-center">
+          <p class="text-xs text-emerald-500 font-medium uppercase tracking-wider mb-1">Gross Pay</p>
+          <p class="text-3xl font-bold text-emerald-700" id="pay-gross">–</p>
+          <p class="text-xs text-emerald-400 mt-1" id="pay-gross-label">@ $<span id="pay-rate">–</span>/hr</p>
+        </div>
+      </div>
+
+      <!-- Next Pay countdown (pay period view) -->
+      <div id="pay-period-banner" class="hidden bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-100 rounded-2xl p-4 mb-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-xs text-purple-500 font-medium uppercase tracking-wider">Next Payday</p>
+            <p class="text-lg font-bold text-purple-800 mt-0.5" id="pay-next-date">–</p>
+            <p class="text-xs text-purple-500 mt-0.5" id="pay-next-countdown">–</p>
+          </div>
+          <div class="w-14 h-14 bg-purple-100 rounded-2xl flex items-center justify-center">
+            <i class="fas fa-money-check-alt text-purple-500 text-2xl"></i>
+          </div>
+        </div>
+        <div class="mt-3 pt-3 border-t border-purple-100">
+          <div class="flex justify-between text-xs text-purple-600">
+            <span>Pay period:</span>
+            <span id="pay-period-range">–</span>
+          </div>
+          <div class="flex justify-between text-xs text-purple-600 mt-1">
+            <span>Hours this period:</span>
+            <span class="font-bold" id="pay-period-hours">–</span>
+          </div>
+          <div class="flex justify-between text-xs text-purple-600 mt-1">
+            <span>Est. gross this period:</span>
+            <span class="font-bold text-emerald-600" id="pay-period-gross">–</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Daily breakdown (shown for week/month/period views) -->
+      <div id="pay-daily-breakdown" class="hidden">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Daily Breakdown</p>
+        <div id="pay-daily-list" class="space-y-1.5"></div>
+      </div>
+
+      <!-- Empty state -->
+      <div id="pay-empty" class="hidden text-center py-4">
+        <i class="fas fa-calendar-times text-gray-200 text-3xl mb-2"></i>
+        <p class="text-gray-400 text-sm">No hours recorded yet</p>
+      </div>
+    </div>
+
     <!-- Work Log by Day -->
     <div class="bg-white rounded-2xl shadow-sm p-4">
       <div class="flex items-center justify-between mb-4">
@@ -4074,6 +4239,37 @@ function getAdminHTML(): string {
               <input type="checkbox" id="s-stat-pay-enabled" class="w-4 h-4 rounded accent-indigo-600" checked/>
               <span class="text-sm font-medium text-gray-700">Enable statutory holiday pay</span>
             </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pay Period Settings -->
+      <div class="mt-6 space-y-4">
+        <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2 flex items-center gap-2">
+          <i class="fas fa-calendar-check text-emerald-500"></i> Pay Period
+        </h4>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Pay Frequency</label>
+            <select id="s-pay-frequency" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm">
+              <option value="weekly">Weekly (every Friday)</option>
+              <option value="biweekly" selected>Bi-weekly (every 2nd Friday)</option>
+              <option value="monthly">Monthly</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">First Payday (anchor date)</label>
+            <input id="s-pay-anchor" type="date" value="2026-03-06"
+              class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"/>
+            <p class="text-xs text-gray-400 mt-1">Set to your next upcoming payday — all future paydays auto-calculate</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Show Pay to Workers</label>
+            <label class="flex items-center gap-3 mt-3 cursor-pointer">
+              <input type="checkbox" id="s-show-pay-workers" class="w-4 h-4 rounded accent-emerald-600" checked/>
+              <span class="text-sm font-medium text-gray-700">Workers can see their gross earnings</span>
+            </label>
+            <p class="text-xs text-gray-400 mt-1">If off, workers see hours only, no dollar amounts</p>
           </div>
         </div>
       </div>

@@ -1419,6 +1419,14 @@ async function loadSettings() {
     const tzSel = document.getElementById('s-timezone')
     if (tzSel) tzSel.value = currentSettings.timezone || 'America/Toronto'
 
+    // Pay Period
+    const payFreqEl = document.getElementById('s-pay-frequency')
+    if (payFreqEl) payFreqEl.value = currentSettings.pay_frequency || 'biweekly'
+    const payAnchorEl = document.getElementById('s-pay-anchor')
+    if (payAnchorEl) payAnchorEl.value = currentSettings.pay_period_anchor || '2026-03-06'
+    const showPayEl = document.getElementById('s-show-pay-workers')
+    if (showPayEl) showPayEl.checked = currentSettings.show_pay_to_workers !== '0'
+
     // Work days
     activeDays = (currentSettings.work_days || '1,2,3,4,5').split(',').map(Number)
     document.querySelectorAll('.work-day-btn').forEach(btn => {
@@ -1511,7 +1519,10 @@ async function saveSettings() {
     twilio_auth_token: document.getElementById('s-twilio-token')?.value?.trim() || '',
     twilio_from_number: document.getElementById('s-twilio-from')?.value?.trim() || '',
     app_host: document.getElementById('s-app-host')?.value?.trim() || '',
-    admin_host: document.getElementById('s-admin-host')?.value?.trim() || ''
+    admin_host: document.getElementById('s-admin-host')?.value?.trim() || '',
+    pay_frequency: document.getElementById('s-pay-frequency')?.value || 'biweekly',
+    pay_period_anchor: document.getElementById('s-pay-anchor')?.value || '2026-03-06',
+    show_pay_to_workers: document.getElementById('s-show-pay-workers')?.checked ? '1' : '0'
   }
 
   try {

@@ -796,17 +796,119 @@ async function confirmStillWorking() {
   showToast('Got it — refreshing your location', 'success')
 }
 
-// ── Stats ─────────────────────────────────────────────────────────────────────
+// ── Stats & Pay ───────────────────────────────────────────────────────────────
+let _payData = null   // cached response from /api/stats/worker
+let _payView  = 'today'  // current tab: today | week | month | period
+
 async function loadStats() {
   try {
     const res = await fetch('/api/stats/worker/' + currentWorker.id)
     const data = await res.json()
+    _payData = data
+
+    // My Stats row (all-time)
     if (data.stats) {
       document.getElementById('stat-sessions').textContent = data.stats.total_sessions || 0
-      document.getElementById('stat-hours').textContent = (data.stats.total_hours || 0).toFixed(1)
+      document.getElementById('stat-hours').textContent    = (data.stats.total_hours   || 0).toFixed(1)
       document.getElementById('stat-earnings').textContent = '$' + (data.stats.total_earnings || 0).toFixed(0)
     }
-  } catch(e) {}
+
+    // Set pay rate display
+    const rate = currentWorker.hourly_rate || 0
+    const rateEl = document.getElementById('pay-rate')
+    if (rateEl) rateEl.textContent = parseFloat(rate).toFixed(2)
+
+    // Render pay view (default: today)
+    renderPayView(_payView)
+  } catch(e) { console.error('loadStats error', e) }
+}
+
+function switchPayView(view) {
+  _payView = view
+  // Update tab button styles
+  ;['today','week','month','period'].forEach(v => {
+    const btn = document.getElementById('pv-' + v)
+    if (!btn) return
+    if (v === view) {
+      btn.className = 'px-2.5 py-1 text-xs font-medium rounded-lg bg-white shadow-sm text-gray-700'
+    } else {
+      btn.className = 'px-2.5 py-1 text-xs font-medium rounded-lg text-gray-500'
+    }
+  })
+  renderPayView(view)
+}
+
+function renderPayView(view) {
+  if (!_payData) return
+  const bd = _payData.breakdown || {}
+  const pi = _payData.pay_info   || {}
+
+  const labels = { today: 'Today', week: 'This Week', month: 'This Month', period: 'This Pay Period' }
+
+  // Pick the right bucket
+  let hours    = 0
+  let earnings = 0
+  if (view === 'today')  { hours = bd.today?.hours  || 0; earnings = bd.today?.earnings  || 0 }
+  if (view === 'week')   { hours = bd.week?.hours   || 0; earnings = bd.week?.earnings   || 0 }
+  if (view === 'month')  { hours = bd.month?.hours  || 0; earnings = bd.month?.earnings  || 0 }
+  if (view === 'period') { hours = bd.period?.hours || 0; earnings = bd.period?.earnings || 0 }
+
+  // Update big numbers
+  const hasHours = hours > 0
+  document.getElementById('pay-hours').textContent      = hasHours ? hours.toFixed(1) : '0.0'
+  document.getElementById('pay-gross').textContent      = '$' + (earnings).toFixed(2)
+  document.getElementById('pay-hours-label').textContent = labels[view] || ''
+
+  // Empty state
+  document.getElementById('pay-empty').classList.toggle('hidden', hasHours || view !== 'today')
+
+  // Next payday banner — only on "period" tab
+  const banner = document.getElementById('pay-period-banner')
+  banner.classList.toggle('hidden', view !== 'period')
+  if (view === 'period' && pi.next_payday) {
+    // Format next payday
+    const nextDate = new Date(pi.next_payday + 'T00:00:00')
+    const opts     = { weekday: 'long', month: 'long', day: 'numeric' }
+    document.getElementById('pay-next-date').textContent = nextDate.toLocaleDateString('en-CA', opts)
+
+    // Countdown in days
+    const daysLeft = Math.ceil((nextDate - new Date()) / 86400000)
+    document.getElementById('pay-next-countdown').textContent =
+      daysLeft === 0 ? '🎉 Today is payday!'
+      : daysLeft === 1 ? '1 day away'
+      : daysLeft + ' days away'
+
+    // Period range
+    const fmt = d => new Date(d + 'T00:00:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })
+    document.getElementById('pay-period-range').textContent = fmt(pi.period_start) + ' – ' + fmt(pi.period_end)
+    document.getElementById('pay-period-hours').textContent = (bd.period?.hours || 0).toFixed(1) + ' hrs'
+    document.getElementById('pay-period-gross').textContent = '$' + (bd.period?.earnings || 0).toFixed(2)
+  }
+
+  // Daily breakdown list — show for week / month / period
+  const showBreakdown = ['week','month','period'].includes(view)
+  document.getElementById('pay-daily-breakdown').classList.toggle('hidden', !showBreakdown)
+  if (showBreakdown) {
+    const daily = pi.daily || []
+    const listEl = document.getElementById('pay-daily-list')
+    if (daily.length === 0) {
+      listEl.innerHTML = '<p class="text-gray-400 text-xs text-center py-2">No days recorded yet</p>'
+    } else {
+      listEl.innerHTML = daily.map(d => {
+        const dt = new Date(d.day + 'T00:00:00')
+        const label = dt.toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' })
+        const barPct = Math.min(100, ((d.hours || 0) / 10) * 100)
+        return `<div class="flex items-center gap-2 py-1.5 border-b border-gray-50 last:border-0">
+          <span class="text-xs text-gray-500 w-28 flex-shrink-0">${label}</span>
+          <div class="flex-1 bg-gray-100 rounded-full h-2 overflow-hidden">
+            <div class="bg-blue-400 h-2 rounded-full" style="width:${barPct}%"></div>
+          </div>
+          <span class="text-xs font-bold text-gray-700 w-10 text-right">${(d.hours||0).toFixed(1)}h</span>
+          <span class="text-xs font-bold text-emerald-600 w-14 text-right">$${(d.earnings||0).toFixed(2)}</span>
+        </div>`
+      }).join('')
+    }
+  }
 }
 
 // ── Work Log grouped by Day ───────────────────────────────────────────────────
