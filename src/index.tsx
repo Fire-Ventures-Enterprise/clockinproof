@@ -1492,14 +1492,22 @@ app.delete('/api/job-sites/:id', async (c) => {
 app.post('/api/disputes', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const { session_id, worker_id, message } = await c.req.json().catch(() => ({})) as any
-  if (!session_id || !worker_id || !message?.trim()) {
-    return c.json({ error: 'session_id, worker_id and message are required' }, 400)
+  const { session_id, message } = await c.req.json().catch(() => ({})) as any
+  if (!session_id || !message?.trim()) {
+    return c.json({ error: 'session_id and message are required' }, 400)
   }
-  const worker = await db.prepare('SELECT name FROM workers WHERE id = ?').bind(worker_id).first() as any
+  // Always derive worker identity from the session — never trust client-sent worker_id
+  const session = await db.prepare(
+    `SELECT s.worker_id, w.name AS worker_name
+     FROM sessions s
+     LEFT JOIN workers w ON w.id = s.worker_id
+     WHERE s.id = ?`
+  ).bind(session_id).first() as any
+  if (!session) return c.json({ error: 'Session not found' }, 404)
+
   await db.prepare(
     `INSERT INTO session_disputes (session_id, worker_id, worker_name, message) VALUES (?, ?, ?, ?)`
-  ).bind(session_id, worker_id, worker?.name || 'Worker', message.trim()).run()
+  ).bind(session_id, session.worker_id, session.worker_name || 'Worker', message.trim()).run()
   return c.json({ success: true, message: 'Your report has been sent to admin.' })
 })
 
@@ -3963,61 +3971,7 @@ function getDeviceId() {
   return id
 }
 
-// ── Worker: Report Issue (Dispute) ───────────────────────────────────────────
-let disputeSessionId = null
-
-function openDisputeModal(sessionId, jobLocation, dateLabel) {
-  disputeSessionId = sessionId
-  document.getElementById('dispute-session-label').textContent =
-    (jobLocation ? jobLocation + ' · ' : '') + (dateLabel || '')
-  document.getElementById('dispute-message').value = ''
-  document.getElementById('dispute-modal').classList.remove('hidden')
-  document.body.style.overflow = 'hidden'
-}
-
-function closeDisputeModal() {
-  document.getElementById('dispute-modal').classList.add('hidden')
-  document.body.style.overflow = ''
-  disputeSessionId = null
-}
-
-function setDisputeMsg(text) {
-  document.getElementById('dispute-message').value = text
-}
-
-async function submitDispute() {
-  const message = document.getElementById('dispute-message').value.trim()
-  if (!message) { showToast('Please describe the issue', 'error'); return }
-  if (!disputeSessionId || !currentWorker) return
-
-  const btn = document.getElementById('dispute-submit-btn')
-  btn.disabled = true
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1.5"></i>Sending...'
-
-  try {
-    const res = await fetch('/api/disputes', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: disputeSessionId,
-        worker_id: currentWorker.id,
-        message
-      })
-    })
-    const data = await res.json()
-    if (data.success) {
-      closeDisputeModal()
-      showToast('✅ Report sent to admin', 'success')
-    } else {
-      showToast(data.error || 'Failed to send report', 'error')
-    }
-  } catch(e) {
-    showToast('Connection error — try again', 'error')
-  } finally {
-    btn.disabled = false
-    btn.innerHTML = '<i class="fas fa-paper-plane mr-1.5"></i>Send Report'
-  }
-}
+// ── Feature 3: Report an Issue — handled below ────────────────────────────────
 
 function showToast(msg, type = 'info') {
   const t = document.getElementById('toast')
@@ -4088,7 +4042,6 @@ async function sendDispute() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         session_id: disputeSessionId,
-        worker_id: currentWorker.id,
         message
       })
     })
