@@ -6853,6 +6853,231 @@ function getAdminHTML(): string {
 </html>`
 }
 
+// ─── LEGAL PAGES (required by Intuit/QuickBooks App Partner Program) ─────────
+
+app.get('/privacy', (c) => {
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Privacy Policy — ClockInProof</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 text-gray-800">
+  <div class="max-w-3xl mx-auto px-6 py-12">
+    <div class="flex items-center gap-3 mb-8">
+      <div class="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white font-bold text-lg">C</div>
+      <div>
+        <p class="font-bold text-gray-900 text-lg">ClockInProof</p>
+        <p class="text-xs text-gray-400">GPS-Verified Time Tracking</p>
+      </div>
+    </div>
+    <h1 class="text-3xl font-bold text-gray-900 mb-2">Privacy Policy</h1>
+    <p class="text-sm text-gray-500 mb-8">Last updated: February 28, 2026</p>
+
+    <div class="space-y-8 text-sm leading-relaxed">
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">1. Who We Are</h2>
+        <p>ClockInProof ("we", "us", "our") is a GPS-verified employee time-tracking platform operated by Noweis Inc., based in Ontario, Canada. Our service is available at <strong>app.clockinproof.com</strong> (worker app) and <strong>admin.clockinproof.com</strong> (employer dashboard).</p>
+        <p class="mt-2">Contact: <a href="mailto:Noweis2020@gmail.com" class="text-indigo-600 underline">Noweis2020@gmail.com</a></p>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">2. Information We Collect</h2>
+        <ul class="list-disc pl-5 space-y-1">
+          <li><strong>Worker data:</strong> Name, phone number, PIN, job title, start date, emergency contact, driver's licence (optional)</li>
+          <li><strong>Location data:</strong> GPS coordinates at clock-in, clock-out, and periodic pings during active shifts (used solely for fraud prevention and timesheet accuracy)</li>
+          <li><strong>Work session data:</strong> Clock-in/out times, hours worked, job location, session type</li>
+          <li><strong>Device data:</strong> Device ID used for clock-in verification</li>
+          <li><strong>Employer/admin data:</strong> Business name, email, phone, payroll settings, Twilio and QuickBooks integration credentials</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">3. How We Use Your Information</h2>
+        <ul class="list-disc pl-5 space-y-1">
+          <li>To record and verify employee clock-in and clock-out times</li>
+          <li>To detect GPS fraud (clocking in from a location different from the job site)</li>
+          <li>To calculate payroll hours and generate payroll reports</li>
+          <li>To send SMS notifications and invite links to workers via Twilio</li>
+          <li>To push time-activity records to QuickBooks Online when the employer enables the integration</li>
+          <li>To email payroll summaries to the employer's designated accountant</li>
+          <li>To improve the reliability and security of the platform</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">4. QuickBooks Integration</h2>
+        <p>When you connect ClockInProof to QuickBooks Online:</p>
+        <ul class="list-disc pl-5 space-y-1 mt-2">
+          <li>We request access only to the <strong>com.intuit.quickbooks.accounting</strong> scope</li>
+          <li>We use this access solely to create <strong>TimeActivity</strong> records (employee hours) in your QB company</li>
+          <li>We do not read, modify, or delete any financial records, invoices, bills, or bank data</li>
+          <li>OAuth tokens are stored encrypted in our Cloudflare D1 database and never shared with third parties</li>
+          <li>You can disconnect at any time via Settings → QuickBooks → Disconnect, which immediately revokes our access</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">5. Data Sharing</h2>
+        <p>We do not sell, rent, or trade your personal information. We share data only with:</p>
+        <ul class="list-disc pl-5 space-y-1 mt-2">
+          <li><strong>Cloudflare</strong> — infrastructure provider (Workers, D1 database, Pages hosting)</li>
+          <li><strong>Twilio</strong> — SMS delivery for worker invitations and notifications</li>
+          <li><strong>Intuit/QuickBooks</strong> — only when you explicitly enable the QB integration</li>
+          <li><strong>Resend</strong> — email delivery for payroll summaries</li>
+          <li><strong>Your accountant</strong> — payroll reports sent at your explicit request</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">6. Data Retention</h2>
+        <p>We retain your data for as long as you maintain an active account. Session and payroll data is retained for a minimum of 7 years to comply with Canadian employment record requirements. You may request deletion of your account and data by contacting us.</p>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">7. Security</h2>
+        <p>All data is transmitted over HTTPS/TLS. Database credentials and API tokens are stored as encrypted environment secrets. GPS data is stored only for active sessions and fraud-check purposes. We do not store raw payment card information.</p>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">8. Your Rights (PIPEDA / Canadian Privacy Law)</h2>
+        <ul class="list-disc pl-5 space-y-1">
+          <li>Right to access your personal data</li>
+          <li>Right to correct inaccurate data</li>
+          <li>Right to withdraw consent and request deletion</li>
+          <li>Right to be informed of data breaches</li>
+        </ul>
+        <p class="mt-2">To exercise these rights, email <a href="mailto:Noweis2020@gmail.com" class="text-indigo-600 underline">Noweis2020@gmail.com</a>.</p>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">9. Changes to This Policy</h2>
+        <p>We may update this policy periodically. We will notify users of material changes via the admin dashboard or email. Continued use of ClockInProof after changes constitutes acceptance.</p>
+      </section>
+
+    </div>
+
+    <div class="mt-12 pt-6 border-t border-gray-200 text-xs text-gray-400 flex justify-between">
+      <span>© 2026 ClockInProof / Noweis Inc. — Ontario, Canada</span>
+      <a href="/terms" class="text-indigo-500 underline">Terms of Service</a>
+    </div>
+  </div>
+</body>
+</html>`)
+})
+
+app.get('/terms', (c) => {
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Terms of Service — ClockInProof</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 text-gray-800">
+  <div class="max-w-3xl mx-auto px-6 py-12">
+    <div class="flex items-center gap-3 mb-8">
+      <div class="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white font-bold text-lg">C</div>
+      <div>
+        <p class="font-bold text-gray-900 text-lg">ClockInProof</p>
+        <p class="text-xs text-gray-400">GPS-Verified Time Tracking</p>
+      </div>
+    </div>
+    <h1 class="text-3xl font-bold text-gray-900 mb-2">Terms of Service</h1>
+    <p class="text-sm text-gray-500 mb-8">Last updated: February 28, 2026</p>
+
+    <div class="space-y-8 text-sm leading-relaxed">
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">1. Acceptance of Terms</h2>
+        <p>By accessing or using ClockInProof ("Service"), you agree to be bound by these Terms of Service. If you do not agree, do not use the Service. These terms apply to all users including employers (admins) and employees (workers).</p>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">2. Description of Service</h2>
+        <p>ClockInProof is a GPS-verified employee time-tracking platform. It enables employers to:</p>
+        <ul class="list-disc pl-5 space-y-1 mt-2">
+          <li>Track employee clock-in and clock-out times with GPS verification</li>
+          <li>Generate payroll reports and export to accounting software</li>
+          <li>Integrate with QuickBooks Online to push time records directly</li>
+          <li>Manage workers, job sites, and pay periods</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">3. Accounts and Access</h2>
+        <p>Employers are responsible for maintaining the security of their admin PIN and account credentials. Workers are responsible for accurate clock-in and clock-out reporting. Fraudulent GPS spoofing or false time entries may result in account suspension.</p>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">4. QuickBooks Integration Terms</h2>
+        <p>By connecting ClockInProof to QuickBooks Online, you authorize ClockInProof to:</p>
+        <ul class="list-disc pl-5 space-y-1 mt-2">
+          <li>Create TimeActivity records in your QuickBooks company on your behalf</li>
+          <li>Read your QuickBooks employee list to enable worker mapping</li>
+          <li>Refresh access tokens automatically to maintain the connection</li>
+        </ul>
+        <p class="mt-2">You may disconnect the integration at any time. ClockInProof is not affiliated with or endorsed by Intuit Inc. QuickBooks is a registered trademark of Intuit Inc.</p>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">5. Employer Responsibilities</h2>
+        <ul class="list-disc pl-5 space-y-1">
+          <li>Employers must obtain proper consent from employees before collecting GPS location data</li>
+          <li>Employers are responsible for compliance with applicable employment standards legislation (ESA Ontario, Canada Labour Code, etc.)</li>
+          <li>Payroll calculations provided by ClockInProof are for reference only — employers are responsible for final payroll accuracy</li>
+          <li>Employers must not use the Service to discriminate, harass, or unfairly monitor employees</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">6. Acceptable Use</h2>
+        <p>You agree not to:</p>
+        <ul class="list-disc pl-5 space-y-1 mt-2">
+          <li>Use the Service for any unlawful purpose</li>
+          <li>Attempt to bypass GPS fraud detection mechanisms</li>
+          <li>Share admin credentials with unauthorized parties</li>
+          <li>Reverse engineer or attempt to extract source code from the platform</li>
+          <li>Use the Service to collect data about individuals without their knowledge</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">7. Limitation of Liability</h2>
+        <p>ClockInProof is provided "as is". We are not liable for any indirect, incidental, or consequential damages arising from use of the Service, including payroll errors, data loss, or QuickBooks sync failures. Our maximum liability is limited to the amount paid for the Service in the prior 12 months.</p>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">8. Termination</h2>
+        <p>We reserve the right to suspend or terminate accounts that violate these terms. Upon termination, your data will be retained for 90 days then deleted, unless legal obligations require longer retention.</p>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">9. Governing Law</h2>
+        <p>These terms are governed by the laws of the Province of Ontario and the federal laws of Canada applicable therein. Any disputes shall be resolved in the courts of Ontario.</p>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">10. Contact</h2>
+        <p>For questions about these terms: <a href="mailto:Noweis2020@gmail.com" class="text-indigo-600 underline">Noweis2020@gmail.com</a></p>
+        <p class="mt-1">Noweis Inc., Ontario, Canada</p>
+      </section>
+
+    </div>
+
+    <div class="mt-12 pt-6 border-t border-gray-200 text-xs text-gray-400 flex justify-between">
+      <span>© 2026 ClockInProof / Noweis Inc. — Ontario, Canada</span>
+      <a href="/privacy" class="text-indigo-500 underline">Privacy Policy</a>
+    </div>
+  </div>
+</body>
+</html>`)
+})
+
 // ─── CLOUDFLARE SCHEDULED TRIGGER ────────────────────────────────────────────
 // Fires every Friday at 23:59 UTC  →  cron: "59 23 * * 5"
 export default {
