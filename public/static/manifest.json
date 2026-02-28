@@ -1,7 +1,7 @@
 {
-  "name": "WorkTracker",
-  "short_name": "WorkTracker",
-  "description": "Track work hours, GPS location & earnings",
+  "name": "ClockInProof",
+  "short_name": "ClockInProof",
+  "description": "GPS-verified clock-ins with undeniable proof",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#1e40af",

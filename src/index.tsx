@@ -100,7 +100,7 @@ async function ensureSchema(db: D1Database) {
       value TEXT NOT NULL,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`,
-    `INSERT OR IGNORE INTO settings (key, value) VALUES ('app_name', 'WorkTracker')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('app_name', 'ClockInProof')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('default_hourly_rate', '15.00')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_pin', '1234')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('country_code', 'CA')`,
@@ -283,7 +283,7 @@ app.get('/invite/:code', async (c) => {
   <meta name="theme-color" content="#1e40af"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
-  <title>WorkTracker — Joining...</title>
+  <title>ClockInProof — Joining...</title>
   <link rel="manifest" href="/static/manifest.json"/>
   <link rel="apple-touch-icon" href="/static/icon-192.png"/>
   <style>
@@ -314,7 +314,7 @@ app.get('/invite/:code', async (c) => {
 <body>
 <div class="card" id="card">
   <div class="icon">⏱</div>
-  <h1>WorkTracker</h1>
+  <h1>ClockInProof</h1>
   <p>Verifying your access code&hellip;</p>
   <div class="spinner" id="spinner"></div>
   <div id="msg" style="display:none"></div>
@@ -348,7 +348,7 @@ app.get('/invite/:code', async (c) => {
     msg.innerHTML = \`
       <p class="name">👋 Hi, \${w.name}!</p>
       <p class="sub">Your access code is verified.<br>Tap below to open the app.</p>
-      <a href="/" class="btn">📲 Open WorkTracker</a>
+      <a href="/" class="btn">📲 Open ClockInProof</a>
       <p style="margin-top:16px;font-size:12px;color:#9ca3af">
         Tip: tap <strong>Share → Add to Home Screen</strong><br>for quick access next time.
       </p>
@@ -381,7 +381,7 @@ function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number)
 async function geocodeAddress(address: string): Promise<{ lat: number; lng: number; display: string } | null> {
   try {
     const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1&addressdetails=1`
-    const res = await fetch(url, { headers: { 'User-Agent': 'WorkTracker/1.0', 'Accept': 'application/json' } })
+    const res = await fetch(url, { headers: { 'User-Agent': 'ClockInProof/1.0', 'Accept': 'application/json' } })
     if (!res.ok) return null
     const data: any[] = await res.json()
     if (!data || data.length === 0) return null
@@ -411,7 +411,7 @@ async function sendOverrideNotification(
 ): Promise<{ emailSent: boolean; smsSent: boolean; errors: string[] }> {
   const result = { emailSent: false, smsSent: false, errors: [] as string[] }
 
-  const appName    = settings.app_name    || 'WorkTracker'
+  const appName    = settings.app_name    || 'ClockInProof'
   const adminEmail = settings.admin_email || ''
   const adminPhone = settings.admin_phone || ''
   const notifyEmail = settings.notify_email !== '0'
@@ -514,7 +514,7 @@ async function sendOverrideNotification(
         method: 'POST',
         headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from: `${appName} Alerts <alerts@worktracker.app>`,
+          from: `${appName} Alerts <alerts@clockinproof.app>`,
           to: [adminEmail],
           subject: `🚨 [${appName}] Clock-In Blocked: ${req.worker_name} is ${distTxt} from "${req.job_location}"`,
           html: emailHtml
@@ -1439,7 +1439,7 @@ app.get('/api/holidays/:year', async (c) => {
     // Nager.Date public API - completely free
     const url = `https://date.nager.at/api/v3/PublicHolidays/${year}/${country}`
     const res = await fetch(url, {
-      headers: { 'Accept': 'application/json', 'User-Agent': 'WorkTracker/1.0' }
+      headers: { 'Accept': 'application/json', 'User-Agent': 'ClockInProof/1.0' }
     })
 
     if (!res.ok) throw new Error('Holiday API failed')
@@ -1794,7 +1794,7 @@ app.post('/api/export/email', async (c) => {
   })
 
   const htmlBody = buildWeeklyReportHTML(bounds, settings, Object.values(byWorker))
-  const appName  = settings.app_name || 'WorkTracker'
+  const appName  = settings.app_name || 'ClockInProof'
   const subject  = workerId
     ? `${appName} — Timesheet for ${workerLabel}: ${bounds.label}`
     : `${appName} — Weekly Report: ${bounds.label}`
@@ -1810,7 +1810,7 @@ app.post('/api/export/email', async (c) => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          from: `${appName} <reports@worktracker.app>`,
+          from: `${appName} <reports@clockinproof.app>`,
           to: [adminEmail],
           subject,
           html: htmlBody
@@ -1922,7 +1922,7 @@ app.get('/api/export/csv', async (c) => {
   })
 
   const csv = [csvHeader.map(escape).join(','), ...rows].join('\n')
-  const filename = `worktracker-${filenameWorker}-${bounds.start}.csv`
+  const filename = `clockinproof-${filenameWorker}-${bounds.start}.csv`
 
   return new Response(csv, {
     headers: {
@@ -1977,14 +1977,14 @@ async function runWeeklyEmailJob(db: D1Database, env: any) {
   })
 
   const htmlBody = buildWeeklyReportHTML(bounds, settings, Object.values(byWorker))
-  const appName  = settings.app_name || 'WorkTracker'
+  const appName  = settings.app_name || 'ClockInProof'
   const subject  = `${appName} — Weekly Report: ${bounds.label}`
 
   await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      from: `${appName} <reports@worktracker.app>`,
+      from: `${appName} <reports@clockinproof.app>`,
       to: [adminEmail],
       subject,
       html: htmlBody
@@ -2003,7 +2003,7 @@ function buildWeeklyReportHTML(
   settings: Record<string, string>,
   workers: any[]
 ): string {
-  const appName = settings.app_name || 'WorkTracker'
+  const appName = settings.app_name || 'ClockInProof'
   const generatedAt = new Date().toLocaleString('en-CA', { dateStyle: 'full', timeStyle: 'short' })
 
   const totalHours    = workers.reduce((s, w) => s + w.total_hours, 0)
@@ -2239,8 +2239,8 @@ function getWorkerHTML(): string {
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
-  <meta name="apple-mobile-web-app-title" content="WorkTracker"/>
-  <title>WorkTracker — Clock In/Out</title>
+  <meta name="apple-mobile-web-app-title" content="ClockInProof"/>
+  <title>ClockInProof — Clock In/Out</title>
   <link rel="manifest" href="/static/manifest.json"/>
   <link rel="apple-touch-icon" href="/static/icon-180.png"/>
   <link rel="apple-touch-icon" sizes="192x192" href="/static/icon-192.png"/>
@@ -2290,7 +2290,7 @@ function getWorkerHTML(): string {
       <div class="w-20 h-20 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
         <i class="fas fa-clock text-white text-3xl"></i>
       </div>
-      <h1 class="text-2xl font-bold text-gray-800">WorkTracker</h1>
+      <h1 class="text-2xl font-bold text-gray-800">ClockInProof</h1>
       <p class="text-gray-500 text-sm mt-1">Track your work hours & location</p>
     </div>
     <div class="bg-white rounded-2xl shadow-sm p-6 space-y-4">
@@ -3645,7 +3645,7 @@ function getAdminHTML(): string {
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>WorkTracker — Admin Dashboard</title>
+  <title>ClockInProof — Admin Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -3673,7 +3673,7 @@ function getAdminHTML(): string {
         <i class="fas fa-shield-alt text-white text-2xl"></i>
       </div>
       <h2 class="text-2xl font-bold text-gray-800">Admin Panel</h2>
-      <p class="text-gray-500 text-sm">WorkTracker Dashboard</p>
+      <p class="text-gray-500 text-sm">ClockInProof Dashboard</p>
     </div>
     <div class="space-y-4">
       <input id="admin-pin-input" type="password" placeholder="Admin PIN" maxlength="6"
@@ -3704,7 +3704,7 @@ function getAdminHTML(): string {
             <i class="fas fa-clock text-sm"></i>
           </div>
           <div>
-            <h1 class="text-base font-bold leading-tight">WorkTracker</h1>
+            <h1 class="text-base font-bold leading-tight">ClockInProof</h1>
             <p class="text-indigo-300 text-[10px] leading-tight" id="admin-last-updated"></p>
           </div>
         </div>

@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "worktracker",
+  "name": "clockinproof",
   "compatibility_date": "2026-02-27",
   "pages_build_output_dir": "./dist",
   "compatibility_flags": [
@@ -9,7 +9,7 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "worktracker-production",
+      "database_name": "clockinproof-production",
       "database_id": "local-dev-placeholder"
     }
   ]

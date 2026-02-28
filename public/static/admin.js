@@ -981,7 +981,7 @@ async function generateInviteLink(id, name) {
             class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl text-sm">
             <i class="fas fa-copy mr-2"></i>Copy Link
           </button>
-          <button onclick="(()=>{ const txt=encodeURIComponent('Hi ${name}! Tap this link to open your WorkTracker app: ${link}'); window.open('sms:?body='+txt,'_blank') })()"
+          <button onclick="(()=>{ const txt=encodeURIComponent('Hi ${name}! Tap this link to open your ClockInProof app: ${link}'); window.open('sms:?body='+txt,'_blank') })()"
             class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-xl text-sm">
             <i class="fas fa-sms mr-2"></i>Send via SMS
           </button>
@@ -1016,7 +1016,7 @@ function exportCSV() {
   const blob = new Blob([csv], { type: 'text/csv' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
-  a.href = url; a.download = 'worktracker-export-' + new Date().toISOString().split('T')[0] + '.csv'
+  a.href = url; a.download = 'clockinproof-export-' + new Date().toISOString().split('T')[0] + '.csv'
   a.click()
   showAdminToast('CSV exported!', 'success')
 }
@@ -1348,7 +1348,7 @@ async function loadSettings() {
     const data = await res.json()
     currentSettings = data.settings || {}
 
-    document.getElementById('s-app-name').value = currentSettings.app_name || 'WorkTracker'
+    document.getElementById('s-app-name').value = currentSettings.app_name || 'ClockInProof'
     document.getElementById('s-hourly-rate').value = currentSettings.default_hourly_rate || '15.00'
     document.getElementById('s-admin-pin').value = currentSettings.admin_pin || '1234'
     document.getElementById('s-admin-email').value = currentSettings.admin_email || ''
