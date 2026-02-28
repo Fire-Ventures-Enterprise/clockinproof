@@ -349,7 +349,93 @@ app.post('/api/workers/:id/invite', async (c) => {
   const code = Math.random().toString(36).substring(2, 8).toUpperCase()   // e.g. "K7XM2P"
   await db.prepare('UPDATE workers SET invite_code = ? WHERE id = ?').bind(code, id).run()
   const worker = await db.prepare('SELECT id, name, phone, invite_code FROM workers WHERE id = ?').bind(id).first() as any
-  return c.json({ invite_code: code, worker_name: worker?.name })
+  return c.json({ invite_code: code, worker_name: worker?.name, worker_phone: worker?.phone })
+})
+
+// POST /api/workers/:id/invite/send-sms  — send invite link via Twilio to worker's phone
+app.post('/api/workers/:id/invite/send-sms', async (c) => {
+  const db  = c.env.DB
+  const env = c.env
+  await ensureSchema(db)
+  const id = parseInt(c.req.param('id'))
+
+  const worker = await db.prepare('SELECT id, name, phone, invite_code FROM workers WHERE id = ?').bind(id).first() as any
+  if (!worker) return c.json({ error: 'Worker not found' }, 404)
+  if (!worker.invite_code) return c.json({ error: 'No invite code — generate one first' }, 400)
+
+  // Get Twilio credentials
+  const twilioSid   = (env.TWILIO_ACCOUNT_SID   || '').trim()
+  const twilioToken = (env.TWILIO_AUTH_TOKEN     || '').trim()
+  const twilioFrom  = (env.TWILIO_FROM_NUMBER    || '').trim()
+
+  // Also try DB settings as fallback
+  const dbSettings = await db.prepare("SELECT key, value FROM settings WHERE key IN ('twilio_account_sid','twilio_auth_token','twilio_from_number','app_host')").all()
+  const cfg: Record<string,string> = {}
+  dbSettings.results.forEach((r: any) => { cfg[r.key] = r.value })
+
+  const sid   = twilioSid   || cfg.twilio_account_sid  || ''
+  const token = twilioToken || cfg.twilio_auth_token   || ''
+  const from  = twilioFrom  || cfg.twilio_from_number  || ''
+
+  if (!sid || !token || !from) {
+    return c.json({ error: 'Twilio not configured — add credentials in Settings', twilio_missing: true }, 400)
+  }
+
+  // Build invite link
+  const appHost = cfg.app_host ? cfg.app_host.replace(/\/$/, '') : 'https://app.clockinproof.com'
+  const inviteLink = `${appHost}/invite/${worker.invite_code}`
+  const appName = 'ClockInProof'
+
+  const smsBody =
+    `Hi ${worker.name}! 👋\n` +
+    `Your ${appName} clock-in app is ready.\n` +
+    `Tap this link to get started:\n` +
+    `${inviteLink}\n\n` +
+    `Your access code: ${worker.invite_code}`
+
+  // Normalize phone to E.164: 10-digit NA → +1XXXXXXXXXX, already has + → keep, else prepend +
+  const rawPhone = worker.phone.replace(/[\s\-\(\)\.]/g, '')
+  const workerPhone = rawPhone.startsWith('+')
+    ? rawPhone
+    : rawPhone.length === 10
+      ? `+1${rawPhone}`
+      : `+${rawPhone}`
+  const twilioUrl   = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`
+  const auth        = btoa(`${sid}:${token}`)
+
+  try {
+    const smsRes = await fetch(twilioUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: new URLSearchParams({
+        From: from,
+        To:   workerPhone,
+        Body: smsBody
+      }).toString()
+    })
+
+    const smsData = await smsRes.json() as any
+
+    if (smsRes.ok && smsData.sid) {
+      return c.json({
+        success: true,
+        message_sid: smsData.sid,
+        sent_to: workerPhone,
+        invite_link: inviteLink
+      })
+    } else {
+      return c.json({
+        error: smsData.message || 'Twilio returned an error',
+        twilio_code: smsData.code,
+        twilio_status: smsRes.status
+      }, 400)
+    }
+  } catch(e: any) {
+    return c.json({ error: `SMS send failed: ${e.message}` }, 500)
+  }
 })
 
 // GET /api/workers/by-invite/:code  — resolve an invite code → worker data (no auth needed)

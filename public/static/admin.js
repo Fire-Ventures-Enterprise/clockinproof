@@ -1168,13 +1168,18 @@ async function deleteWorker(id, name) {
 
 async function generateInviteLink(id, name) {
   try {
+    // 1. Generate / refresh the invite code
     const res  = await fetch('/api/workers/' + id + '/invite', { method: 'POST' })
     const data = await res.json()
     if (!data.invite_code) { showAdminToast('Could not generate link', 'error'); return }
-    // Use app_host from settings if configured (e.g. app.clockinproof.com), else fallback to current origin
-    const appBase = (currentSettings && currentSettings.app_host) ? currentSettings.app_host.replace(/\/$/, '') : window.location.origin
-    const link = appBase + '/invite/' + data.invite_code
-    // Show modal with the link
+
+    const appBase = (currentSettings && currentSettings.app_host)
+      ? currentSettings.app_host.replace(/\/$/, '')
+      : 'https://app.clockinproof.com'
+    const link       = appBase + '/invite/' + data.invite_code
+    const workerPhone = data.worker_phone || '?'
+
+    // 2. Show modal
     const existing = document.getElementById('invite-modal')
     if (existing) existing.remove()
     const modal = document.createElement('div')
@@ -1188,12 +1193,12 @@ async function generateInviteLink(id, name) {
             <i class="fas fa-link text-indigo-600 text-lg"></i>
           </div>
           <div>
-            <h3 class="font-bold text-gray-800 text-base">Invite Link for ${name}</h3>
-            <p class="text-xs text-gray-400">Share this link — one tap and they're in</p>
+            <h3 class="font-bold text-gray-800 text-base">Invite Link — ${name}</h3>
+            <p class="text-xs text-gray-400">Send to their phone: ${workerPhone}</p>
           </div>
         </div>
 
-        <div class="bg-indigo-50 border border-indigo-200 rounded-xl p-3 mb-4">
+        <div class="bg-indigo-50 border border-indigo-200 rounded-xl p-3 mb-3">
           <p class="text-xs font-semibold text-indigo-600 mb-1">Access Code</p>
           <p class="font-mono text-2xl font-bold text-indigo-800 tracking-widest text-center py-1">${data.invite_code}</p>
         </div>
@@ -1203,17 +1208,28 @@ async function generateInviteLink(id, name) {
           <p class="text-xs text-gray-700 break-all font-mono">${link}</p>
         </div>
 
+        <!-- SMS status area -->
+        <div id="invite-sms-status" class="hidden mb-3 p-3 rounded-xl text-sm font-medium"></div>
+
         <div class="space-y-2">
+          <!-- PRIMARY: Send via Twilio -->
+          <button id="invite-twilio-btn"
+            onclick="sendInviteViaTwilio(${id}, '${name}')"
+            class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2">
+            <i class="fas fa-sms"></i> Send SMS to ${workerPhone}
+          </button>
+          <!-- FALLBACK: Copy link -->
           <button onclick="navigator.clipboard.writeText('${link}').then(()=>showAdminToast('Link copied!','success'))"
-            class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl text-sm">
+            class="w-full bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold py-2.5 rounded-xl text-sm">
             <i class="fas fa-copy mr-2"></i>Copy Link
           </button>
-          <button onclick="(()=>{ const txt=encodeURIComponent('Hi ${name}! Tap this link to open your ClockInProof app: ${link}'); window.open('sms:?body='+txt,'_blank') })()"
-            class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-xl text-sm">
-            <i class="fas fa-sms mr-2"></i>Send via SMS
+          <!-- FALLBACK: Native SMS on mobile -->
+          <button onclick="(()=>{ const txt=encodeURIComponent('Hi ${name}! Tap this link to open your ClockInProof app: ${link}\\n\\nAccess code: ${data.invite_code}'); window.open('sms:${workerPhone}?body='+txt,'_blank') })()"
+            class="w-full text-gray-500 hover:text-gray-700 py-2 text-xs font-medium border border-gray-200 rounded-xl">
+            <i class="fas fa-mobile-alt mr-1"></i>Open Native SMS App (mobile only)
           </button>
           <button onclick="document.getElementById('invite-modal').remove()"
-            class="w-full text-gray-500 hover:text-gray-700 py-2 text-sm font-medium">
+            class="w-full text-gray-400 hover:text-gray-600 py-1.5 text-xs font-medium">
             Close
           </button>
         </div>
@@ -1221,7 +1237,55 @@ async function generateInviteLink(id, name) {
     `
     document.body.appendChild(modal)
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
+
   } catch(e) { showAdminToast('Error generating invite link', 'error') }
+}
+
+async function sendInviteViaTwilio(workerId, workerName) {
+  const btn    = document.getElementById('invite-twilio-btn')
+  const status = document.getElementById('invite-sms-status')
+
+  // Show loading state
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Sending...'
+
+  try {
+    const res  = await fetch('/api/workers/' + workerId + '/invite/send-sms', { method: 'POST' })
+    const data = await res.json()
+
+    if (data.success) {
+      // Success!
+      status.className = 'mb-3 p-3 rounded-xl text-sm font-medium bg-green-50 border border-green-200 text-green-700'
+      status.innerHTML = `<i class="fas fa-check-circle mr-2"></i>✅ SMS sent to ${data.sent_to}!`
+      status.classList.remove('hidden')
+      btn.innerHTML = '<i class="fas fa-check mr-2"></i>SMS Sent!'
+      btn.className = 'w-full bg-gray-200 text-gray-500 font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2 cursor-default'
+      showAdminToast('✅ Invite SMS sent to ' + workerName, 'success')
+    } else {
+      // Error from Twilio
+      let errMsg = data.error || 'SMS failed'
+
+      // Helpful error explanations
+      if (data.twilio_code === 21211) errMsg = 'Invalid phone number format — check the worker\'s phone number'
+      else if (data.twilio_code === 21265) errMsg = 'Phone needs country code — save worker phone as +1XXXXXXXXXX'
+      else if (data.twilio_code === 21608) errMsg = `Unverified number — Twilio trial only allows verified numbers. Add ${data.error?.match(/\+\d+/)?.[0] || 'this number'} at twilio.com/user/account/phone-numbers/verified, or upgrade your Twilio account ($20)`
+      else if (data.twilio_code === 21219) errMsg = 'Phone number not verified — upgrade Twilio or verify the number at twilio.com'
+      else if (data.twilio_code === 20003) errMsg = 'Twilio auth failed — check Account SID & Auth Token in Settings'
+      else if (data.twilio_missing)        errMsg = 'Twilio not set up — go to Settings → Notifications and add credentials'
+
+      status.className = 'mb-3 p-3 rounded-xl text-sm font-medium bg-red-50 border border-red-200 text-red-700'
+      status.innerHTML = `<i class="fas fa-exclamation-triangle mr-2"></i>${errMsg}`
+      status.classList.remove('hidden')
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-redo mr-2"></i>Retry SMS'
+    }
+  } catch(e) {
+    status.className = 'mb-3 p-3 rounded-xl text-sm font-medium bg-red-50 border border-red-200 text-red-700'
+    status.innerHTML = '<i class="fas fa-times-circle mr-2"></i>Network error — check your connection'
+    status.classList.remove('hidden')
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-sms mr-2"></i>Retry SMS'
+  }
 }
 
 // ── Export CSV ────────────────────────────────────────────────────────────────
