@@ -1334,6 +1334,7 @@ function showTab(name) {
   if (name === 'overrides') loadOverrides()
   if (name === 'payroll') loadPayrollTab()
   if (name === 'accountant') { initAcctTab(); initQbTab() }
+  if (name === 'quickbooks') initQbTabFull()
   if (name === 'job-sites') loadJobSites()
   if (name === 'disputes') loadDisputes()
   // Close sidebar on mobile after navigation
@@ -1709,6 +1710,19 @@ async function loadSettings() {
     if (acctEmailEl) acctEmailEl.value = currentSettings.accountant_email || ''
     const companyNameEl = document.getElementById('s-company-name')
     if (companyNameEl) companyNameEl.value = currentSettings.company_name || currentSettings.app_name || ''
+    // QB OAuth credentials
+    const qbClientIdEl = document.getElementById('s-qb-client-id')
+    if (qbClientIdEl) qbClientIdEl.value = currentSettings.qb_client_id || ''
+    const qbClientSecretEl = document.getElementById('s-qb-client-secret')
+    if (qbClientSecretEl && currentSettings.qb_client_secret) qbClientSecretEl.placeholder = '••••••• (saved)'
+    const qbEnvEl = document.getElementById('s-qb-environment')
+    if (qbEnvEl) qbEnvEl.value = currentSettings.qb_environment || 'production'
+    // Show redirect URI
+    const adminHost = window.location.origin
+    const redirectUriEl = document.getElementById('qb-redirect-uri-display')
+    if (redirectUriEl) redirectUriEl.textContent = `${adminHost}/api/qb/callback`
+    // Update QB status badges in settings tab
+    updateQbSettingsStatus()
 
     // Work days
     activeDays = (currentSettings.work_days || '1,2,3,4,5').split(',').map(Number)
@@ -1807,7 +1821,11 @@ async function saveSettings() {
     pay_period_anchor: document.getElementById('s-pay-anchor')?.value || '2026-03-06',
     show_pay_to_workers: document.getElementById('s-show-pay-workers')?.checked ? '1' : '0',
     accountant_email: document.getElementById('s-accountant-email')?.value?.trim() || '',
-    company_name: document.getElementById('s-company-name')?.value?.trim() || ''
+    company_name: document.getElementById('s-company-name')?.value?.trim() || '',
+    // QB OAuth credentials (only save non-empty values to avoid overwriting tokens)
+    ...(document.getElementById('s-qb-client-id')?.value?.trim() ? { qb_client_id: document.getElementById('s-qb-client-id').value.trim() } : {}),
+    ...(document.getElementById('s-qb-client-secret')?.value?.trim() && !document.getElementById('s-qb-client-secret').value.includes('•') ? { qb_client_secret: document.getElementById('s-qb-client-secret').value.trim() } : {}),
+    qb_environment: document.getElementById('s-qb-environment')?.value || 'production'
   }
 
   try {
@@ -3031,3 +3049,435 @@ function selectSiteAddress(address) {
   const box = document.getElementById('site-address-suggestions')
   if (box) box.classList.add('hidden')
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// QUICKBOOKS OAUTH INTEGRATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+let qbStatus = null  // cache: {connected, token_valid, company_name, ...}
+let qbEmployees = []  // QB employee list
+let qbWorkers = []   // Our workers with mapping status
+let qbPayPeriods = []
+
+// ── Update status badges in the Settings tab QB section ──────────────────
+async function updateQbSettingsStatus() {
+  try {
+    const res = await fetch('/api/qb/status')
+    if (!res.ok) return
+    qbStatus = await res.json()
+    const dot = document.getElementById('qb-status-dot')
+    const text = document.getElementById('qb-status-text')
+    const company = document.getElementById('qb-company-name-display')
+    const connectBtn = document.getElementById('qb-connect-btn')
+    const disconnectBtn = document.getElementById('qb-disconnect-btn')
+    const badge = document.getElementById('qb-nav-badge')
+
+    if (qbStatus.connected && qbStatus.token_valid) {
+      if (dot) dot.className = 'w-3 h-3 rounded-full bg-green-500 flex-shrink-0'
+      if (text) text.textContent = '✅ Connected to QuickBooks'
+      if (company) company.textContent = qbStatus.company_name || `Realm: ${qbStatus.realm_id}`
+      if (connectBtn) connectBtn.style.display = 'none'
+      if (disconnectBtn) disconnectBtn.style.display = ''
+      if (badge) { badge.textContent = '●'; badge.className = 'ml-auto text-[10px] text-white font-bold bg-green-500 px-1.5 py-0.5 rounded-full' }
+    } else if (qbStatus.connected && !qbStatus.token_valid) {
+      if (dot) dot.className = 'w-3 h-3 rounded-full bg-yellow-500 flex-shrink-0'
+      if (text) text.textContent = '⚠️ Token expired — reconnect needed'
+      if (company) company.textContent = qbStatus.company_name || ''
+      if (connectBtn) { connectBtn.style.display = ''; connectBtn.textContent = 'Reconnect' }
+      if (disconnectBtn) disconnectBtn.style.display = 'none'
+      if (badge) { badge.textContent = '!'; badge.className = 'ml-auto text-[10px] text-white font-bold bg-yellow-500 px-1.5 py-0.5 rounded-full' }
+    } else {
+      if (dot) dot.className = 'w-3 h-3 rounded-full bg-gray-300 flex-shrink-0'
+      if (text) text.textContent = qbStatus.has_client_id ? 'Not connected — click Connect to authorize' : 'Enter Client ID & Secret in Settings, then click Connect'
+      if (company) company.textContent = ''
+      if (connectBtn) connectBtn.style.display = ''
+      if (disconnectBtn) disconnectBtn.style.display = 'none'
+      if (badge) badge.className = 'ml-auto text-[10px] text-white font-bold bg-gray-400 px-1.5 py-0.5 rounded-full hidden'
+    }
+  } catch (e) { console.warn('QB status check failed:', e) }
+}
+
+// ── Connect: open OAuth popup ─────────────────────────────────────────────
+function qbConnect() {
+  const popup = window.open('/api/qb/connect', 'QuickBooks Connect',
+    'width=600,height=700,scrollbars=yes,resizable=yes')
+  if (!popup) {
+    showAdminToast('Popup blocked — allow popups for this site then try again', 'error')
+    return
+  }
+  // Listen for callback message
+  const handler = async (e) => {
+    if (e.data?.type !== 'qb_oauth') return
+    window.removeEventListener('message', handler)
+    if (e.data.success) {
+      showAdminToast('✅ QuickBooks connected successfully!', 'success')
+      await updateQbSettingsStatus()
+      if (document.getElementById('tab-quickbooks')?.classList.contains('block')) {
+        initQbTabFull()
+      }
+    } else {
+      showAdminToast(`QB connection failed: ${e.data.msg || e.data.error || 'unknown error'}`, 'error')
+    }
+  }
+  window.addEventListener('message', handler)
+}
+
+// ── Disconnect ────────────────────────────────────────────────────────────
+async function qbDisconnect() {
+  if (!confirm('Disconnect QuickBooks? Saved tokens will be cleared. Your QB data stays intact.')) return
+  try {
+    const res = await fetch('/api/qb/disconnect', { method: 'POST' })
+    const data = await res.json()
+    if (data.success) {
+      showAdminToast('Disconnected from QuickBooks', 'info')
+      qbStatus = null
+      await updateQbSettingsStatus()
+      initQbTabFull()
+    }
+  } catch (e) { showAdminToast('Disconnect error: ' + e.message, 'error') }
+}
+
+// ── Full QB tab initialization ────────────────────────────────────────────
+async function initQbTabFull() {
+  try {
+    const res = await fetch('/api/qb/status')
+    if (!res.ok) return
+    qbStatus = await res.json()
+  } catch { qbStatus = { connected: false } }
+
+  const statusCard = document.getElementById('qb-tab-status-card')
+  const statusIcon = document.getElementById('qb-tab-status-icon')
+  const statusTitle = document.getElementById('qb-tab-status-title')
+  const statusSub = document.getElementById('qb-tab-status-sub')
+  const connectBtn = document.getElementById('qb-tab-connect-btn')
+  const disconnectBtn = document.getElementById('qb-tab-disconnect-btn')
+  const setupSteps = document.getElementById('qb-setup-steps')
+  const mappingSection = document.getElementById('qb-mapping-section')
+  const syncSection = document.getElementById('qb-sync-section')
+  const logSection = document.getElementById('qb-log-section')
+
+  if (qbStatus.connected && qbStatus.token_valid) {
+    // Connected & healthy
+    if (statusCard) { statusCard.className = 'rounded-2xl border-2 border-green-200 bg-green-50 p-5 mb-6 flex items-center gap-4' }
+    if (statusIcon) statusIcon.innerHTML = '<i class="fas fa-check-circle text-green-600"></i>'
+    if (statusTitle) statusTitle.textContent = '✅ Connected to QuickBooks'
+    if (statusSub) statusSub.textContent = qbStatus.company_name ? `Company: ${qbStatus.company_name}` : `Realm ID: ${qbStatus.realm_id}`
+    if (connectBtn) connectBtn.className = connectBtn.className.replace('hidden', '') + ' hidden'
+    if (disconnectBtn) disconnectBtn.classList.remove('hidden')
+    if (setupSteps) setupSteps.classList.add('hidden')
+    if (mappingSection) mappingSection.classList.remove('hidden')
+    if (syncSection) syncSection.classList.remove('hidden')
+    if (logSection) logSection.classList.remove('hidden')
+    // Load data
+    loadQbMapping()
+    loadQbSyncLog()
+    setQbSyncPeriod('last_period')
+  } else if (qbStatus.connected && !qbStatus.token_valid) {
+    if (statusCard) { statusCard.className = 'rounded-2xl border-2 border-yellow-200 bg-yellow-50 p-5 mb-6 flex items-center gap-4' }
+    if (statusIcon) statusIcon.innerHTML = '<i class="fas fa-exclamation-triangle text-yellow-500"></i>'
+    if (statusTitle) statusTitle.textContent = '⚠️ Token Expired'
+    if (statusSub) statusSub.textContent = 'Your QuickBooks access token has expired. Please reconnect.'
+    if (connectBtn) { connectBtn.classList.remove('hidden'); connectBtn.textContent = '🔄 Reconnect to QuickBooks' }
+    if (disconnectBtn) disconnectBtn.classList.add('hidden')
+    if (setupSteps) setupSteps.classList.add('hidden')
+  } else {
+    if (statusCard) { statusCard.className = 'rounded-2xl border-2 border-gray-200 bg-gray-50 p-5 mb-6 flex items-center gap-4' }
+    if (statusIcon) statusIcon.innerHTML = '<i class="fas fa-unlink text-gray-400"></i>'
+    if (statusTitle) statusTitle.textContent = qbStatus.has_client_id ? 'Not connected — authorize ClockInProof in QuickBooks' : 'Setup Required — enter Client ID & Secret in Settings'
+    if (statusSub) statusSub.textContent = qbStatus.has_client_id ? 'Click Connect to open the QuickBooks authorization window' : 'Go to Settings → QuickBooks Direct Connect section'
+    if (connectBtn) {
+      connectBtn.classList.remove('hidden')
+      connectBtn.textContent = qbStatus.has_client_id ? '🔗 Connect to QuickBooks' : '⚙️ Go to Settings'
+      if (!qbStatus.has_client_id) {
+        connectBtn.onclick = () => showTab('settings')
+      } else {
+        connectBtn.onclick = qbConnect
+      }
+    }
+    if (disconnectBtn) disconnectBtn.classList.add('hidden')
+    if (setupSteps) setupSteps.classList.remove('hidden')
+    if (mappingSection) mappingSection.classList.add('hidden')
+    if (syncSection) syncSection.classList.add('hidden')
+    if (logSection) logSection.classList.add('hidden')
+  }
+}
+
+// ── Load employee mapping ─────────────────────────────────────────────────
+async function loadQbMapping() {
+  const list = document.getElementById('qb-mapping-list')
+  if (!list) return
+  list.innerHTML = '<p class="text-gray-400 text-sm text-center py-4"><i class="fas fa-spinner fa-spin mr-2"></i>Loading QB employees…</p>'
+
+  try {
+    const [empRes, workerRes] = await Promise.all([
+      fetch('/api/qb/employees'),
+      fetch('/api/qb/workers')
+    ])
+    if (!empRes.ok) {
+      const err = await empRes.json()
+      list.innerHTML = `<p class="text-red-500 text-sm p-4"><i class="fas fa-exclamation-circle mr-2"></i>${err.error || 'Failed to load QB employees'}</p>`
+      return
+    }
+    const empData = await empRes.json()
+    const workerData = await workerRes.json()
+    qbEmployees = empData.employees || []
+    qbWorkers = workerData.workers || []
+
+    if (!qbWorkers.length) {
+      list.innerHTML = '<p class="text-gray-400 text-sm text-center py-4">No active workers found. Add workers first.</p>'
+      return
+    }
+
+    // Build employee dropdown options
+    const empOptions = qbEmployees.map(e => 
+      `<option value="${e.id}" data-name="${e.name}">${e.name} ${e.display_name && e.display_name !== e.name ? '('+e.display_name+')' : ''}</option>`
+    ).join('')
+
+    list.innerHTML = qbWorkers.map(w => {
+      const isMapped = !!w.qb_employee_id
+      return `
+      <div class="flex items-center gap-3 p-3 rounded-xl border ${isMapped ? 'border-green-200 bg-green-50' : 'border-gray-100 bg-white'}" id="qb-worker-row-${w.id}">
+        <div class="w-9 h-9 rounded-xl bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 font-bold text-sm">
+          ${(w.name || '?').charAt(0).toUpperCase()}
+        </div>
+        <div class="flex-1 min-w-0">
+          <p class="font-semibold text-gray-800 text-sm truncate">${w.name}</p>
+          <p class="text-xs text-gray-400">${w.job_title || w.phone || ''}</p>
+        </div>
+        <div class="flex items-center gap-2">
+          ${isMapped ? `
+            <span class="text-xs text-green-700 font-medium bg-green-100 px-2 py-0.5 rounded-full">
+              <i class="fas fa-check mr-1"></i>${w.qb_employee_name}
+            </span>
+            <button onclick="qbUnmapWorker(${w.id})" class="text-xs text-red-400 hover:text-red-600 px-2 py-1 rounded-lg hover:bg-red-50 transition-colors">
+              <i class="fas fa-times"></i>
+            </button>
+          ` : `
+            <select id="qb-emp-select-${w.id}"
+              class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-green-400 max-w-[200px]">
+              <option value="">— Select QB employee —</option>
+              ${empOptions}
+            </select>
+            <button onclick="qbMapWorker(${w.id})" 
+              class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded-lg transition-colors">
+              Map
+            </button>
+          `}
+        </div>
+      </div>`
+    }).join('')
+
+    if (!qbEmployees.length) {
+      list.insertAdjacentHTML('beforeend', `
+        <div class="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-700">
+          <i class="fas fa-info-circle mr-1"></i>
+          No QB employees found. Make sure employees are set up in your QuickBooks Online company.
+        </div>`)
+    }
+  } catch (e) {
+    list.innerHTML = `<p class="text-red-500 text-sm p-4"><i class="fas fa-exclamation-circle mr-2"></i>${e.message}</p>`
+  }
+}
+
+async function qbMapWorker(workerId) {
+  const select = document.getElementById(`qb-emp-select-${workerId}`)
+  if (!select?.value) { showAdminToast('Please select a QB employee', 'error'); return }
+  const opt = select.options[select.selectedIndex]
+  const empName = opt.dataset.name || opt.text
+  try {
+    const res = await fetch('/api/qb/map', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ worker_id: workerId, qb_employee_id: select.value, qb_employee_name: empName })
+    })
+    const data = await res.json()
+    if (data.success) {
+      showAdminToast(`✅ Mapped to ${empName}`, 'success')
+      loadQbMapping()
+    } else {
+      showAdminToast(data.error || 'Mapping failed', 'error')
+    }
+  } catch (e) { showAdminToast(e.message, 'error') }
+}
+
+async function qbUnmapWorker(workerId) {
+  if (!confirm('Remove this QB mapping?')) return
+  try {
+    await fetch(`/api/qb/map/${workerId}`, { method: 'DELETE' })
+    showAdminToast('Mapping removed', 'info')
+    loadQbMapping()
+  } catch (e) { showAdminToast(e.message, 'error') }
+}
+
+// ── Set sync date range ───────────────────────────────────────────────────
+async function setQbSyncPeriod(type) {
+  const startEl = document.getElementById('qb-sync-start')
+  const endEl = document.getElementById('qb-sync-end')
+  if (!startEl || !endEl) return
+
+  const today = new Date()
+  const fmt = d => d.toISOString().split('T')[0]
+
+  if (type === 'this_month') {
+    startEl.value = fmt(new Date(today.getFullYear(), today.getMonth(), 1))
+    endEl.value = fmt(today)
+    return
+  }
+
+  // Load pay periods
+  try {
+    if (!qbPayPeriods.length) {
+      const res = await fetch('/api/pay-periods')
+      const data = await res.json()
+      qbPayPeriods = data.periods || []
+    }
+    const todayStr = fmt(today)
+    const past = qbPayPeriods.filter(p => p.end <= todayStr)
+    const current = qbPayPeriods.find(p => p.start <= todayStr && p.end >= todayStr)
+
+    if (type === 'last_period' && past.length > 0) {
+      const last = past[past.length - 1]
+      startEl.value = last.start
+      endEl.value = last.end
+    } else if (type === 'this_period' && current) {
+      startEl.value = current.start
+      endEl.value = current.end
+    } else {
+      // Fallback to this month
+      startEl.value = fmt(new Date(today.getFullYear(), today.getMonth(), 1))
+      endEl.value = fmt(today)
+    }
+  } catch {
+    startEl.value = fmt(new Date(today.getFullYear(), today.getMonth(), 1))
+    endEl.value = fmt(today)
+  }
+}
+
+// ── Run sync ──────────────────────────────────────────────────────────────
+async function runQbSync(dryRun) {
+  const start = document.getElementById('qb-sync-start')?.value
+  const end = document.getElementById('qb-sync-end')?.value
+  const resultsEl = document.getElementById('qb-sync-results')
+
+  if (!start || !end) { showAdminToast('Please select a date range', 'error'); return }
+  if (!resultsEl) return
+
+  resultsEl.classList.remove('hidden')
+  resultsEl.className = 'rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm'
+  resultsEl.innerHTML = `<p class="text-gray-500 text-center py-4"><i class="fas fa-spinner fa-spin mr-2"></i>${dryRun ? 'Running preview…' : 'Pushing to QuickBooks…'}</p>`
+
+  try {
+    const res = await fetch('/api/qb/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start, end, dry_run: dryRun })
+    })
+    const data = await res.json()
+
+    if (!res.ok || data.error) {
+      resultsEl.className = 'rounded-2xl border border-red-200 bg-red-50 p-4 text-sm'
+      resultsEl.innerHTML = `<p class="text-red-600 font-semibold"><i class="fas fa-exclamation-circle mr-2"></i>${data.error || 'Sync failed'}</p>`
+      return
+    }
+
+    const isSuccess = data.errors === 0
+    resultsEl.className = `rounded-2xl border p-4 text-sm ${isSuccess ? 'border-green-200 bg-green-50' : 'border-yellow-200 bg-yellow-50'}`
+
+    let html = `
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-lg">${dryRun ? '👁️' : (isSuccess ? '✅' : '⚠️')}</span>
+        <span class="font-bold text-gray-800">${dryRun ? 'Preview Results' : (isSuccess ? 'Sync Complete!' : 'Sync Completed with Errors')}</span>
+        <span class="ml-auto text-xs text-gray-500">${data.period}</span>
+      </div>
+      <div class="grid grid-cols-3 gap-3 mb-3">
+        <div class="text-center p-2 bg-white rounded-xl border border-gray-100">
+          <p class="text-xl font-bold text-indigo-600">${data.total_sessions}</p>
+          <p class="text-xs text-gray-500">Sessions Found</p>
+        </div>
+        <div class="text-center p-2 bg-white rounded-xl border border-gray-100">
+          <p class="text-xl font-bold text-green-600">${data.pushed}</p>
+          <p class="text-xs text-gray-500">${dryRun ? 'Would Push' : 'Pushed'}</p>
+        </div>
+        <div class="text-center p-2 bg-white rounded-xl border border-gray-100">
+          <p class="text-xl font-bold text-red-500">${data.errors}</p>
+          <p class="text-xs text-gray-500">Errors</p>
+        </div>
+      </div>`
+
+    if (data.unmapped_workers?.length > 0) {
+      html += `
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-3 text-xs text-amber-700">
+          <i class="fas fa-exclamation-triangle mr-1"></i>
+          <strong>Unmapped workers (sessions skipped):</strong> ${data.unmapped_workers.join(', ')}
+          <br>Go to the Employee Mapping section above to map these workers.
+        </div>`
+    }
+
+    if (data.results?.length > 0) {
+      html += `<div class="space-y-1 max-h-48 overflow-y-auto mt-2">`
+      data.results.forEach(r => {
+        const icon = r.status === 'success' ? '✅' : r.status === 'dry_run' ? '👁️' : r.status === 'skipped' ? '⏭️' : '❌'
+        const color = r.status === 'success' ? 'text-green-700' : r.status === 'error' ? 'text-red-600' : 'text-gray-500'
+        html += `<div class="flex items-center gap-2 text-xs ${color}">
+          <span>${icon}</span>
+          <span class="font-medium">${r.worker}</span>
+          <span class="text-gray-400">Session #${r.session_id}</span>
+          ${r.qb_id ? `<span class="ml-auto text-green-600 font-mono">QB:${r.qb_id}</span>` : ''}
+          ${r.reason ? `<span class="ml-auto text-gray-400">${r.reason}</span>` : ''}
+        </div>`
+      })
+      html += `</div>`
+    }
+
+    if (!dryRun && isSuccess && data.pushed > 0) {
+      html += `
+        <div class="mt-3 p-3 bg-green-100 rounded-xl text-xs text-green-800">
+          <i class="fas fa-info-circle mr-1"></i>
+          Hours are now in QuickBooks! Go to <strong>QuickBooks → Payroll → Run Payroll</strong> and the time will be pre-populated.
+        </div>`
+      loadQbSyncLog()
+    }
+
+    resultsEl.innerHTML = html
+  } catch (e) {
+    resultsEl.className = 'rounded-2xl border border-red-200 bg-red-50 p-4 text-sm'
+    resultsEl.innerHTML = `<p class="text-red-600"><i class="fas fa-exclamation-circle mr-2"></i>${e.message}</p>`
+  }
+}
+
+// ── Sync history log ──────────────────────────────────────────────────────
+async function loadQbSyncLog() {
+  const logEl = document.getElementById('qb-sync-log')
+  if (!logEl) return
+  try {
+    const res = await fetch('/api/qb/sync-log')
+    const data = await res.json()
+    const logs = data.logs || []
+    if (!logs.length) {
+      logEl.innerHTML = '<p class="text-gray-400 text-xs text-center py-2">No syncs yet</p>'
+      return
+    }
+    logEl.innerHTML = logs.map(l => {
+      const d = new Date(l.synced_at)
+      const dateStr = d.toLocaleDateString('en-CA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      const isOk = l.status === 'success'
+      return `
+        <div class="flex items-center gap-3 p-3 rounded-xl border ${isOk ? 'border-green-100 bg-green-50' : 'border-yellow-100 bg-yellow-50'}">
+          <span class="text-base">${isOk ? '✅' : '⚠️'}</span>
+          <div class="flex-1 min-w-0">
+            <p class="text-xs font-semibold text-gray-700">${l.pay_period_start} → ${l.pay_period_end}</p>
+            <p class="text-xs text-gray-500">${l.worker_count} workers · ${l.time_activity_count} activities ${l.error_message ? '· ' + l.error_message : ''}</p>
+          </div>
+          <span class="text-xs text-gray-400 flex-shrink-0">${dateStr}</span>
+        </div>`
+    }).join('')
+  } catch (e) {
+    logEl.innerHTML = `<p class="text-xs text-red-400 text-center py-2">${e.message}</p>`
+  }
+}
+
+// ── Boot: check QB status on page load ───────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  setTimeout(updateQbSettingsStatus, 1500)
+})
+

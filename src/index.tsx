@@ -138,6 +138,36 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('show_pay_to_workers', '1')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('accountant_email', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('company_name', 'ClockInProof')`,
+    // ── QuickBooks OAuth integration ──────────────────────────────────────────
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_client_id', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_client_secret', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_realm_id', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_access_token', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_refresh_token', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_token_expires', '0')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_environment', 'production')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_connected', '0')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_company_name', '')`,
+    // ── QB worker → QB employee mapping table ─────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS qb_employee_map (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      worker_id INTEGER NOT NULL UNIQUE,
+      qb_employee_id TEXT NOT NULL,
+      qb_employee_name TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (worker_id) REFERENCES workers(id)
+    )`,
+    // ── QB sync log ───────────────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS qb_sync_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pay_period_start TEXT NOT NULL,
+      pay_period_end TEXT NOT NULL,
+      synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      worker_count INTEGER DEFAULT 0,
+      time_activity_count INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'success',
+      error_message TEXT
+    )`,
     // invite_code column on workers (safe to run on existing DBs)
     `ALTER TABLE workers ADD COLUMN invite_code TEXT`,
     // ── Worker profile columns (migration 0004) ───────────────────────────────
@@ -2909,9 +2939,384 @@ app.post('/api/export/email-accountant', async (c) => {
   }
 })
 
+// ─── QUICKBOOKS OAUTH 2.0 INTEGRATION ────────────────────────────────────────
+//
+// Flow:
+//  1. Admin enters Client ID + Secret in Settings → saved to DB
+//  2. Admin clicks "Connect to QuickBooks" → GET /api/qb/connect → redirects to Intuit
+//  3. Intuit redirects to GET /api/qb/callback?code=…&realmId=… → exchanges for tokens
+//  4. Tokens saved in settings; qb_connected = '1'
+//  5. Admin maps workers → QB employees via GET /api/qb/employees + POST /api/qb/map
+//  6. On any pay period: POST /api/qb/sync → pushes TimeActivity for each session
+//
+// Intuit OAuth 2.0 endpoints:
+//  Auth:    https://appcenter.intuit.com/connect/oauth2
+//  Token:   https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer
+//  Revoke:  https://developer.api.intuit.com/v2/oauth2/tokens/revoke
+// ─────────────────────────────────────────────────────────────────────────────
+
+const QB_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2'
+const QB_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer'
+const QB_REVOKE_URL = 'https://developer.api.intuit.com/v2/oauth2/tokens/revoke'
+const QB_SCOPES = 'com.intuit.quickbooks.accounting'
+
+function qbApiBase(environment: string) {
+  return environment === 'sandbox'
+    ? 'https://sandbox-quickbooks.api.intuit.com/v3/company'
+    : 'https://quickbooks.api.intuit.com/v3/company'
+}
+
+async function loadQbSettings(db: D1Database): Promise<Record<string, string>> {
+  const raw = await db.prepare(`SELECT key, value FROM settings WHERE key LIKE 'qb_%'`).all()
+  const s: Record<string, string> = {}
+  ;(raw.results as any[]).forEach((r: any) => { s[r.key] = r.value })
+  return s
+}
+
+async function saveSetting(db: D1Database, key: string, value: string) {
+  await db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
+  ).bind(key, value).run()
+}
+
+async function refreshQbToken(db: D1Database, qb: Record<string, string>): Promise<string | null> {
+  if (!qb.qb_client_id || !qb.qb_refresh_token) return null
+  const creds = btoa(`${qb.qb_client_id}:${qb.qb_client_secret}`)
+  try {
+    const res = await fetch(QB_TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${creds}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+      },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: qb.qb_refresh_token
+      }).toString()
+    })
+    if (!res.ok) return null
+    const data: any = await res.json()
+    const expires = Date.now() + (data.expires_in || 3600) * 1000
+    await saveSetting(db, 'qb_access_token', data.access_token)
+    await saveSetting(db, 'qb_refresh_token', data.refresh_token || qb.qb_refresh_token)
+    await saveSetting(db, 'qb_token_expires', String(expires))
+    return data.access_token
+  } catch { return null }
+}
+
+async function getQbAccessToken(db: D1Database, qb: Record<string, string>): Promise<string | null> {
+  if (!qb.qb_access_token) return null
+  const expires = parseInt(qb.qb_token_expires || '0')
+  if (Date.now() > expires - 60000) return refreshQbToken(db, qb)
+  return qb.qb_access_token
+}
+
+// ── GET /api/qb/status ─────────────────────────────────────────────────────
+app.get('/api/qb/status', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const qb = await loadQbSettings(db)
+  const connected = qb.qb_connected === '1' && !!qb.qb_realm_id
+  const expires = parseInt(qb.qb_token_expires || '0')
+  return c.json({
+    connected,
+    token_valid: connected && Date.now() < expires,
+    token_expires: expires ? new Date(expires).toISOString() : null,
+    realm_id: qb.qb_realm_id || null,
+    company_name: qb.qb_company_name || null,
+    environment: qb.qb_environment || 'production',
+    has_client_id: !!qb.qb_client_id,
+    has_client_secret: !!qb.qb_client_secret
+  })
+})
+
+// ── GET /api/qb/connect — redirect to Intuit OAuth ────────────────────────
+app.get('/api/qb/connect', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const qb = await loadQbSettings(db)
+  if (!qb.qb_client_id || !qb.qb_client_secret) {
+    return c.json({ error: 'QuickBooks Client ID and Secret must be saved in Settings first.' }, 400)
+  }
+  const hostRow = await db.prepare(`SELECT value FROM settings WHERE key = 'admin_host'`).first() as any
+  const adminHost = hostRow?.value || ''
+  if (!adminHost) return c.json({ error: 'Admin host URL must be configured in Settings.' }, 400)
+
+  const redirectUri = `${adminHost}/api/qb/callback`
+  const state = btoa(JSON.stringify({ ts: Date.now() }))
+  const params = new URLSearchParams({
+    client_id: qb.qb_client_id,
+    scope: QB_SCOPES,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    state
+  })
+  return c.redirect(`${QB_AUTH_URL}?${params.toString()}`)
+})
+
+// ── GET /api/qb/callback — Intuit redirects here after approval ────────────
+app.get('/api/qb/callback', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const { code, realmId, error: oauthErr } = c.req.query() as any
+
+  const closeScript = (success: boolean, msg: string) => `<html><head><title>QuickBooks</title></head><body>
+    <script>
+      if(window.opener){window.opener.postMessage({type:'qb_oauth',success:${success},msg:'${msg.replace(/'/g,"\\'")}'},'*');}
+      setTimeout(()=>window.close(),2000);
+    </script>
+    <p style="font-family:sans-serif;text-align:center;padding:40px;font-size:18px;">
+      ${success ? '✅' : '❌'} ${msg}
+    </p>
+  </body></html>`
+
+  if (oauthErr) return c.html(closeScript(false, 'Connection cancelled.'))
+
+  const qb = await loadQbSettings(db)
+  if (!qb.qb_client_id) return c.html(closeScript(false, 'QB credentials not configured.'))
+
+  const hostRow = await db.prepare(`SELECT value FROM settings WHERE key = 'admin_host'`).first() as any
+  const adminHost = hostRow?.value || ''
+  const redirectUri = `${adminHost}/api/qb/callback`
+  const creds = btoa(`${qb.qb_client_id}:${qb.qb_client_secret}`)
+
+  try {
+    const tokenRes = await fetch(QB_TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${creds}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+      },
+      body: new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: redirectUri }).toString()
+    })
+    if (!tokenRes.ok) return c.html(closeScript(false, 'Token exchange failed. Check credentials.'))
+
+    const td: any = await tokenRes.json()
+    const expires = Date.now() + (td.expires_in || 3600) * 1000
+
+    await saveSetting(db, 'qb_access_token', td.access_token)
+    await saveSetting(db, 'qb_refresh_token', td.refresh_token || '')
+    await saveSetting(db, 'qb_token_expires', String(expires))
+    await saveSetting(db, 'qb_realm_id', realmId)
+    await saveSetting(db, 'qb_connected', '1')
+
+    // Fetch company name
+    try {
+      const env = qb.qb_environment || 'production'
+      const qbBase = qbApiBase(env)
+      const cr = await fetch(`${qbBase}/${realmId}/companyinfo/${realmId}?minorversion=70`, {
+        headers: { 'Authorization': `Bearer ${td.access_token}`, 'Accept': 'application/json' }
+      })
+      if (cr.ok) {
+        const cd: any = await cr.json()
+        await saveSetting(db, 'qb_company_name', cd?.CompanyInfo?.CompanyName || '')
+      }
+    } catch { /* non-fatal */ }
+
+    return c.html(closeScript(true, 'QuickBooks connected! You can close this window.'))
+  } catch (e: any) {
+    return c.html(closeScript(false, `Error: ${e.message}`))
+  }
+})
+
+// ── POST /api/qb/disconnect ────────────────────────────────────────────────
+app.post('/api/qb/disconnect', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const qb = await loadQbSettings(db)
+  if (qb.qb_access_token && qb.qb_client_id) {
+    const creds = btoa(`${qb.qb_client_id}:${qb.qb_client_secret}`)
+    try {
+      await fetch(QB_REVOKE_URL, {
+        method: 'POST',
+        headers: { 'Authorization': `Basic ${creds}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token: qb.qb_access_token }).toString()
+      })
+    } catch { /* ignore */ }
+  }
+  for (const key of ['qb_connected','qb_access_token','qb_refresh_token','qb_token_expires','qb_realm_id','qb_company_name']) {
+    await saveSetting(db, key, key === 'qb_token_expires' ? '0' : '')
+  }
+  return c.json({ success: true, message: 'Disconnected from QuickBooks' })
+})
+
+// ── GET /api/qb/employees — list QB employees for mapping ─────────────────
+app.get('/api/qb/employees', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const qb = await loadQbSettings(db)
+  if (qb.qb_connected !== '1') return c.json({ error: 'Not connected to QuickBooks' }, 400)
+  const token = await getQbAccessToken(db, qb)
+  if (!token) return c.json({ error: 'QB token expired — please reconnect' }, 401)
+
+  try {
+    const qbBase = qbApiBase(qb.qb_environment || 'production')
+    const query = encodeURIComponent('SELECT * FROM Employee WHERE Active = true MAXRESULTS 200')
+    const res = await fetch(`${qbBase}/${qb.qb_realm_id}/query?query=${query}&minorversion=70`, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
+    })
+    if (!res.ok) return c.json({ error: `QB API error ${res.status}` }, 500)
+    const data: any = await res.json()
+    const employees = (data?.QueryResponse?.Employee || []).map((e: any) => ({
+      id: e.Id,
+      name: `${e.GivenName || ''} ${e.FamilyName || ''}`.trim() || e.DisplayName,
+      display_name: e.DisplayName
+    }))
+    const maps = await db.prepare(
+      `SELECT m.worker_id, m.qb_employee_id, m.qb_employee_name, w.name as worker_name
+       FROM qb_employee_map m JOIN workers w ON w.id = m.worker_id`
+    ).all()
+    return c.json({ employees, mappings: maps.results })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── GET /api/qb/workers — our workers with QB mapping status ──────────────
+app.get('/api/qb/workers', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const workers = await db.prepare(
+    `SELECT w.id, w.name, w.phone, w.job_title,
+       m.qb_employee_id, m.qb_employee_name
+     FROM workers w
+     LEFT JOIN qb_employee_map m ON m.worker_id = w.id
+     WHERE w.active = 1 ORDER BY w.name`
+  ).all()
+  return c.json({ workers: workers.results })
+})
+
+// ── POST /api/qb/map — save worker→QB employee mapping ───────────────────
+app.post('/api/qb/map', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const { worker_id, qb_employee_id, qb_employee_name } = await c.req.json()
+  if (!worker_id || !qb_employee_id) return c.json({ error: 'worker_id and qb_employee_id required' }, 400)
+  await db.prepare(
+    `INSERT INTO qb_employee_map (worker_id, qb_employee_id, qb_employee_name) VALUES (?, ?, ?)
+     ON CONFLICT(worker_id) DO UPDATE SET qb_employee_id=excluded.qb_employee_id, qb_employee_name=excluded.qb_employee_name`
+  ).bind(worker_id, qb_employee_id, qb_employee_name).run()
+  return c.json({ success: true })
+})
+
+// ── DELETE /api/qb/map/:worker_id ─────────────────────────────────────────
+app.delete('/api/qb/map/:worker_id', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  await db.prepare(`DELETE FROM qb_employee_map WHERE worker_id = ?`).bind(c.req.param('worker_id')).run()
+  return c.json({ success: true })
+})
+
+// ── POST /api/qb/sync — push TimeActivity records to QB ───────────────────
+// Body: { start: 'YYYY-MM-DD', end: 'YYYY-MM-DD', dry_run?: boolean }
+app.post('/api/qb/sync', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const qb = await loadQbSettings(db)
+  if (qb.qb_connected !== '1') return c.json({ error: 'Not connected to QuickBooks' }, 400)
+  const token = await getQbAccessToken(db, qb)
+  if (!token) return c.json({ error: 'QB token expired — please reconnect' }, 401)
+
+  const body = await c.req.json()
+  const { start, end, dry_run = false } = body
+  if (!start || !end) return c.json({ error: 'start and end dates required' }, 400)
+
+  const sessions = await db.prepare(
+    `SELECT s.id, s.worker_id, s.clock_in_time, s.hours_worked, s.job_location, s.session_type,
+       w.name as worker_name, w.hourly_rate,
+       m.qb_employee_id, m.qb_employee_name
+     FROM sessions s
+     JOIN workers w ON w.id = s.worker_id
+     LEFT JOIN qb_employee_map m ON m.worker_id = s.worker_id
+     WHERE s.clock_out_time IS NOT NULL
+       AND date(s.clock_in_time) >= ? AND date(s.clock_in_time) <= ?
+       AND s.hours_worked > 0
+     ORDER BY s.clock_in_time`
+  ).bind(start, end).all()
+
+  const qbBase = qbApiBase(qb.qb_environment || 'production')
+  const results: any[] = []
+  let pushed = 0, errors = 0
+  const unmapped: string[] = []
+
+  for (const s of sessions.results as any[]) {
+    if (!s.qb_employee_id) {
+      if (!unmapped.includes(s.worker_name)) unmapped.push(s.worker_name)
+      results.push({ session_id: s.id, worker: s.worker_name, status: 'skipped', reason: 'No QB employee mapped' })
+      continue
+    }
+    const dateStr = new Date(s.clock_in_time).toISOString().split('T')[0]
+    const totalMins = Math.round((s.hours_worked || 0) * 60)
+    const hrs = Math.floor(totalMins / 60)
+    const mins = totalMins % 60
+
+    const payload = {
+      TxnDate: dateStr,
+      NameOf: 'Employee',
+      EmployeeRef: { value: s.qb_employee_id, name: s.qb_employee_name || s.worker_name },
+      Hours: hrs,
+      Minutes: mins,
+      Description: `ClockInProof: ${s.job_location || 'Regular work'} (Session #${s.id})`,
+      BillableStatus: 'NotBillable',
+      Taxable: false
+    }
+
+    if (dry_run) {
+      results.push({ session_id: s.id, worker: s.worker_name, status: 'dry_run', payload })
+      pushed++
+      continue
+    }
+
+    try {
+      const res = await fetch(`${qbBase}/${qb.qb_realm_id}/timeactivity?minorversion=70`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      })
+      if (res.ok) {
+        const d: any = await res.json()
+        results.push({ session_id: s.id, worker: s.worker_name, status: 'success', qb_id: d?.TimeActivity?.Id })
+        pushed++
+      } else {
+        const err = await res.text()
+        results.push({ session_id: s.id, worker: s.worker_name, status: 'error', error: err })
+        errors++
+      }
+    } catch (e: any) {
+      results.push({ session_id: s.id, worker: s.worker_name, status: 'error', error: e.message })
+      errors++
+    }
+  }
+
+  if (!dry_run) {
+    const workerSet = new Set((sessions.results as any[]).filter((s: any) => s.qb_employee_id).map((s: any) => s.worker_id))
+    await db.prepare(
+      `INSERT INTO qb_sync_log (pay_period_start, pay_period_end, worker_count, time_activity_count, status, error_message)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(start, end, workerSet.size, pushed, errors > 0 ? 'partial' : 'success',
+      unmapped.length ? `Unmapped: ${unmapped.join(', ')}` : null).run()
+  }
+
+  return c.json({ success: true, dry_run, period: `${start} → ${end}`,
+    total_sessions: (sessions.results as any[]).length, pushed, errors, unmapped_workers: unmapped, results })
+})
+
+// ── GET /api/qb/sync-log ──────────────────────────────────────────────────
+app.get('/api/qb/sync-log', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const logs = await db.prepare(`SELECT * FROM qb_sync_log ORDER BY synced_at DESC LIMIT 20`).all()
+  return c.json({ logs: logs.results })
+})
+
 // ─── SCHEDULED WEEKLY EMAIL (Cloudflare Cron Trigger) ─────────────────────────
-// Configured in wrangler.jsonc as:  "triggers": { "crons": ["59 23 * * FRI"] }
-// Runs every Friday at 11:59 PM UTC → sends Mon–Fri weekly report
 async function runWeeklyEmailJob(db: D1Database, env: any) {
   const settingsRaw = await db.prepare('SELECT * FROM settings').all()
   const settings: Record<string, string> = {}
@@ -4522,6 +4927,15 @@ function getAdminHTML(): string {
           <span class="ml-auto text-[10px] text-green-700 font-bold bg-green-50 px-1.5 py-0.5 rounded-full">QB</span>
         </button>
 
+        <button onclick="showTab('quickbooks')" data-tab="quickbooks"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-green-100 text-green-700 flex-shrink-0">
+            <i class="fas fa-plug text-sm"></i>
+          </span>
+          <span>QuickBooks Sync</span>
+          <span id="qb-nav-badge" class="ml-auto text-[10px] text-white font-bold bg-gray-400 px-1.5 py-0.5 rounded-full hidden">●</span>
+        </button>
+
         <!-- ADMIN -->
         <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2 mt-5">Admin</p>
 
@@ -4932,6 +5346,71 @@ function getAdminHTML(): string {
               class="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-400 text-sm"/>
             <p class="text-xs text-gray-400 mt-1">Appears inside QB IIF files as the company identifier</p>
           </div>
+        </div>
+      </div>
+
+      <!-- QuickBooks Online Direct Connect -->
+      <div class="space-y-4">
+        <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2 flex items-center gap-2">
+          <img src="https://upload.wikimedia.org/wikipedia/commons/9/9d/Intuit_QuickBooks_logo.png" class="h-4 w-auto" onerror="this.style.display='none'"/>
+          <i class="fas fa-link text-green-600"></i> QuickBooks Online — Direct Connect
+        </h4>
+        <div class="bg-green-50 border border-green-200 rounded-2xl p-4 space-y-4">
+          <!-- Status Banner -->
+          <div id="qb-settings-status" class="flex items-center gap-3 p-3 rounded-xl bg-white border border-green-200">
+            <div id="qb-status-dot" class="w-3 h-3 rounded-full bg-gray-300 flex-shrink-0"></div>
+            <div class="flex-1">
+              <p id="qb-status-text" class="text-sm font-semibold text-gray-600">Checking connection…</p>
+              <p id="qb-company-name-display" class="text-xs text-gray-400"></p>
+            </div>
+            <button id="qb-connect-btn" onclick="qbConnect()"
+              class="px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded-lg transition-colors">
+              Connect to QuickBooks
+            </button>
+            <button id="qb-disconnect-btn" onclick="qbDisconnect()" style="display:none"
+              class="px-4 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 text-xs font-semibold rounded-lg transition-colors">
+              Disconnect
+            </button>
+          </div>
+          <!-- Credentials -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">
+                <i class="fas fa-key text-green-500 mr-1"></i> Intuit Client ID
+              </label>
+              <input id="s-qb-client-id" type="text" placeholder="ABCDEFabcdef…"
+                class="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-400 text-sm font-mono"/>
+              <p class="text-xs text-gray-400 mt-1">From developer.intuit.com → My Apps → Keys</p>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">
+                <i class="fas fa-lock text-green-500 mr-1"></i> Intuit Client Secret
+              </label>
+              <input id="s-qb-client-secret" type="password" placeholder="••••••••••••"
+                class="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-400 text-sm font-mono"/>
+              <p class="text-xs text-gray-400 mt-1">Keep secret — never share this value</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Environment</label>
+              <select id="s-qb-environment"
+                class="px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-400">
+                <option value="production">Production (live QB company)</option>
+                <option value="sandbox">Sandbox (testing)</option>
+              </select>
+            </div>
+            <div class="flex-1 bg-green-100 rounded-xl p-3 text-xs text-green-800">
+              <strong>How it works:</strong> Save your Client ID &amp; Secret → click Connect → approve in QuickBooks → 
+              hours sync automatically each pay period. No manual CSV import needed.
+            </div>
+          </div>
+          <p class="text-xs text-gray-500">
+            <i class="fas fa-info-circle mr-1 text-blue-400"></i>
+            Get free credentials at <a href="https://developer.intuit.com" target="_blank" class="text-blue-500 underline">developer.intuit.com</a> → 
+            Create App → QuickBooks Online → copy Client ID &amp; Secret. 
+            Set Redirect URI to: <code id="qb-redirect-uri-display" class="bg-white px-1 rounded text-xs text-gray-700">https://admin.clockinproof.com/api/qb/callback</code>
+          </p>
         </div>
       </div>
 
@@ -5525,6 +6004,145 @@ function getAdminHTML(): string {
 
       <!-- legacy week-based send still works -->
       <div id="acct-send-status" class="hidden mt-4 rounded-xl p-4 text-sm"></div>
+    </div>
+
+    <!-- ── Tab: QuickBooks Sync ───────────────────────────────────────────── -->
+    <div id="tab-quickbooks" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
+      <div class="flex items-center justify-between mb-5">
+        <h3 class="font-bold text-gray-700 flex items-center gap-2 text-lg">
+          <i class="fas fa-plug text-green-600"></i>
+          QuickBooks Online — Direct Sync
+        </h3>
+        <span class="text-xs bg-green-100 text-green-700 px-3 py-1 rounded-full font-semibold">Beta</span>
+      </div>
+
+      <!-- Connection Status Card -->
+      <div id="qb-tab-status-card" class="rounded-2xl border-2 p-5 mb-6 flex items-center gap-4">
+        <div id="qb-tab-status-icon" class="w-12 h-12 rounded-xl flex items-center justify-center text-2xl bg-gray-100">
+          <i class="fas fa-circle-notch fa-spin text-gray-400"></i>
+        </div>
+        <div class="flex-1">
+          <p id="qb-tab-status-title" class="font-bold text-gray-700 text-base">Checking connection…</p>
+          <p id="qb-tab-status-sub" class="text-sm text-gray-500"></p>
+        </div>
+        <div class="flex gap-2">
+          <button id="qb-tab-connect-btn" onclick="qbConnect()"
+            class="hidden px-5 py-2 bg-green-600 hover:bg-green-700 text-white font-bold text-sm rounded-xl transition-colors">
+            <i class="fas fa-link mr-1"></i> Connect to QuickBooks
+          </button>
+          <button id="qb-tab-disconnect-btn" onclick="qbDisconnect()"
+            class="hidden px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 font-semibold text-sm rounded-xl border border-red-200 transition-colors">
+            <i class="fas fa-unlink mr-1"></i> Disconnect
+          </button>
+        </div>
+      </div>
+
+      <!-- Setup steps (shown when not connected) -->
+      <div id="qb-setup-steps" class="mb-6 bg-blue-50 border border-blue-200 rounded-2xl p-4">
+        <p class="font-bold text-blue-800 mb-3 flex items-center gap-2">
+          <i class="fas fa-list-ol"></i> Quick Setup — 3 Steps
+        </p>
+        <ol class="space-y-2 text-sm text-blue-700">
+          <li class="flex gap-3">
+            <span class="w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">1</span>
+            <span>Go to <a href="https://developer.intuit.com" target="_blank" class="underline font-medium">developer.intuit.com</a> → Create App → QuickBooks Online → copy <strong>Client ID</strong> &amp; <strong>Client Secret</strong></span>
+          </li>
+          <li class="flex gap-3">
+            <span class="w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">2</span>
+            <span>In your Intuit App settings, add Redirect URI: <code class="bg-white px-1 rounded text-xs font-mono text-blue-900">https://admin.clockinproof.com/api/qb/callback</code></span>
+          </li>
+          <li class="flex gap-3">
+            <span class="w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">3</span>
+            <span>Go to <strong>Settings → QuickBooks Direct Connect</strong>, enter Client ID &amp; Secret, save, then click <strong>Connect to QuickBooks</strong></span>
+          </li>
+        </ol>
+      </div>
+
+      <!-- Employee Mapping Section (shown when connected) -->
+      <div id="qb-mapping-section" class="hidden">
+        <div class="flex items-center justify-between mb-3">
+          <h4 class="font-bold text-gray-700 flex items-center gap-2">
+            <i class="fas fa-users text-indigo-500"></i> Employee Mapping
+          </h4>
+          <button onclick="loadQbMapping()"
+            class="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1">
+            <i class="fas fa-sync-alt"></i> Refresh
+          </button>
+        </div>
+        <p class="text-xs text-gray-500 mb-3">
+          Match each ClockInProof worker to their QuickBooks employee record. Names don't need to match exactly.
+        </p>
+        <div id="qb-mapping-list" class="space-y-2">
+          <p class="text-gray-400 text-sm text-center py-4"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p>
+        </div>
+      </div>
+
+      <!-- Sync Section (shown when connected) -->
+      <div id="qb-sync-section" class="hidden mt-6">
+        <h4 class="font-bold text-gray-700 flex items-center gap-2 mb-3">
+          <i class="fas fa-cloud-upload-alt text-green-500"></i> Push Hours to QuickBooks
+        </h4>
+
+        <!-- Period Selector -->
+        <div class="bg-gray-50 border border-gray-200 rounded-2xl p-4 mb-4">
+          <p class="text-sm font-semibold text-gray-600 mb-2">Select Pay Period</p>
+          <div class="flex gap-3 mb-3 flex-wrap">
+            <button onclick="setQbSyncPeriod('this_period')"
+              class="px-3 py-1.5 text-xs bg-white border border-gray-200 hover:border-indigo-400 rounded-lg font-medium transition-colors">
+              Current Pay Period
+            </button>
+            <button onclick="setQbSyncPeriod('last_period')"
+              class="px-3 py-1.5 text-xs bg-white border border-gray-200 hover:border-indigo-400 rounded-lg font-medium transition-colors">
+              Last Pay Period
+            </button>
+            <button onclick="setQbSyncPeriod('this_month')"
+              class="px-3 py-1.5 text-xs bg-white border border-gray-200 hover:border-indigo-400 rounded-lg font-medium transition-colors">
+              This Month
+            </button>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">Start Date</label>
+              <input type="date" id="qb-sync-start"
+                class="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-400"/>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">End Date</label>
+              <input type="date" id="qb-sync-end"
+                class="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-400"/>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex gap-3 mb-4 flex-wrap">
+          <button onclick="runQbSync(true)"
+            class="flex-1 px-4 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold text-sm rounded-xl transition-colors flex items-center justify-center gap-2">
+            <i class="fas fa-eye"></i> Preview (Dry Run)
+          </button>
+          <button onclick="runQbSync(false)"
+            class="flex-1 px-4 py-2.5 bg-green-600 hover:bg-green-700 text-white font-bold text-sm rounded-xl transition-colors flex items-center justify-center gap-2">
+            <i class="fas fa-cloud-upload-alt"></i> Push to QuickBooks
+          </button>
+        </div>
+
+        <!-- Sync Results -->
+        <div id="qb-sync-results" class="hidden rounded-2xl border p-4 text-sm"></div>
+      </div>
+
+      <!-- Sync Log Section -->
+      <div id="qb-log-section" class="hidden mt-6">
+        <div class="flex items-center justify-between mb-2">
+          <h4 class="font-bold text-gray-700 flex items-center gap-2 text-sm">
+            <i class="fas fa-history text-gray-400"></i> Sync History
+          </h4>
+          <button onclick="loadQbSyncLog()"
+            class="text-xs text-gray-500 hover:text-gray-700 font-medium flex items-center gap-1">
+            <i class="fas fa-sync-alt"></i> Refresh
+          </button>
+        </div>
+        <div id="qb-sync-log" class="space-y-2"></div>
+      </div>
     </div>
 
     <!-- ── Tab: Overrides ─────────────────────────────────────────────────── -->
