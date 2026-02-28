@@ -173,6 +173,10 @@ async function ensureSchema(db: D1Database) {
     )`,
     `ALTER TABLE sessions ADD COLUMN edited INTEGER DEFAULT 0`,
     `ALTER TABLE sessions ADD COLUMN edit_reason TEXT`,
+    // ── session_type: 'regular' | 'material_pickup' | 'emergency_job' ──────────
+    // Lets workers flag they are legitimately off-site (pickup, emergency call-out).
+    // Geofence check is skipped for these types; admin sees a colored badge.
+    `ALTER TABLE sessions ADD COLUMN session_type TEXT DEFAULT 'regular'`,
   ]
   for (const sql of statements) {
     try {
@@ -617,11 +621,15 @@ async function sendOverrideNotification(
 app.post('/api/sessions/clock-in', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const { worker_id, latitude, longitude, address, notes, job_location, job_description } = await c.req.json()
+  const { worker_id, latitude, longitude, address, notes, job_location, job_description, session_type } = await c.req.json()
 
   if (!worker_id) return c.json({ error: 'worker_id required' }, 400)
   if (!job_location || !job_location.trim()) return c.json({ error: 'Job location is required' }, 400)
   if (!job_description || !job_description.trim()) return c.json({ error: 'Job description is required' }, 400)
+
+  // Normalize session type — only allow known values
+  const validTypes = ['regular', 'material_pickup', 'emergency_job']
+  const clockType = validTypes.includes(session_type) ? session_type : 'regular'
 
   // Check if already clocked in
   const already = await db.prepare(
@@ -638,7 +646,11 @@ app.post('/api/sessions/clock-in', async (c) => {
   const geofenceRadius    = parseFloat(settings.geofence_radius_meters || '300')
 
   // ── GPS FRAUD CHECK ──────────────────────────────────────────────────────────
-  if (fraudCheckEnabled && latitude && longitude) {
+  // Skip geofence check for Material Pickup and Emergency Job — worker is
+  // legitimately off-site. Admin is notified via the session type badge instead.
+  const skipGeofence = clockType === 'material_pickup' || clockType === 'emergency_job'
+
+  if (fraudCheckEnabled && latitude && longitude && !skipGeofence) {
     // Geocode the job address the worker typed
     const jobCoords = await geocodeAddress(job_location.trim())
 
@@ -672,7 +684,6 @@ app.post('/api/sessions/clock-in', async (c) => {
         const requestId = reqResult.meta.last_row_id
 
         // ── SEND ADMIN NOTIFICATION (email + SMS) ────────────────────────────
-        // Fire-and-forget — don't block the response while notification sends
         sendOverrideNotification(settings, c.env as any, {
           id: requestId as number,
           worker_name: worker?.name || '',
@@ -699,18 +710,18 @@ app.post('/api/sessions/clock-in', async (c) => {
           override_message: 'A clock-in override request has been sent to your admin. You may only clock in after admin approval.'
         }, 403)
       }
-      // Worker is within geofence — proceed, store job coords
+      // Worker is within geofence — proceed
     }
-    // If geocoding failed (address not found) — allow clock-in but flag it
+    // If geocoding failed — allow clock-in
   }
 
   // ── NORMAL CLOCK IN ──────────────────────────────────────────────────────────
   const now = new Date().toISOString()
   const result = await db.prepare(
     `INSERT INTO sessions
-     (worker_id, clock_in_time, clock_in_lat, clock_in_lng, clock_in_address, notes, job_location, job_description, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`
-  ).bind(worker_id, now, latitude || null, longitude || null, address || null, notes || null, job_location.trim(), job_description.trim()).run()
+     (worker_id, clock_in_time, clock_in_lat, clock_in_lng, clock_in_address, notes, job_location, job_description, status, session_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`
+  ).bind(worker_id, now, latitude || null, longitude || null, address || null, notes || null, job_location.trim(), job_description.trim(), clockType).run()
 
   const session = await db.prepare('SELECT * FROM sessions WHERE id = ?').bind(result.meta.last_row_id).first()
   return c.json({ session, message: 'Clocked in successfully' }, 201)
@@ -3628,10 +3639,18 @@ function handleClockBtn() {
 
 // ── Job Details Modal ─────────────────────────────────────────────────────────
 function openJobModal() {
-  document.getElementById('job-modal').classList.remove('hidden')
+  const modal = document.getElementById('job-modal')
+  modal.classList.remove('hidden')
+  // Reset session type to regular on every open
+  modal.dataset.sessionType = 'regular'
+  hideSessionTypeBanner()
   document.getElementById('job-location-input').value = ''
+  document.getElementById('job-location-input').placeholder = 'Start typing an address...'
   document.getElementById('job-description-input').value = ''
   document.getElementById('location-suggestions').classList.add('hidden')
+  // Reset dropdown
+  const sel = document.getElementById('saved-sites-select')
+  if (sel) sel.value = ''
   // Update GPS status in modal
   const gpsEl = document.getElementById('modal-gps-status')
   if (gpsEl) {
@@ -3639,7 +3658,7 @@ function openJobModal() {
       ? \`✓ Location ready (±\${currentLat.toFixed(3)}...)\`
       : 'Getting location...'
   }
-  // Pre-fill with most recent location
+  // Pre-fill with most recent location only if no special type active
   if (recentLocations.length > 0) {
     document.getElementById('job-location-input').value = recentLocations[0]
   }
@@ -3656,17 +3675,96 @@ async function loadSavedSitesDropdown() {
     const row = document.getElementById('saved-sites-row')
     const sel = document.getElementById('saved-sites-select')
     if (!row || !sel) return
-    if (sites.length === 0) { row.classList.add('hidden'); return }
-    sel.innerHTML = '<option value="">📍 Pick a saved job site...</option>' +
-      sites.map(s => \`<option value="\${s.address}">\${s.name} — \${s.address}</option>\`).join('')
+
+    // Always show the dropdown — special activity types are always available
+    sel.innerHTML = '<option value="">📍 Pick a saved job site or activity...</option>' +
+      // ── Special off-site activity types (always at top) ──────────────────
+      '<optgroup label="─── Off-Site Activities ───">' +
+      '<option value="__material_pickup__">📦 Material Pickup (Home Depot, supplier, etc.)</option>' +
+      '<option value="__emergency_job__">🚨 Emergency Job (urgent call-out to another site)</option>' +
+      '</optgroup>' +
+      // ── Admin-saved job sites ─────────────────────────────────────────────
+      (sites.length > 0
+        ? '<optgroup label="─── Saved Job Sites ───">' +
+          sites.map(s => \`<option value="\${s.address}">\${s.name} — \${s.address}</option>\`).join('') +
+          '</optgroup>'
+        : '')
     row.classList.remove('hidden')
   } catch(_) {}
 }
 
-function pickSavedSite(address) {
-  if (!address) return
-  document.getElementById('job-location-input').value = address
+function pickSavedSite(value) {
+  if (!value) return
+  const locInput = document.getElementById('job-location-input')
+  const descInput = document.getElementById('job-description-input')
+
+  if (value === '__material_pickup__') {
+    // Special: Material Pickup — worker is going off-site to get supplies
+    locInput.value = ''
+    locInput.placeholder = 'Where are you picking up? (e.g. Home Depot, 123 Main St)'
+    locInput.focus()
+    // Pre-fill description if empty
+    if (!descInput.value.trim()) descInput.value = 'Material pickup'
+    // Tag the session type on the modal so it gets sent at clock-in
+    document.getElementById('job-modal').dataset.sessionType = 'material_pickup'
+    // Show info banner
+    showSessionTypeBanner('material_pickup')
+    return
+  }
+
+  if (value === '__emergency_job__') {
+    // Special: Emergency Job — urgent call-out to another site
+    locInput.value = ''
+    locInput.placeholder = 'Where is the emergency job? (address or description)'
+    locInput.focus()
+    if (!descInput.value.trim()) descInput.value = 'Emergency job call-out'
+    document.getElementById('job-modal').dataset.sessionType = 'emergency_job'
+    showSessionTypeBanner('emergency_job')
+    return
+  }
+
+  // Normal saved site — fill address as before
+  locInput.value = value
+  locInput.placeholder = 'Start typing an address...'
   document.getElementById('location-suggestions').classList.add('hidden')
+  document.getElementById('job-modal').dataset.sessionType = 'regular'
+  hideSessionTypeBanner()
+}
+
+function showSessionTypeBanner(type) {
+  let banner = document.getElementById('session-type-banner')
+  if (!banner) {
+    banner = document.createElement('div')
+    banner.id = 'session-type-banner'
+    // Insert right above the location label
+    const locationLabel = document.querySelector('#job-modal label')
+    locationLabel.parentNode.insertBefore(banner, locationLabel)
+  }
+  if (type === 'material_pickup') {
+    banner.className = 'mb-4 flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-xl p-3'
+    banner.innerHTML = \`
+      <span class="text-2xl">📦</span>
+      <div>
+        <p class="font-semibold text-amber-800 text-sm">Material Pickup</p>
+        <p class="text-xs text-amber-600 mt-0.5">Geofence check is <strong>bypassed</strong>. Your manager will see you are off-site for pickups. Enter where you're going below.</p>
+      </div>
+    \`
+  } else if (type === 'emergency_job') {
+    banner.className = 'mb-4 flex items-start gap-3 bg-red-50 border border-red-200 rounded-xl p-3'
+    banner.innerHTML = \`
+      <span class="text-2xl">🚨</span>
+      <div>
+        <p class="font-semibold text-red-800 text-sm">Emergency Job</p>
+        <p class="text-xs text-red-600 mt-0.5">Geofence check is <strong>bypassed</strong>. Your manager is notified you've been called to an emergency job. Enter the location below.</p>
+      </div>
+    \`
+  }
+  banner.classList.remove('hidden')
+}
+
+function hideSessionTypeBanner() {
+  const banner = document.getElementById('session-type-banner')
+  if (banner) banner.classList.add('hidden')
 }
 
 function closeJobModal() {
@@ -3777,12 +3875,21 @@ function selectLocation(loc) {
 async function confirmClockIn() {
   const jobLocation = document.getElementById('job-location-input').value.trim()
   const jobDescription = document.getElementById('job-description-input').value.trim()
+  // Read session type set by pickSavedSite (default: regular)
+  const sessionType = document.getElementById('job-modal').dataset.sessionType || 'regular'
 
   if (!jobLocation) { showToast('Please enter the job location', 'error'); document.getElementById('job-location-input').focus(); return }
   if (!jobDescription) { showToast('Please describe what you are doing', 'error'); document.getElementById('job-description-input').focus(); return }
 
   const btn = document.getElementById('confirm-clock-in-btn')
-  btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch spinner mr-2"></i>Verifying location...'
+  btn.disabled = true
+  if (sessionType === 'material_pickup') {
+    btn.innerHTML = '<i class="fas fa-circle-notch spinner mr-2"></i>Starting material pickup...'
+  } else if (sessionType === 'emergency_job') {
+    btn.innerHTML = '<i class="fas fa-circle-notch spinner mr-2"></i>Starting emergency job...'
+  } else {
+    btn.innerHTML = '<i class="fas fa-circle-notch spinner mr-2"></i>Verifying location...'
+  }
 
   try {
     const res = await fetch('/api/sessions/clock-in', {
@@ -3794,7 +3901,8 @@ async function confirmClockIn() {
         longitude: currentLng,
         address: currentAddress,
         job_location: jobLocation,
-        job_description: jobDescription
+        job_description: jobDescription,
+        session_type: sessionType
       })
     })
     const data = await res.json()

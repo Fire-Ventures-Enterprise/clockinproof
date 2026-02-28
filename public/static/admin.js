@@ -151,6 +151,8 @@ async function openWorkerDrawer(workerId) {
       const cout = s.clock_out_time ? new Date(s.clock_out_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : null
       const isActive = s.status === 'active'
       const flags = []
+      if (s.session_type === 'material_pickup') flags.push('<span class="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-full">📦 Pickup</span>')
+      if (s.session_type === 'emergency_job')   flags.push('<span class="bg-rose-100 text-rose-700 text-[10px] px-1.5 py-0.5 rounded-full">🚨 Emergency</span>')
       if (s.drift_flag)    flags.push('<span class="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded-full">\u26a0 Left Site</span>')
       if (s.away_flag)     flags.push('<span class="bg-yellow-100 text-yellow-700 text-[10px] px-1.5 py-0.5 rounded-full">\u23f0 Away</span>')
       if (s.auto_clockout) flags.push('<span class="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded-full">\ud83d\udd34 Auto Out</span>')
@@ -234,6 +236,8 @@ function openSessionModal(s) {
     : ''
 
   const flags = []
+  if (s.session_type === 'material_pickup') flags.push('<span class="bg-amber-100 text-amber-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-shopping-cart mr-1"></i>Material Pickup</span>')
+  if (s.session_type === 'emergency_job')   flags.push('<span class="bg-rose-100 text-rose-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-bolt mr-1"></i>Emergency Job</span>')
   if (s.drift_flag)    flags.push(`<span class="bg-orange-100 text-orange-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-exclamation-triangle mr-1"></i>Left Job Site${s.drift_distance_meters ? ' (' + (s.drift_distance_meters >= 1000 ? (s.drift_distance_meters/1000).toFixed(1)+'km' : Math.round(s.drift_distance_meters)+'m') + ')' : ''}</span>`)
   if (s.away_flag)     flags.push('<span class="bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-wifi mr-1"></i>Away / No GPS</span>')
   if (s.auto_clockout) flags.push(`<span class="bg-red-100 text-red-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-clock mr-1"></i>Auto Clocked Out${s.auto_clockout_reason ? ': ' + s.auto_clockout_reason : ''}</span>`)
@@ -515,6 +519,8 @@ function openDayModal(dateStr) {
     const cout = s.clock_out_time ? new Date(s.clock_out_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : null
     const isActive = s.status === 'active'
     const flags = []
+    if (s.session_type === 'material_pickup') flags.push('<span class="text-amber-600 text-[10px]">📦 Pickup</span>')
+    if (s.session_type === 'emergency_job')   flags.push('<span class="text-rose-600 text-[10px]">🚨 Emergency</span>')
     if (s.drift_flag)    flags.push('<span class="text-orange-600 text-[10px]">⚠ Left Site</span>')
     if (s.away_flag)     flags.push('<span class="text-yellow-600 text-[10px]">⏰ Away</span>')
     if (s.auto_clockout) flags.push('<span class="text-red-600 text-[10px]">🔴 Auto Out</span>')
@@ -588,6 +594,8 @@ async function loadLive() {
 
       // Guardrail badges
       const badges = []
+      if (s.session_type === 'material_pickup') badges.push(`<span class="bg-amber-100 text-amber-700 text-xs px-2 py-0.5 rounded-full font-medium"><i class="fas fa-shopping-cart mr-1"></i>Material Pickup</span>`)
+      if (s.session_type === 'emergency_job')   badges.push(`<span class="bg-rose-100 text-rose-700 text-xs px-2 py-0.5 rounded-full font-medium"><i class="fas fa-bolt mr-1"></i>Emergency Job</span>`)
       if (s.drift_flag)    badges.push(`<span class="bg-orange-100 text-orange-700 text-xs px-2 py-0.5 rounded-full font-medium"><i class="fas fa-exclamation-triangle mr-1"></i>Left Site</span>`)
       if (s.away_flag)     badges.push(`<span class="bg-yellow-100 text-yellow-700 text-xs px-2 py-0.5 rounded-full font-medium"><i class="fas fa-wifi mr-1"></i>No GPS</span>`)
       if (s.auto_clockout) badges.push(`<span class="bg-red-100 text-red-700 text-xs px-2 py-0.5 rounded-full font-medium"><i class="fas fa-clock mr-1"></i>Auto Out</span>`)
@@ -617,7 +625,7 @@ async function loadLive() {
           </button>`
         : ''
       
-      return `<div class="border ${s.drift_flag ? 'border-orange-300' : s.away_flag ? 'border-yellow-300' : 'border-gray-100'} rounded-xl p-4 hover:shadow-md transition-shadow cursor-pointer hover:border-indigo-300 ${s.auto_clockout ? 'opacity-70' : ''}" onclick="openWorkerDrawer(${s.worker_id})">
+      return `<div class="border ${s.session_type === 'material_pickup' ? 'border-amber-300' : s.session_type === 'emergency_job' ? 'border-rose-300' : s.drift_flag ? 'border-orange-300' : s.away_flag ? 'border-yellow-300' : 'border-gray-100'} rounded-xl p-4 hover:shadow-md transition-shadow cursor-pointer hover:border-indigo-300 ${s.auto_clockout ? 'opacity-70' : ''}" onclick="openWorkerDrawer(${s.worker_id})">`
         <div class="flex items-start justify-between mb-2">
           <div class="flex-1 min-w-0">
             <h4 class="font-bold text-gray-800">${s.worker_name}</h4>
