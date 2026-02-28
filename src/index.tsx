@@ -2824,11 +2824,13 @@ function getWorkerHTML(): string {
         </select>
       </div>
       <input id="job-location-input" type="text"
-        placeholder="e.g. 123 Ryan Street, Building 4"
+        placeholder="Start typing an address..."
+        autocomplete="off"
         class="w-full px-4 py-3.5 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 text-gray-800 text-sm"
-        oninput="filterLocationSuggestions(this.value)"/>
-      <!-- Recent locations dropdown -->
-      <div id="location-suggestions" class="hidden mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-10"></div>
+        oninput="filterLocationSuggestions(this.value)"
+        onblur="setTimeout(()=>document.getElementById('location-suggestions').classList.add('hidden'),200)"/>
+      <!-- Address suggestions dropdown -->
+      <div id="location-suggestions" class="hidden mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-20 max-h-52 overflow-y-auto"></div>
     </div>
 
     <!-- Tasks / Description -->
@@ -3223,20 +3225,84 @@ function addChip(task) {
   el.focus()
 }
 
+// ── Address Autocomplete (Nominatim) ─────────────────────────────────────────
+let acTimer = null   // debounce handle
+
+async function fetchAddressSuggestions(query) {
+  if (!query || query.length < 4) return []
+  try {
+    const url = \`https://nominatim.openstreetmap.org/search?q=\${encodeURIComponent(query)}&format=json&limit=6&addressdetails=1&accept-language=en\`
+    const res  = await fetch(url, { headers: { 'Accept-Language': 'en' } })
+    const data = await res.json()
+    return data.map(r => ({
+      display: r.display_name,
+      short:   [r.address?.road, r.address?.house_number, r.address?.city || r.address?.town || r.address?.village, r.address?.state, r.address?.country_code?.toUpperCase()].filter(Boolean).join(', '),
+      lat: parseFloat(r.lat),
+      lng: parseFloat(r.lon)
+    }))
+  } catch(_) { return [] }
+}
+
+function renderSuggestions(suggestions, inputId, boxId, onSelect) {
+  const box = document.getElementById(boxId)
+  if (!box) return
+  if (!suggestions || suggestions.length === 0) { box.classList.add('hidden'); return }
+  box.innerHTML = suggestions.map((s, i) => \`
+    <button data-idx="\${i}"
+      class="w-full text-left px-4 py-3 hover:bg-blue-50 text-sm text-gray-700 border-b border-gray-100 last:border-0 flex items-start gap-3"
+      onmousedown="event.preventDefault()"
+      onclick="(function(){ \${onSelect}('\${s.short.replace(/'/g,"\\\\'").replace(/"/g,'&quot;')}'); })()">
+      <i class="fas fa-map-marker-alt text-red-400 mt-0.5 flex-shrink-0 text-xs"></i>
+      <span>\${s.short}</span>
+    </button>
+  \`).join('')
+  box.classList.remove('hidden')
+}
+
+// Worker clock-in: replace old local-filter with live Nominatim lookup
 function filterLocationSuggestions(val) {
   const box = document.getElementById('location-suggestions')
-  if (!val || recentLocations.length === 0) { box.classList.add('hidden'); return }
-  const filtered = recentLocations.filter(l => l.toLowerCase().includes(val.toLowerCase()))
-  if (filtered.length === 0) { box.classList.add('hidden'); return }
-  box.innerHTML = filtered.map((l, i) => {
-    const safeId = 'loc-sug-' + i
-    return \`<button id="\${safeId}" data-loc="\${l.replace(/"/g,'&quot;')}"
-      class="w-full text-left px-4 py-3 hover:bg-blue-50 text-sm text-gray-700 border-b border-gray-100 last:border-0"
-      onclick="selectLocation(this.dataset.loc)">
-      <i class="fas fa-history text-gray-400 mr-2 text-xs"></i>\${l}
-    </button>\`
-  }).join('')
+  clearTimeout(acTimer)
+  if (!val || val.length < 4) {
+    // Fall back to recent locations while typing short strings
+    if (recentLocations.length > 0 && val.length > 0) {
+      const filtered = recentLocations.filter(l => l.toLowerCase().includes(val.toLowerCase()))
+      if (filtered.length > 0) {
+        box.innerHTML = filtered.slice(0, 5).map(l => \`
+          <button class="w-full text-left px-4 py-3 hover:bg-blue-50 text-sm text-gray-700 border-b border-gray-100 last:border-0 flex items-center gap-3"
+            onmousedown="event.preventDefault()"
+            onclick="selectLocation('\${l.replace(/'/g,"\\\\'").replace(/"/g,'&quot;')}')">
+            <i class="fas fa-history text-gray-400 text-xs flex-shrink-0"></i><span>\${l}</span>
+          </button>
+        \`).join('')
+        box.classList.remove('hidden')
+        return
+      }
+    }
+    box.classList.add('hidden')
+    return
+  }
+  // Show loading state
+  box.innerHTML = '<div class="px-4 py-3 text-xs text-gray-400"><i class="fas fa-circle-notch fa-spin mr-2"></i>Searching addresses...</div>'
   box.classList.remove('hidden')
+  acTimer = setTimeout(async () => {
+    const suggestions = await fetchAddressSuggestions(val)
+    if (suggestions.length === 0 && recentLocations.length > 0) {
+      const filtered = recentLocations.filter(l => l.toLowerCase().includes(val.toLowerCase()))
+      if (filtered.length > 0) {
+        box.innerHTML = filtered.slice(0, 5).map(l => \`
+          <button class="w-full text-left px-4 py-3 hover:bg-blue-50 text-sm text-gray-700 border-b border-gray-100 last:border-0 flex items-center gap-3"
+            onmousedown="event.preventDefault()"
+            onclick="selectLocation('\${l.replace(/'/g,"\\\\'").replace(/"/g,'&quot;')}')">
+            <i class="fas fa-history text-gray-400 text-xs flex-shrink-0"></i><span>\${l}</span>
+          </button>
+        \`).join('')
+        box.classList.remove('hidden')
+        return
+      }
+    }
+    renderSuggestions(suggestions, 'job-location-input', 'location-suggestions', 'selectLocation')
+  }, 350)
 }
 
 function selectLocation(loc) {
@@ -5227,9 +5293,13 @@ function getAdminHTML(): string {
       </div>
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Address *</label>
-        <input id="site-address" type="text" placeholder="Full street address for GPS matching"
-          class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"/>
-        <p class="text-xs text-gray-400 mt-1">Be specific — this address is used for GPS geofence matching.</p>
+        <input id="site-address" type="text" placeholder="Start typing an address..."
+          autocomplete="off"
+          class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+          oninput="filterSiteAddressSuggestions(this.value)"
+          onblur="setTimeout(()=>document.getElementById('site-address-suggestions').classList.add('hidden'),200)"/>
+        <div id="site-address-suggestions" class="hidden mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-50 max-h-48 overflow-y-auto"></div>
+        <p class="text-xs text-gray-400 mt-1">Pick from suggestions for precise GPS geofence matching.</p>
       </div>
     </div>
     <div class="flex gap-3 mt-6">

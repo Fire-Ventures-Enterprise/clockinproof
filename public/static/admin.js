@@ -2436,3 +2436,56 @@ async function loadDisputeHistory() {
   } catch(e) { /* silent */ }
 }
 
+
+// ── Admin Job Site Address Autocomplete (Nominatim) ───────────────────────────
+let siteAcTimer = null
+
+async function filterSiteAddressSuggestions(val) {
+  const box = document.getElementById('site-address-suggestions')
+  if (!box) return
+  clearTimeout(siteAcTimer)
+  if (!val || val.length < 4) { box.classList.add('hidden'); return }
+
+  box.innerHTML = '<div class="px-4 py-3 text-xs text-gray-400"><i class="fas fa-circle-notch fa-spin mr-2"></i>Searching addresses...</div>'
+  box.classList.remove('hidden')
+
+  siteAcTimer = setTimeout(async () => {
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(val)}&format=json&limit=6&addressdetails=1&accept-language=en`
+      const res  = await fetch(url, { headers: { 'Accept-Language': 'en' } })
+      const data = await res.json()
+
+      if (!data || data.length === 0) {
+        box.innerHTML = '<div class="px-4 py-3 text-xs text-gray-400">No suggestions found. Try a more specific address.</div>'
+        return
+      }
+
+      box.innerHTML = data.map(r => {
+        const addr = r.address || {}
+        const short = [
+          addr.house_number, addr.road,
+          addr.city || addr.town || addr.village || addr.municipality,
+          addr.state,
+          addr.country_code?.toUpperCase()
+        ].filter(Boolean).join(', ')
+
+        return `<button
+          class="w-full text-left px-4 py-3 hover:bg-emerald-50 text-sm text-gray-700 border-b border-gray-100 last:border-0 flex items-start gap-3"
+          onmousedown="event.preventDefault()"
+          onclick="selectSiteAddress('${short.replace(/'/g,"\\'").replace(/"/g,'&quot;')}')">
+          <i class="fas fa-map-marker-alt text-red-400 mt-0.5 flex-shrink-0 text-xs"></i>
+          <span>${short}</span>
+        </button>`
+      }).join('')
+    } catch(_) {
+      box.innerHTML = '<div class="px-4 py-3 text-xs text-red-400">Could not fetch suggestions. Check connection.</div>'
+    }
+  }, 350)
+}
+
+function selectSiteAddress(address) {
+  const input = document.getElementById('site-address')
+  if (input) input.value = address
+  const box = document.getElementById('site-address-suggestions')
+  if (box) box.classList.add('hidden')
+}
