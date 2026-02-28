@@ -4473,10 +4473,10 @@ function getAdminHTML(): string {
         <button onclick="showTab('accountant')" data-tab="accountant"
           class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
           <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-amber-100 text-amber-600 flex-shrink-0">
-            <i class="fas fa-paper-plane text-sm"></i>
+            <i class="fas fa-file-invoice-dollar text-sm"></i>
           </span>
-          <span>Weekly Summary</span>
-          <span class="ml-auto text-[10px] text-amber-600 font-bold bg-amber-50 px-1.5 py-0.5 rounded-full">Acct</span>
+          <span>Payroll Export</span>
+          <span class="ml-auto text-[10px] text-green-700 font-bold bg-green-50 px-1.5 py-0.5 rounded-full">QB</span>
         </button>
 
         <!-- ADMIN -->
