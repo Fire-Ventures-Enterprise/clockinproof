@@ -1333,7 +1333,7 @@ function showTab(name) {
   if (name === 'export') initExportTab()
   if (name === 'overrides') loadOverrides()
   if (name === 'payroll') loadPayrollTab()
-  if (name === 'accountant') initAcctTab()
+  if (name === 'accountant') { initAcctTab(); initQbTab() }
   if (name === 'job-sites') loadJobSites()
   if (name === 'disputes') loadDisputes()
   // Close sidebar on mobile after navigation
@@ -1704,6 +1704,11 @@ async function loadSettings() {
     if (payAnchorEl) payAnchorEl.value = currentSettings.pay_period_anchor || '2026-03-06'
     const showPayEl = document.getElementById('s-show-pay-workers')
     if (showPayEl) showPayEl.checked = currentSettings.show_pay_to_workers !== '0'
+    // Accountant / QB
+    const acctEmailEl = document.getElementById('s-accountant-email')
+    if (acctEmailEl) acctEmailEl.value = currentSettings.accountant_email || ''
+    const companyNameEl = document.getElementById('s-company-name')
+    if (companyNameEl) companyNameEl.value = currentSettings.company_name || currentSettings.app_name || ''
 
     // Work days
     activeDays = (currentSettings.work_days || '1,2,3,4,5').split(',').map(Number)
@@ -1800,7 +1805,9 @@ async function saveSettings() {
     admin_host: document.getElementById('s-admin-host')?.value?.trim() || '',
     pay_frequency: document.getElementById('s-pay-frequency')?.value || 'biweekly',
     pay_period_anchor: document.getElementById('s-pay-anchor')?.value || '2026-03-06',
-    show_pay_to_workers: document.getElementById('s-show-pay-workers')?.checked ? '1' : '0'
+    show_pay_to_workers: document.getElementById('s-show-pay-workers')?.checked ? '1' : '0',
+    accountant_email: document.getElementById('s-accountant-email')?.value?.trim() || '',
+    company_name: document.getElementById('s-company-name')?.value?.trim() || ''
   }
 
   try {
@@ -2339,6 +2346,236 @@ async function sendAcctSummary() {
   } finally {
     btn.disabled = false
     btn.innerHTML = '<i class="fas fa-paper-plane mr-1"></i>Send'
+  }
+}
+
+// ─── QUICKBOOKS PAYROLL EXPORT ────────────────────────────────────────────────
+
+let qbPayPeriods = []
+
+async function initQbTab() {
+  // Pre-fill accountant email from settings
+  const emailEl = document.getElementById('qb-acct-email')
+  if (emailEl && currentSettings && currentSettings.accountant_email) {
+    emailEl.value = currentSettings.accountant_email
+  }
+
+  // Load pay periods
+  try {
+    const res  = await fetch('/api/pay-periods')
+    const data = await res.json()
+    qbPayPeriods = data.periods || []
+    renderQbPeriodList()
+    // Default to most recent completed period
+    const today = new Date().toISOString().split('T')[0]
+    const past = qbPayPeriods.filter(p => p.end <= today)
+    if (past.length) setQbPeriod(past[past.length - 1].start, past[past.length - 1].end)
+  } catch(e) {
+    console.error('Failed to load pay periods', e)
+  }
+}
+
+function renderQbPeriodList() {
+  const container = document.getElementById('qb-period-list')
+  if (!container || !qbPayPeriods.length) return
+  const today = new Date().toISOString().split('T')[0]
+  container.innerHTML = qbPayPeriods.map((p, i) => {
+    const isCurrent = p.start <= today && p.end >= today
+    const isPast    = p.end < today
+    const cls = isCurrent
+      ? 'bg-indigo-600 text-white border-indigo-600'
+      : isPast
+        ? 'bg-white border-gray-200 text-gray-700 hover:bg-indigo-50 hover:border-indigo-300'
+        : 'bg-gray-50 border-gray-100 text-gray-400 cursor-default'
+    return `<button onclick="${isPast || isCurrent ? `setQbPeriod('${p.start}','${p.end}')` : 'void(0)'}"
+      class="px-3 py-1.5 rounded-xl border text-xs font-medium transition-all ${cls}">
+      ${isCurrent ? '▶ ' : ''}${p.label}${p.payday ? ` · Pay: ${p.payday}` : ''}
+    </button>`
+  }).join('')
+}
+
+function setQbPeriod(start, end) {
+  const startEl = document.getElementById('qb-start')
+  const endEl   = document.getElementById('qb-end')
+  if (startEl) startEl.value = start
+  if (endEl)   endEl.value   = end
+  const label = document.getElementById('qb-period-label')
+  if (label) {
+    const fmtDate = d => new Date(d + 'T00:00:00').toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+    label.textContent = `${fmtDate(start)} → ${fmtDate(end)}`
+  }
+  loadQbPreview()
+}
+
+function setQbCustomRange(preset) {
+  const today = new Date()
+  let start, end
+  if (preset === 'this_week') {
+    const d = new Date(today)
+    const day = d.getDay()
+    d.setDate(d.getDate() - (day === 0 ? 6 : day - 1))
+    start = d.toISOString().split('T')[0]
+    const fri = new Date(d); fri.setDate(d.getDate() + 6)
+    end = fri.toISOString().split('T')[0]
+  } else if (preset === 'last_week') {
+    const d = new Date(today)
+    const day = d.getDay()
+    d.setDate(d.getDate() - (day === 0 ? 6 : day - 1) - 7)
+    start = d.toISOString().split('T')[0]
+    const fri = new Date(d); fri.setDate(d.getDate() + 6)
+    end = fri.toISOString().split('T')[0]
+  } else if (preset === 'this_month') {
+    start = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0]
+    end   = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().split('T')[0]
+  } else if (preset === 'last_month') {
+    start = new Date(today.getFullYear(), today.getMonth() - 1, 1).toISOString().split('T')[0]
+    end   = new Date(today.getFullYear(), today.getMonth(), 0).toISOString().split('T')[0]
+  }
+  if (start && end) setQbPeriod(start, end)
+}
+
+async function loadQbPreview() {
+  const start = document.getElementById('qb-start')?.value
+  const end   = document.getElementById('qb-end')?.value
+  const el    = document.getElementById('qb-preview')
+  if (!el || !start || !end) return
+
+  el.innerHTML = '<p class="text-gray-400 text-center py-8"><i class="fas fa-spinner fa-spin mr-2"></i>Loading...</p>'
+
+  try {
+    const res  = await fetch(`/api/export/qb-csv?start=${start}&end=${end}`)
+    // Parse the CSV for display (we re-fetch JSON data for display)
+    const jRes  = await fetch(`/api/export/weekly?week=${start}`)
+    const data  = await jRes.json()
+
+    // We need payroll data — use the payroll API
+    const pRes = await fetch(`/api/payroll/2026/01?start=${start}&end=${end}`)
+
+    // Use a simpler approach: parse our own report endpoint
+    const rRes  = await fetch(`/api/export/report?week=${start}`)
+    const rData = await rRes.json()
+    const workers = rData.workers || []
+
+    if (!workers.length) {
+      el.innerHTML = '<div class="text-center py-10 text-gray-400"><i class="fas fa-calendar-times text-3xl mb-3 block text-gray-200"></i><p class="text-sm">No completed shifts in this period</p></div>'
+      return
+    }
+
+    const totalGross = workers.reduce((a, w) => a + (w.total_earnings || 0), 0)
+    const totalHours = workers.reduce((a, w) => a + (w.total_hours || 0), 0)
+
+    el.innerHTML = `
+      <div class="grid grid-cols-3 gap-3 mb-4">
+        <div class="bg-green-50 border border-green-100 rounded-2xl p-3 text-center">
+          <p class="text-xl font-bold text-green-700">$${totalGross.toFixed(2)}</p>
+          <p class="text-xs text-green-500 mt-0.5">Total Gross</p>
+        </div>
+        <div class="bg-blue-50 border border-blue-100 rounded-2xl p-3 text-center">
+          <p class="text-xl font-bold text-blue-700">${totalHours.toFixed(1)}h</p>
+          <p class="text-xs text-blue-500 mt-0.5">Total Hours</p>
+        </div>
+        <div class="bg-purple-50 border border-purple-100 rounded-2xl p-3 text-center">
+          <p class="text-xl font-bold text-purple-700">${workers.length}</p>
+          <p class="text-xs text-purple-500 mt-0.5">Employees</p>
+        </div>
+      </div>
+      <div class="space-y-2">
+        ${workers.map(w => `
+          <div class="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-100">
+            <div class="w-9 h-9 bg-indigo-100 rounded-full flex items-center justify-center flex-shrink-0">
+              <span class="text-indigo-700 font-bold text-sm">${(w.worker_name||'?').charAt(0)}</span>
+            </div>
+            <div class="flex-1">
+              <p class="font-semibold text-gray-800 text-sm">${w.worker_name}</p>
+              <p class="text-xs text-gray-400">${(w.sessions||[]).length} shifts · ${(w.total_hours||0).toFixed(1)}h</p>
+            </div>
+            <div class="text-right">
+              <p class="font-bold text-green-700">$${(w.total_earnings||0).toFixed(2)}</p>
+              <p class="text-xs text-gray-400">gross</p>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      <p class="text-xs text-gray-400 mt-3 text-center">
+        <i class="fas fa-info-circle mr-1"></i>
+        Employee names in QB files must match exactly as shown above
+      </p>
+    `
+  } catch(e) {
+    el.innerHTML = '<p class="text-red-400 text-center py-8 text-sm"><i class="fas fa-exclamation-triangle mr-2"></i>Error loading preview</p>'
+  }
+}
+
+function downloadQbFile(type) {
+  const start = document.getElementById('qb-start')?.value
+  const end   = document.getElementById('qb-end')?.value
+  if (!start || !end) { showAdminToast('Select a pay period first', 'error'); return }
+
+  let url
+  if (type === 'iif')    url = `/api/export/qb-iif?start=${start}&end=${end}`
+  else if (type === 'csv') url = `/api/export/qb-csv?start=${start}&end=${end}`
+  else                   url = `/api/export/csv?week=${start}`  // detail CSV
+
+  const a = document.createElement('a')
+  a.href = url
+  a.download = ''
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  showAdminToast(`✅ ${type.toUpperCase()} file downloading...`, 'success')
+}
+
+async function sendQbToAccountant() {
+  const start   = document.getElementById('qb-start')?.value
+  const end     = document.getElementById('qb-end')?.value
+  const emailEl = document.getElementById('qb-acct-email')
+  const statusEl= document.getElementById('qb-send-status')
+  const btn     = document.getElementById('qb-send-btn')
+  const fmt     = document.querySelector('input[name="qb-fmt"]:checked')?.value || 'both'
+
+  if (!start || !end)    { showAdminToast('Select a pay period first', 'error'); return }
+  if (!emailEl?.value)   { showAdminToast('Enter accountant email first', 'error'); return }
+
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Sending...'
+  if (statusEl) { statusEl.className = 'mt-3 rounded-xl p-3 text-sm bg-blue-50 border border-blue-200 text-blue-700'; statusEl.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Sending payroll report...'; statusEl.classList.remove('hidden') }
+
+  try {
+    const res  = await fetch('/api/export/email-accountant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start, end, format: fmt, to: emailEl.value })
+    })
+    const data = await res.json()
+
+    if (data.success) {
+      if (statusEl) {
+        statusEl.className = 'mt-3 rounded-xl p-3 text-sm bg-green-50 border border-green-200 text-green-700'
+        statusEl.innerHTML = `<i class="fas fa-check-circle mr-2"></i><strong>Sent!</strong> Payroll report emailed to ${data.sent_to?.join(', ')}` +
+          (data.formats_attached?.length ? `<br><span class="text-xs">Attached: ${data.formats_attached.join(', ')}</span>` : '')
+      }
+      showAdminToast('✅ Payroll report sent to accountant!', 'success')
+
+      // Auto-save accountant email to settings
+      if (currentSettings) {
+        currentSettings.accountant_email = emailEl.value
+        await fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accountant_email: emailEl.value })
+        })
+      }
+    } else {
+      const msg = data.error || 'Send failed'
+      if (statusEl) { statusEl.className = 'mt-3 rounded-xl p-3 text-sm bg-red-50 border border-red-200 text-red-700'; statusEl.innerHTML = `<i class="fas fa-times-circle mr-2"></i>${msg}` }
+      showAdminToast(msg, 'error')
+    }
+  } catch(e) {
+    if (statusEl) { statusEl.className = 'mt-3 rounded-xl p-3 text-sm bg-red-50 border border-red-200 text-red-700'; statusEl.innerHTML = '<i class="fas fa-times-circle mr-2"></i>Connection error' }
+    showAdminToast('Connection error', 'error')
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-paper-plane mr-2"></i>Send Payroll Report to Accountant'
   }
 }
 

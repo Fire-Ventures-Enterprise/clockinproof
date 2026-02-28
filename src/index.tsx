@@ -136,6 +136,8 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('pay_frequency', 'biweekly')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('pay_period_anchor', '2026-03-06')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('show_pay_to_workers', '1')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('accountant_email', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('company_name', 'ClockInProof')`,
     // invite_code column on workers (safe to run on existing DBs)
     `ALTER TABLE workers ADD COLUMN invite_code TEXT`,
     // ── Worker profile columns (migration 0004) ───────────────────────────────
@@ -364,20 +366,22 @@ app.post('/api/workers/:id/invite/send-sms', async (c) => {
   if (!worker.invite_code) return c.json({ error: 'No invite code — generate one first' }, 400)
 
   // Get Twilio credentials
-  const twilioSid   = (env.TWILIO_ACCOUNT_SID   || '').trim()
-  const twilioToken = (env.TWILIO_AUTH_TOKEN     || '').trim()
-  const twilioFrom  = (env.TWILIO_FROM_NUMBER    || '').trim()
+  const twilioSid     = (env.TWILIO_ACCOUNT_SID      || '').trim()
+  const twilioToken   = (env.TWILIO_AUTH_TOKEN        || '').trim()
+  const twilioMsgSvc  = (env.TWILIO_MESSAGING_SERVICE || '').trim()
+  const twilioFrom    = (env.TWILIO_FROM_NUMBER       || '').trim()
 
   // Also try DB settings as fallback
-  const dbSettings = await db.prepare("SELECT key, value FROM settings WHERE key IN ('twilio_account_sid','twilio_auth_token','twilio_from_number','app_host')").all()
+  const dbSettings = await db.prepare("SELECT key, value FROM settings WHERE key IN ('twilio_account_sid','twilio_auth_token','twilio_from_number','twilio_messaging_service','app_host')").all()
   const cfg: Record<string,string> = {}
   dbSettings.results.forEach((r: any) => { cfg[r.key] = r.value })
 
-  const sid   = twilioSid   || cfg.twilio_account_sid  || ''
-  const token = twilioToken || cfg.twilio_auth_token   || ''
-  const from  = twilioFrom  || cfg.twilio_from_number  || ''
+  const sid    = twilioSid    || cfg.twilio_account_sid       || ''
+  const token  = twilioToken  || cfg.twilio_auth_token        || ''
+  const msgSvc = twilioMsgSvc || cfg.twilio_messaging_service || ''
+  const from   = twilioFrom   || cfg.twilio_from_number       || ''
 
-  if (!sid || !token || !from) {
+  if (!sid || !token || (!msgSvc && !from)) {
     return c.json({ error: 'Twilio not configured — add credentials in Settings', twilio_missing: true }, 400)
   }
 
@@ -410,11 +414,11 @@ app.post('/api/workers/:id/invite/send-sms', async (c) => {
         'Authorization': `Basic ${auth}`,
         'Content-Type': 'application/x-www-form-urlencoded'
       },
-      body: new URLSearchParams({
-        From: from,
-        To:   workerPhone,
-        Body: smsBody
-      }).toString()
+      body: new URLSearchParams(
+        msgSvc
+          ? { MessagingServiceSid: msgSvc, To: workerPhone, Body: smsBody }
+          : { From: from,               To: workerPhone, Body: smsBody }
+      ).toString()
     })
 
     const smsData = await smsRes.json() as any
@@ -712,11 +716,12 @@ async function sendOverrideNotification(
 
   // ── SMS via Twilio ──────────────────────────────────────────────────────────
   // Credentials: prefer Cloudflare env secrets, fall back to DB settings
-  const twilioSid   = (env.TWILIO_ACCOUNT_SID   || settings.twilio_account_sid  || '').trim()
-  const twilioToken = (env.TWILIO_AUTH_TOKEN     || settings.twilio_auth_token   || '').trim()
-  const twilioFrom  = (env.TWILIO_FROM_NUMBER    || settings.twilio_from_number  || '').trim()
+  const twilioSid    = (env.TWILIO_ACCOUNT_SID      || settings.twilio_account_sid       || '').trim()
+  const twilioToken  = (env.TWILIO_AUTH_TOKEN        || settings.twilio_auth_token        || '').trim()
+  const twilioMsgSvc = (env.TWILIO_MESSAGING_SERVICE || settings.twilio_messaging_service || '').trim()
+  const twilioFrom   = (env.TWILIO_FROM_NUMBER       || settings.twilio_from_number       || '').trim()
 
-  if (notifySms && adminPhone && twilioSid && twilioToken && twilioFrom) {
+  if (notifySms && adminPhone && twilioSid && twilioToken && (twilioMsgSvc || twilioFrom)) {
     const smsBody =
       `🚨 ${appName} ALERT\n` +
       `Worker ${req.worker_name} tried to clock in but is ${distTxt} from "${req.job_location}".\n` +
@@ -733,11 +738,11 @@ async function sendOverrideNotification(
           'Authorization': `Basic ${twilioAuth}`,
           'Content-Type': 'application/x-www-form-urlencoded'
         },
-        body: new URLSearchParams({
-          From: twilioFrom,
-          To: adminPhone.startsWith('+') ? adminPhone : `+${adminPhone}`,
-          Body: smsBody
-        }).toString()
+        body: new URLSearchParams(
+          twilioMsgSvc
+            ? { MessagingServiceSid: twilioMsgSvc, To: adminPhone.startsWith('+') ? adminPhone : `+${adminPhone}`, Body: smsBody }
+            : { From: twilioFrom,                  To: adminPhone.startsWith('+') ? adminPhone : `+${adminPhone}`, Body: smsBody }
+        ).toString()
       })
       if (smsRes.ok) {
         result.smsSent = true
@@ -2398,6 +2403,467 @@ app.get('/api/export/csv', async (c) => {
       'Content-Disposition': `attachment; filename="${filename}"`
     }
   })
+})
+
+// ─── QUICKBOOKS EXPORT ENDPOINTS ─────────────────────────────────────────────
+//
+// Supports three formats:
+//  1. QB Desktop IIF  → GET /api/export/qb-iif?start=YYYY-MM-DD&end=YYYY-MM-DD
+//  2. QB Online CSV   → GET /api/export/qb-csv?start=YYYY-MM-DD&end=YYYY-MM-DD
+//  3. Generic payroll → GET /api/export/payroll-period?start=&end=
+//
+// All three accept optional ?worker_id=N for a single worker.
+// The pay-period bounds can be derived from the /api/pay-periods helper below.
+
+// ── Helper: compute pay period list ──────────────────────────────────────────
+function getPayPeriods(freq: string, anchor: string, count = 13): { start: string; end: string; label: string; payday: string }[] {
+  const msDay = 86400000
+  const anchorDate = new Date(anchor + 'T00:00:00')
+  const days = freq === 'weekly' ? 7 : freq === 'monthly' ? 30 : 14
+  const periods: { start: string; end: string; label: string; payday: string }[] = []
+  const fmt = (d: Date) => d.toISOString().split('T')[0]
+  const fmtLabel = (d: Date) => d.toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' })
+
+  // Find the period that contains today, then go back (count/2) periods
+  const today = new Date()
+  const msSinceAnchor = today.getTime() - anchorDate.getTime()
+  const periodsSinceAnchor = Math.max(0, Math.floor(msSinceAnchor / (days * msDay)))
+  const startIndex = Math.max(0, periodsSinceAnchor - Math.floor(count / 2))
+
+  for (let i = startIndex; i < startIndex + count; i++) {
+    const pStart = new Date(anchorDate.getTime() + i * days * msDay)
+    const pEnd   = new Date(pStart.getTime() + (days - 1) * msDay)
+    const payday = new Date(pStart.getTime() + (days - 1) * msDay) // last day = payday
+    periods.push({
+      start:  fmt(pStart),
+      end:    fmt(pEnd),
+      payday: fmt(payday),
+      label:  `${fmtLabel(pStart)} – ${fmtLabel(pEnd)}`
+    })
+  }
+  return periods
+}
+
+// GET /api/pay-periods — returns list of pay periods for the selector UI
+app.get('/api/pay-periods', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const rows = await db.prepare("SELECT key,value FROM settings WHERE key IN ('pay_frequency','pay_period_anchor')").all()
+  const cfg: Record<string,string> = {}
+  ;(rows.results as any[]).forEach((r: any) => { cfg[r.key] = r.value })
+  const freq   = cfg.pay_frequency   || 'biweekly'
+  const anchor = cfg.pay_period_anchor || '2026-03-06'
+  return c.json({ periods: getPayPeriods(freq, anchor, 13), freq, anchor })
+})
+
+// ── QB Desktop IIF export ─────────────────────────────────────────────────────
+// IIF (Intuit Interchange Format) — tab-separated, imports via File→Utilities→Import→IIF
+app.get('/api/export/qb-iif', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const start = c.req.query('start') || new Date().toISOString().split('T')[0]
+  const end   = c.req.query('end')   || start
+  const workerIdRaw = c.req.query('worker_id')
+  const workerId    = workerIdRaw ? parseInt(workerIdRaw) : null
+
+  const settingsRaw = await db.prepare('SELECT key,value FROM settings').all()
+  const settings: Record<string,string> = {}
+  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+  const companyName = settings.company_name || settings.app_name || 'ClockInProof'
+
+  const workerFilter = workerId ? 'AND s.worker_id = ?' : ''
+  const binds = workerId ? [start, end, workerId] : [start, end]
+
+  const sessions = await db.prepare(`
+    SELECT s.*, w.name AS worker_name, w.hourly_rate
+    FROM sessions s JOIN workers w ON s.worker_id = w.id
+    WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+    ${workerFilter} AND s.status = 'completed'
+    ORDER BY w.name, s.clock_in_time ASC
+  `).bind(...binds).all()
+
+  // Build IIF — QuickBooks Desktop timesheet format
+  // TIMERHDR section defines the company & version
+  const TAB = '\t'
+  const lines: string[] = []
+
+  lines.push('!TIMERHDR' + TAB + 'VER' + TAB + 'REL' + TAB + 'COMPANYNAME' + TAB + 'IMPORTTIMESTAMP' + TAB + 'WORKPHONE')
+  lines.push('TIMERHDR'  + TAB + '8'   + TAB + 'R6'  + TAB + companyName   + TAB + new Date().toISOString() + TAB + '')
+  lines.push('')
+
+  // TIMEACT — one row per work session
+  lines.push('!TIMEACT' + TAB + 'DATE' + TAB + 'EMP' + TAB + 'JOB' + TAB + 'ITEM' + TAB + 'PITEM' + TAB + 'DURATION' + TAB + 'PRATE' + TAB + 'DESC' + TAB + 'BILLABLE')
+
+  ;(sessions.results as any[]).forEach((s: any) => {
+    const dateStr = new Date(s.clock_in_time).toISOString().split('T')[0]
+    // DURATION in QB IIF format is HH:MM (hours:minutes)
+    const totalMins = Math.round((s.total_hours || 0) * 60)
+    const hh = Math.floor(totalMins / 60)
+    const mm = totalMins % 60
+    const duration = `${hh}:${String(mm).padStart(2, '0')}`
+    const desc = s.job_location ? `${s.job_location}${s.job_description ? ' — ' + s.job_description : ''}` : (s.job_description || 'Work')
+
+    lines.push([
+      'TIMEACT',
+      dateStr,
+      s.worker_name,          // EMP  — must match QB employee name exactly
+      '',                      // JOB  — optional customer:job
+      'Regular Pay',           // ITEM — payroll item (must exist in QB)
+      '',                      // PITEM
+      duration,                // DURATION
+      (s.hourly_rate || 0).toFixed(2),  // PRATE
+      desc,                    // DESC
+      'N'                      // BILLABLE
+    ].join(TAB))
+  })
+
+  lines.push('')
+  lines.push('!ENDOFFILE')
+
+  const iif = lines.join('\r\n')
+  const filename = `clockinproof-payroll-${start}-to-${end}.iif`
+
+  return new Response(iif, {
+    headers: {
+      'Content-Type': 'text/plain',
+      'Content-Disposition': `attachment; filename="${filename}"`
+    }
+  })
+})
+
+// ── QB Online / Generic Payroll CSV ──────────────────────────────────────────
+// QB Online imports a simple CSV with employee, date, regular hours, pay rate
+app.get('/api/export/qb-csv', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const start = c.req.query('start') || new Date().toISOString().split('T')[0]
+  const end   = c.req.query('end')   || start
+  const workerIdRaw = c.req.query('worker_id')
+  const workerId    = workerIdRaw ? parseInt(workerIdRaw) : null
+
+  const settingsRaw = await db.prepare('SELECT key,value FROM settings').all()
+  const settings: Record<string,string> = {}
+  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+
+  const workerFilter = workerId ? 'AND s.worker_id = ?' : ''
+  const binds = workerId ? [start, end, workerId] : [start, end]
+
+  const sessions = await db.prepare(`
+    SELECT s.*, w.name AS worker_name, w.phone AS worker_phone, w.email AS worker_email, w.hourly_rate
+    FROM sessions s JOIN workers w ON s.worker_id = w.id
+    WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+    ${workerFilter} AND s.status = 'completed'
+    ORDER BY w.name, s.clock_in_time ASC
+  `).bind(...binds).all()
+
+  // Aggregate by worker + date for clean QB import
+  const byWorkerDate: Record<string, any> = {}
+  ;(sessions.results as any[]).forEach((s: any) => {
+    const dateStr = new Date(s.clock_in_time).toISOString().split('T')[0]
+    const key = `${s.worker_id}__${dateStr}`
+    if (!byWorkerDate[key]) {
+      byWorkerDate[key] = {
+        employee_name:  s.worker_name,
+        employee_phone: s.worker_phone,
+        employee_email: s.worker_email || '',
+        work_date:      dateStr,
+        regular_hours:  0,
+        overtime_hours: 0,
+        hourly_rate:    s.hourly_rate || 0,
+        gross_pay:      0,
+        job_location:   s.job_location || '',
+        notes:          []
+      }
+    }
+    const dailyHours = s.total_hours || 0
+    const stdHours   = Math.min(dailyHours, 8)
+    const otHours    = Math.max(0, dailyHours - 8)
+    byWorkerDate[key].regular_hours  += stdHours
+    byWorkerDate[key].overtime_hours += otHours
+    byWorkerDate[key].gross_pay      += s.earnings || 0
+    if (s.job_description) byWorkerDate[key].notes.push(s.job_description)
+  })
+
+  const esc = (v: any) => '"' + String(v ?? '').replace(/"/g, '""') + '"'
+
+  const headers = [
+    'Employee Name', 'Work Date', 'Regular Hours', 'Overtime Hours',
+    'Hourly Rate', 'Gross Pay', 'Job Location', 'Notes',
+    'Employee Phone', 'Employee Email'
+  ]
+
+  const rows = Object.values(byWorkerDate).map((r: any) => [
+    r.employee_name,
+    r.work_date,
+    r.regular_hours.toFixed(2),
+    r.overtime_hours.toFixed(2),
+    r.hourly_rate.toFixed(2),
+    r.gross_pay.toFixed(2),
+    r.job_location,
+    r.notes.join('; '),
+    r.employee_phone,
+    r.employee_email
+  ].map(esc).join(','))
+
+  // Summary rows per employee (for QB Online payroll import)
+  const summary: Record<string, any> = {}
+  Object.values(byWorkerDate).forEach((r: any) => {
+    if (!summary[r.employee_name]) {
+      summary[r.employee_name] = { name: r.employee_name, phone: r.employee_phone, email: r.employee_email, regular: 0, overtime: 0, rate: r.hourly_rate, gross: 0 }
+    }
+    summary[r.employee_name].regular  += r.regular_hours
+    summary[r.employee_name].overtime += r.overtime_hours
+    summary[r.employee_name].gross    += r.gross_pay
+  })
+
+  const summaryRows = Object.values(summary).map((r: any) => [
+    r.name,
+    `${start} to ${end}`,
+    r.regular.toFixed(2),
+    r.overtime.toFixed(2),
+    r.rate.toFixed(2),
+    r.gross.toFixed(2),
+    'PAY PERIOD TOTAL',
+    '',
+    r.phone,
+    r.email
+  ].map(esc).join(','))
+
+  const csv = [
+    headers.map(esc).join(','),
+    ...rows,
+    '',
+    esc('--- PAY PERIOD SUMMARY ---') + ',,,,,,,,',
+    headers.map(esc).join(','),
+    ...summaryRows
+  ].join('\n')
+
+  const filename = `clockinproof-qb-payroll-${start}-to-${end}.csv`
+
+  return new Response(csv, {
+    headers: {
+      'Content-Type': 'text/csv',
+      'Content-Disposition': `attachment; filename="${filename}"`
+    }
+  })
+})
+
+// ── Email QB payroll files to accountant ─────────────────────────────────────
+// POST /api/export/email-accountant
+// Body: { start, end, format: 'iif'|'csv'|'both', to: email }
+app.post('/api/export/email-accountant', async (c) => {
+  const db  = c.env.DB
+  const env = c.env
+  await ensureSchema(db)
+
+  const { start, end, format, to: toEmail } = await c.req.json() as any
+
+  if (!start || !end || !toEmail) {
+    return c.json({ error: 'Missing required fields: start, end, to' }, 400)
+  }
+
+  const resendKey = (env.RESEND_API_KEY || '').trim()
+  if (!resendKey) {
+    return c.json({ error: 'Email not configured — add RESEND_API_KEY as a Cloudflare secret' }, 400)
+  }
+
+  const settingsRaw = await db.prepare('SELECT key,value FROM settings').all()
+  const settings: Record<string,string> = {}
+  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+  const companyName = settings.company_name || settings.app_name || 'ClockInProof'
+  const adminEmail  = settings.admin_email || ''
+
+  // Fetch all sessions for the period
+  const sessions = await db.prepare(`
+    SELECT s.*, w.name AS worker_name, w.phone AS worker_phone, w.email AS worker_email, w.hourly_rate
+    FROM sessions s JOIN workers w ON s.worker_id = w.id
+    WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
+    AND s.status = 'completed'
+    ORDER BY w.name, s.clock_in_time ASC
+  `).bind(start, end).all()
+
+  // Build per-worker summary
+  const byWorker: Record<string, any> = {}
+  ;(sessions.results as any[]).forEach((s: any) => {
+    const wid = s.worker_id
+    if (!byWorker[wid]) {
+      byWorker[wid] = { name: s.worker_name, phone: s.worker_phone, email: s.worker_email || '', rate: s.hourly_rate, regular: 0, overtime: 0, gross: 0, sessions: 0 }
+    }
+    const h = s.total_hours || 0
+    byWorker[wid].regular  += Math.min(h, 8)
+    byWorker[wid].overtime += Math.max(0, h - 8)
+    byWorker[wid].gross    += s.earnings || 0
+    byWorker[wid].sessions++
+  })
+
+  const workers = Object.values(byWorker)
+  const totalGross = workers.reduce((a: number, w: any) => a + w.gross, 0)
+  const totalHours = workers.reduce((a: number, w: any) => a + w.regular + w.overtime, 0)
+
+  // Generate QB CSV content inline for attachment
+  const esc = (v: any) => '"' + String(v ?? '').replace(/"/g, '""') + '"'
+  const csvHeaders = ['Employee Name','Work Date','Regular Hours','Overtime Hours','Hourly Rate','Gross Pay','Notes','Employee Phone','Employee Email']
+
+  const dailyRows: string[] = []
+  const byWD: Record<string, any> = {}
+  ;(sessions.results as any[]).forEach((s: any) => {
+    const dateStr = new Date(s.clock_in_time).toISOString().split('T')[0]
+    const key = `${s.worker_id}__${dateStr}`
+    if (!byWD[key]) byWD[key] = { name: s.worker_name, phone: s.worker_phone, email: s.worker_email||'', date: dateStr, reg: 0, ot: 0, rate: s.hourly_rate, gross: 0, notes: [] }
+    const h = s.total_hours || 0
+    byWD[key].reg   += Math.min(h, 8)
+    byWD[key].ot    += Math.max(0, h - 8)
+    byWD[key].gross += s.earnings || 0
+    if (s.job_description) byWD[key].notes.push(s.job_description)
+  })
+  Object.values(byWD).forEach((r: any) => {
+    dailyRows.push([r.name, r.date, r.reg.toFixed(2), r.ot.toFixed(2), r.rate.toFixed(2), r.gross.toFixed(2), r.notes.join('; '), r.phone, r.email].map(esc).join(','))
+  })
+  const summaryRows = workers.map((w: any) => [w.name, `${start} to ${end}`, w.regular.toFixed(2), w.overtime.toFixed(2), w.rate.toFixed(2), w.gross.toFixed(2), 'PAY PERIOD TOTAL', w.phone, w.email].map(esc).join(','))
+  const csvContent = [csvHeaders.map(esc).join(','), ...dailyRows, '', esc('--- PAY PERIOD SUMMARY ---') + ',,,,,,,', csvHeaders.map(esc).join(','), ...summaryRows].join('\n')
+
+  // Generate IIF content inline for attachment
+  const TAB = '\t'
+  const iifLines: string[] = [
+    '!TIMERHDR\tVER\tREL\tCOMPANYNAME\tIMPORTTIMESTAMP\tWORKPHONE',
+    `TIMERHDR\t8\tR6\t${companyName}\t${new Date().toISOString()}\t`,
+    '',
+    '!TIMEACT\tDATE\tEMP\tJOB\tITEM\tPITEM\tDURATION\tPRATE\tDESC\tBILLABLE'
+  ]
+  ;(sessions.results as any[]).forEach((s: any) => {
+    const dateStr = new Date(s.clock_in_time).toISOString().split('T')[0]
+    const totalMins = Math.round((s.total_hours || 0) * 60)
+    const hh = Math.floor(totalMins / 60)
+    const mm = totalMins % 60
+    const duration = `${hh}:${String(mm).padStart(2,'0')}`
+    const desc = s.job_location ? `${s.job_location}${s.job_description ? ' — '+s.job_description : ''}` : (s.job_description||'Work')
+    iifLines.push(['TIMEACT', dateStr, s.worker_name, '', 'Regular Pay', '', duration, (s.hourly_rate||0).toFixed(2), desc, 'N'].join(TAB))
+  })
+  iifLines.push('', '!ENDOFFILE')
+  const iifContent = iifLines.join('\r\n')
+
+  // Build attachments list based on format
+  const attachments: any[] = []
+  const fmt = format || 'both'
+  if (fmt === 'csv' || fmt === 'both') {
+    attachments.push({
+      filename: `payroll-${start}-to-${end}-qb-import.csv`,
+      content:  btoa(unescape(encodeURIComponent(csvContent))),
+      type:     'text/csv'
+    })
+  }
+  if (fmt === 'iif' || fmt === 'both') {
+    attachments.push({
+      filename: `payroll-${start}-to-${end}-qb-desktop.iif`,
+      content:  btoa(unescape(encodeURIComponent(iifContent))),
+      type:     'text/plain'
+    })
+  }
+
+  // Format period label
+  const fmtDate = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString('en-CA', { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' })
+
+  // Build email HTML
+  const workerRows = workers.map((w: any) => `
+    <tr>
+      <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;">${w.name}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;text-align:center;">${(w.regular+w.overtime).toFixed(2)}h</td>
+      <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;text-align:center;">${w.overtime > 0 ? w.overtime.toFixed(2)+'h OT' : '—'}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;text-align:right;font-weight:700;color:#166534;">$${w.gross.toFixed(2)}</td>
+    </tr>
+  `).join('')
+
+  const emailHtml = `
+<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:Arial,sans-serif;background:#f8f9fa;margin:0;padding:20px;">
+<div style="max-width:600px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08);">
+  <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:28px 32px;">
+    <h1 style="color:white;margin:0;font-size:22px;">💼 Payroll Report — ${companyName}</h1>
+    <p style="color:rgba(255,255,255,.85);margin:6px 0 0;font-size:14px;">Pay Period: ${fmtDate(start)} → ${fmtDate(end)}</p>
+  </div>
+  <div style="padding:28px 32px;">
+    <div style="display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:120px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:16px;text-align:center;">
+        <div style="font-size:24px;font-weight:700;color:#166534;">$${totalGross.toFixed(2)}</div>
+        <div style="font-size:12px;color:#16a34a;margin-top:2px;">Total Gross Pay</div>
+      </div>
+      <div style="flex:1;min-width:120px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:16px;text-align:center;">
+        <div style="font-size:24px;font-weight:700;color:#1e40af;">${totalHours.toFixed(1)}h</div>
+        <div style="font-size:12px;color:#3b82f6;margin-top:2px;">Total Hours</div>
+      </div>
+      <div style="flex:1;min-width:120px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:10px;padding:16px;text-align:center;">
+        <div style="font-size:24px;font-weight:700;color:#7e22ce;">${workers.length}</div>
+        <div style="font-size:12px;color:#9333ea;margin-top:2px;">Employees</div>
+      </div>
+    </div>
+    <h2 style="font-size:15px;color:#374151;margin:0 0 12px;">Employee Breakdown</h2>
+    <table style="width:100%;border-collapse:collapse;font-size:14px;">
+      <thead>
+        <tr style="background:#f9fafb;">
+          <th style="padding:10px 12px;text-align:left;color:#6b7280;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;">Employee</th>
+          <th style="padding:10px 12px;text-align:center;color:#6b7280;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;">Hours</th>
+          <th style="padding:10px 12px;text-align:center;color:#6b7280;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;">Overtime</th>
+          <th style="padding:10px 12px;text-align:right;color:#6b7280;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;">Gross Pay</th>
+        </tr>
+      </thead>
+      <tbody>${workerRows}</tbody>
+      <tfoot>
+        <tr style="background:#f9fafb;font-weight:700;">
+          <td style="padding:12px;border-top:2px solid #e5e7eb;">TOTAL</td>
+          <td style="padding:12px;border-top:2px solid #e5e7eb;text-align:center;">${totalHours.toFixed(1)}h</td>
+          <td style="padding:12px;border-top:2px solid #e5e7eb;"></td>
+          <td style="padding:12px;border-top:2px solid #e5e7eb;text-align:right;color:#166534;font-size:16px;">$${totalGross.toFixed(2)}</td>
+        </tr>
+      </tfoot>
+    </table>
+    <div style="margin-top:24px;padding:16px;background:#fefce8;border:1px solid #fde047;border-radius:10px;font-size:13px;color:#713f12;">
+      <strong>📎 Attached Files:</strong><br>
+      ${fmt === 'both' || fmt === 'csv' ? `• <strong>payroll-${start}-to-${end}-qb-import.csv</strong> — QuickBooks Online / import-ready CSV<br>` : ''}
+      ${fmt === 'both' || fmt === 'iif' ? `• <strong>payroll-${start}-to-${end}-qb-desktop.iif</strong> — QuickBooks Desktop IIF (File → Utilities → Import → IIF)<br>` : ''}
+      <br>Employee names in these files must match QuickBooks exactly.
+    </div>
+  </div>
+  <div style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb;font-size:12px;color:#9ca3af;text-align:center;">
+    Generated by ${companyName} · ClockInProof · ${new Date().toLocaleDateString()}
+  </div>
+</div>
+</body></html>`
+
+  const toList = [{ email: toEmail }]
+  if (adminEmail && adminEmail !== toEmail) toList.push({ email: adminEmail })
+
+  try {
+    const resp = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${resendKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: `${companyName} Payroll <payroll@clockinproof.com>`,
+        to:   toList,
+        subject: `Payroll Report: ${start} to ${end} — ${companyName}`,
+        html: emailHtml,
+        attachments
+      })
+    })
+
+    const respData = await resp.json() as any
+    if (resp.ok && respData.id) {
+      return c.json({
+        success: true,
+        email_id: respData.id,
+        sent_to: toList.map((t: any) => t.email),
+        workers: workers.length,
+        total_gross: totalGross,
+        formats_attached: attachments.map((a: any) => a.filename)
+      })
+    } else {
+      return c.json({ error: respData.message || 'Email send failed', resend_error: respData }, 500)
+    }
+  } catch (e: any) {
+    return c.json({ error: `Email error: ${e.message}` }, 500)
+  }
 })
 
 // ─── SCHEDULED WEEKLY EMAIL (Cloudflare Cron Trigger) ─────────────────────────
@@ -4405,6 +4871,25 @@ function getAdminHTML(): string {
             <p class="text-xs text-gray-400 mt-1">If off, workers see hours only, no dollar amounts</p>
           </div>
         </div>
+        <!-- Accountant / QB Settings -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 p-4 bg-amber-50 border border-amber-200 rounded-2xl">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">
+              <i class="fas fa-envelope text-amber-500 mr-1"></i> Accountant Email
+            </label>
+            <input id="s-accountant-email" type="email" placeholder="accountant@yourfirm.com"
+              class="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-400 text-sm"/>
+            <p class="text-xs text-gray-400 mt-1">Pre-filled on the Payroll Export tab — saved with settings</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">
+              <i class="fas fa-building text-amber-500 mr-1"></i> Company Name (for QB files)
+            </label>
+            <input id="s-company-name" type="text" placeholder="Your Company Ltd."
+              class="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-400 text-sm"/>
+            <p class="text-xs text-gray-400 mt-1">Appears inside QB IIF files as the company identifier</p>
+          </div>
+        </div>
       </div>
 
       <!-- GPS Fraud Prevention -->
@@ -4849,65 +5334,153 @@ function getAdminHTML(): string {
       <div class="flex items-center justify-between mb-5 flex-wrap gap-3">
         <div>
           <h3 class="font-bold text-gray-800 text-lg flex items-center gap-2">
-            <i class="fas fa-paper-plane text-amber-500"></i> Weekly Summary to Accountant
+            <i class="fas fa-file-invoice-dollar text-amber-500"></i> Payroll Export &amp; Accountant
           </h3>
-          <p class="text-sm text-gray-400 mt-0.5">Send a clean per-worker recap of hours &amp; earnings for any week</p>
+          <p class="text-sm text-gray-400 mt-0.5">Export QuickBooks-ready payroll files and email to your accountant</p>
         </div>
       </div>
 
-      <!-- Week selector -->
-      <div class="bg-amber-50 border border-amber-200 rounded-2xl p-5 mb-5">
-        <div class="flex items-center gap-4 flex-wrap">
-          <div>
-            <label class="block text-xs font-semibold text-gray-600 mb-1">Select Week</label>
-            <input type="date" id="acct-week-date"
-              class="border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"/>
+      <!-- ── Pay Period Selector ── -->
+      <div class="bg-gradient-to-br from-indigo-50 to-purple-50 border border-indigo-200 rounded-2xl p-5 mb-5">
+        <div class="flex items-center gap-2 mb-3">
+          <i class="fas fa-calendar-alt text-indigo-600"></i>
+          <h4 class="font-bold text-gray-800 text-sm">Select Pay Period</h4>
+        </div>
+        <div class="flex gap-3 flex-wrap mb-3">
+          <div class="flex-1 min-w-[140px]">
+            <label class="block text-xs font-semibold text-gray-600 mb-1">Start Date</label>
+            <input type="date" id="qb-start"
+              class="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"/>
           </div>
-          <div class="flex-1">
-            <label class="block text-xs font-semibold text-gray-600 mb-1">Week Range</label>
-            <p id="acct-week-label" class="text-sm font-bold text-amber-700 py-2">—</p>
+          <div class="flex-1 min-w-[140px]">
+            <label class="block text-xs font-semibold text-gray-600 mb-1">End Date</label>
+            <input type="date" id="qb-end"
+              class="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"/>
+          </div>
+        </div>
+        <!-- Quick-select pay periods -->
+        <div class="mb-2">
+          <label class="block text-xs font-semibold text-gray-500 mb-1.5">Quick Select Pay Period:</label>
+          <div id="qb-period-list" class="flex flex-wrap gap-2">
+            <span class="text-xs text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>Loading pay periods...</span>
           </div>
         </div>
         <div class="flex gap-2 mt-3 flex-wrap">
-          <button onclick="setAcctWeek(-1)" class="px-3 py-2 bg-white border border-gray-300 text-gray-700 rounded-xl text-xs font-medium hover:bg-gray-50">
-            <i class="fas fa-chevron-left mr-1"></i>Prev Week
+          <button onclick="setQbCustomRange('this_week')" class="px-3 py-1.5 bg-white border border-gray-200 text-gray-600 rounded-xl text-xs font-medium hover:bg-gray-50">
+            This Week
           </button>
-          <button onclick="setAcctWeek(0)" class="px-3 py-2 bg-amber-500 text-white rounded-xl text-xs font-medium hover:bg-amber-600">
-            <i class="fas fa-calendar-check mr-1"></i>This Week
+          <button onclick="setQbCustomRange('last_week')" class="px-3 py-1.5 bg-white border border-gray-200 text-gray-600 rounded-xl text-xs font-medium hover:bg-gray-50">
+            Last Week
           </button>
-          <button onclick="setAcctWeek(1)" class="px-3 py-2 bg-white border border-gray-300 text-gray-700 rounded-xl text-xs font-medium hover:bg-gray-50">
-            Next Week<i class="fas fa-chevron-right ml-1"></i>
+          <button onclick="setQbCustomRange('this_month')" class="px-3 py-1.5 bg-white border border-gray-200 text-gray-600 rounded-xl text-xs font-medium hover:bg-gray-50">
+            This Month
           </button>
-          <button onclick="loadAcctPreview()" class="ml-auto px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-semibold border border-indigo-200">
-            <i class="fas fa-eye mr-1"></i>Preview Recap
+          <button onclick="setQbCustomRange('last_month')" class="px-3 py-1.5 bg-white border border-gray-200 text-gray-600 rounded-xl text-xs font-medium hover:bg-gray-50">
+            Last Month
+          </button>
+          <button onclick="loadQbPreview()" class="ml-auto px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-sm">
+            <i class="fas fa-eye mr-1"></i>Preview
           </button>
         </div>
       </div>
 
-      <!-- Accountant email field -->
+      <!-- ── QB Export Buttons ── -->
       <div class="bg-white border border-gray-200 rounded-2xl p-5 mb-5">
-        <label class="block text-sm font-semibold text-gray-700 mb-1">
-          <i class="fas fa-envelope text-amber-500 mr-1"></i> Send To (Accountant Email)
-        </label>
-        <div class="flex gap-2">
-          <input id="acct-email" type="email" placeholder="accountant@yourfirm.com"
-            class="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"/>
-          <button onclick="sendAcctSummary()" id="acct-send-btn"
-            class="bg-amber-500 hover:bg-amber-600 text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-colors shadow-md shadow-amber-200 flex items-center gap-2">
-            <i class="fas fa-paper-plane"></i> Send
+        <div class="flex items-center gap-2 mb-3">
+          <i class="fas fa-download text-green-600"></i>
+          <h4 class="font-bold text-gray-800 text-sm">Download QuickBooks Files</h4>
+        </div>
+        <div class="grid grid-cols-1 gap-3">
+          <!-- QB Online CSV -->
+          <button onclick="downloadQbFile('csv')"
+            class="flex items-center gap-3 p-4 bg-green-50 hover:bg-green-100 border border-green-200 rounded-xl transition-all group">
+            <div class="w-10 h-10 bg-green-600 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
+              <i class="fas fa-table text-white"></i>
+            </div>
+            <div class="text-left flex-1">
+              <p class="font-bold text-green-800 text-sm">QuickBooks Online — CSV</p>
+              <p class="text-xs text-green-600">Payroll → Import → upload CSV · Works with QB Online &amp; most accounting software</p>
+            </div>
+            <i class="fas fa-download text-green-600 group-hover:text-green-800"></i>
+          </button>
+          <!-- QB Desktop IIF -->
+          <button onclick="downloadQbFile('iif')"
+            class="flex items-center gap-3 p-4 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all group">
+            <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
+              <i class="fas fa-file-code text-white"></i>
+            </div>
+            <div class="text-left flex-1">
+              <p class="font-bold text-blue-800 text-sm">QuickBooks Desktop — IIF</p>
+              <p class="text-xs text-blue-600">File → Utilities → Import → IIF Files · Imports hours directly into timesheets</p>
+            </div>
+            <i class="fas fa-download text-blue-600 group-hover:text-blue-800"></i>
+          </button>
+          <!-- Full Detail CSV -->
+          <button onclick="downloadQbFile('detail')"
+            class="flex items-center gap-3 p-4 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-all group">
+            <div class="w-10 h-10 bg-gray-500 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
+              <i class="fas fa-file-csv text-white"></i>
+            </div>
+            <div class="text-left flex-1">
+              <p class="font-bold text-gray-800 text-sm">Full Detail Report — CSV</p>
+              <p class="text-xs text-gray-500">Every clock-in/out with GPS · for records &amp; audit</p>
+            </div>
+            <i class="fas fa-download text-gray-500 group-hover:text-gray-700"></i>
           </button>
         </div>
-        <p class="text-xs text-gray-400 mt-2">Also CC'd to admin email. Uses Resend (free tier).</p>
       </div>
 
-      <!-- Per-worker preview -->
-      <div id="acct-preview" class="space-y-3">
-        <div class="text-center py-8 text-gray-400">
-          <i class="fas fa-users text-3xl mb-3 block text-gray-300"></i>
-          <p class="text-sm">Select a week above and click <strong>Preview Recap</strong> to see the summary</p>
+      <!-- ── Email to Accountant ── -->
+      <div class="bg-amber-50 border border-amber-200 rounded-2xl p-5 mb-5">
+        <div class="flex items-center gap-2 mb-3">
+          <i class="fas fa-paper-plane text-amber-600"></i>
+          <h4 class="font-bold text-gray-800 text-sm">Email to Accountant</h4>
+          <span class="ml-auto text-xs bg-amber-200 text-amber-800 px-2 py-0.5 rounded-full font-semibold">with QB files attached</span>
+        </div>
+        <div class="mb-3">
+          <label class="block text-xs font-semibold text-gray-600 mb-1">Accountant Email</label>
+          <input id="qb-acct-email" type="email" placeholder="accountant@yourfirm.com"
+            class="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"/>
+          <p class="text-xs text-gray-400 mt-1">Saved automatically. Also CC'd to your admin email.</p>
+        </div>
+        <div class="mb-3">
+          <label class="block text-xs font-semibold text-gray-600 mb-1">Attach Format</label>
+          <div class="flex gap-3">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="qb-fmt" value="both" checked class="accent-amber-500"> <span class="text-sm text-gray-700">Both (CSV + IIF)</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="qb-fmt" value="csv" class="accent-amber-500"> <span class="text-sm text-gray-700">CSV only</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="qb-fmt" value="iif" class="accent-amber-500"> <span class="text-sm text-gray-700">IIF only</span>
+            </label>
+          </div>
+        </div>
+        <button onclick="sendQbToAccountant()" id="qb-send-btn"
+          class="w-full bg-amber-500 hover:bg-amber-600 text-white font-bold py-3 rounded-xl text-sm transition-colors shadow-md shadow-amber-200 flex items-center justify-center gap-2">
+          <i class="fas fa-paper-plane"></i> Send Payroll Report to Accountant
+        </button>
+        <div id="qb-send-status" class="hidden mt-3 rounded-xl p-3 text-sm"></div>
+      </div>
+
+      <!-- ── Preview ── -->
+      <div>
+        <div class="flex items-center justify-between mb-3">
+          <h4 class="font-bold text-gray-700 text-sm flex items-center gap-2">
+            <i class="fas fa-chart-bar text-purple-500"></i> Period Preview
+          </h4>
+          <p id="qb-period-label" class="text-xs text-gray-400">Select a pay period above</p>
+        </div>
+        <div id="qb-preview" class="space-y-3">
+          <div class="text-center py-10 text-gray-400">
+            <i class="fas fa-file-invoice-dollar text-4xl mb-3 block text-gray-200"></i>
+            <p class="text-sm">Select a pay period and click <strong>Preview</strong></p>
+          </div>
         </div>
       </div>
 
+      <!-- legacy week-based send still works -->
       <div id="acct-send-status" class="hidden mt-4 rounded-xl p-4 text-sm"></div>
     </div>
 
