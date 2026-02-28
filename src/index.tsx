@@ -2469,26 +2469,29 @@ function buildWeeklyReportHTML(
 function getSubdomain(c: any): string {
   const host = c.req.header('host') || ''
   const parts = host.split('.')
+  // Only treat as subdomain if it's a real domain (ends in .com/.io/.ai etc)
+  // and the first part is a known subdomain keyword
   // e.g. app.clockinproof.com → ['app','clockinproof','com'] → 'app'
-  // e.g. clockinproof.com     → ['clockinproof','com']       → ''
-  // e.g. localhost:3000        → ['localhost:3000']            → ''
-  if (parts.length >= 3) return parts[0].toLowerCase()
+  // e.g. 3000-xxxxx.sandbox.novita.ai → NOT a real subdomain → return ''
+  const knownSubs = ['app', 'admin', 'www']
+  if (parts.length >= 3 && knownSubs.includes(parts[0].toLowerCase())) {
+    return parts[0].toLowerCase()
+  }
   return ''
 }
 
 // ─── MAIN PAGES ───────────────────────────────────────────────────────────────
 
-// Root route — subdomain-aware
+// Root route — subdomain-aware for production, landing page for sandbox/direct
 app.get('/', (c) => {
   const sub = getSubdomain(c)
   if (sub === 'admin') return c.html(getAdminHTML())
   if (sub === 'app')   return c.html(getWorkerHTML())
-  if (sub === 'www' || sub === '') return c.html(getLandingHTML())
-  // any other subdomain (future tenants) → worker app
-  return c.html(getWorkerHTML())
+  // www.clockinproof.com or clockinproof.com → landing page
+  return c.html(getLandingHTML())
 })
 
-// Legacy path-based routing (still works for sandbox / direct access)
+// Worker app — primary path used in sandbox AND sent to workers as invite link
 app.get('/app', (c) => {
   return c.html(getWorkerHTML())
 })
@@ -2498,7 +2501,7 @@ app.get('/admin', (c) => {
   return c.html(getAdminHTML())
 })
 
-// Marketing landing page — accessible via /landing or www.*
+// Marketing landing page — accessible via root / OR /landing
 app.get('/landing', (c) => {
   return c.html(getLandingHTML())
 })
