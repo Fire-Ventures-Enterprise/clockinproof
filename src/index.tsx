@@ -140,6 +140,8 @@ async function ensureSchema(db: D1Database) {
       away_since DATETIME,
       auto_clockout INTEGER DEFAULT 0,
       auto_clockout_reason TEXT,
+      geofence_exit_time DATETIME,
+      geofence_deduction_min REAL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (worker_id) REFERENCES workers(id)
     )`,
@@ -151,6 +153,8 @@ async function ensureSchema(db: D1Database) {
     `ALTER TABLE sessions ADD COLUMN away_since DATETIME`,
     `ALTER TABLE sessions ADD COLUMN auto_clockout INTEGER DEFAULT 0`,
     `ALTER TABLE sessions ADD COLUMN auto_clockout_reason TEXT`,
+    `ALTER TABLE sessions ADD COLUMN geofence_exit_time DATETIME`,
+    `ALTER TABLE sessions ADD COLUMN geofence_deduction_min REAL`,
     `CREATE TABLE IF NOT EXISTS location_pings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id INTEGER NOT NULL,
@@ -1920,32 +1924,57 @@ app.get('/api/sessions/watchdog', async (c) => {
 
     // ── 3. GEOFENCE EXIT AUTO-CLOCKOUT ────────────────────────────────────────
     // If worker has been outside the geofence for geofence_exit_clockout_min minutes,
-    // automatically clock them out (0 = disabled)
+    // automatically clock them out (0 = disabled).
+    // Clock-out time is set to drift_detected_at + exitClockoutMin so the worker
+    // is charged exactly the grace period — not any extra time they wandered.
     const exitClockoutMin = parseFloat(settings.geofence_exit_clockout_min || '0')
     if (exitClockoutMin > 0 && s.drift_flag && !s.auto_clockout && s.drift_detected_at) {
-      const driftMs = nowMs - new Date(s.drift_detected_at).getTime()
+      const driftDetectedAt = new Date(s.drift_detected_at)
+      const driftMs      = nowMs - driftDetectedAt.getTime()
       const driftMinutes = driftMs / (1000 * 60)
       if (driftMinutes >= exitClockoutMin) {
-        const earnings = hoursWorked * (s.hourly_rate || 0)
+        // Clock-out exactly at drift_detected_at + exitClockoutMin (fair deduction)
+        const clockOutAt   = new Date(driftDetectedAt.getTime() + exitClockoutMin * 60 * 1000)
+        const paidHours    = (clockOutAt.getTime() - clockInMs) / (1000 * 60 * 60)
+        const earnings     = Math.max(0, paidHours) * (s.hourly_rate || 0)
         const dist = s.drift_distance_meters >= 1000
           ? (s.drift_distance_meters / 1000).toFixed(1) + 'km'
           : Math.round(s.drift_distance_meters || 0) + 'm'
-        const reason = `Auto clocked out — worker left geofence for ${Math.round(driftMinutes)} min (${dist} from site)`
+        // Reason includes the full timeline for the record
+        const exitTimeStr      = driftDetectedAt.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: true })
+        const clockOutTimeStr  = clockOutAt.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: true })
+        const reason = `Auto clocked out — left geofence at ${exitTimeStr} (${dist} from site), ${exitClockoutMin}min grace period, clocked out at ${clockOutTimeStr}. Hours paid: ${Math.max(0,Math.round(paidHours*100)/100)}h`
         await db.prepare(`
           UPDATE sessions SET
             clock_out_time=?, total_hours=?, earnings=?,
-            status='completed', auto_clockout=1, auto_clockout_reason=?
+            status='completed', auto_clockout=1, auto_clockout_reason=?,
+            geofence_exit_time=?, geofence_deduction_min=?
           WHERE id=?
-        `).bind(now.toISOString(), Math.round(hoursWorked*100)/100, Math.round(earnings*100)/100, reason, s.id).run()
-        item.action = 'auto_clocked_out_drift'
-        item.reason = reason
-        item.hours  = Math.round(hoursWorked*10)/10
+        `).bind(
+          clockOutAt.toISOString(),
+          Math.max(0, Math.round(paidHours*100)/100),
+          Math.max(0, Math.round(earnings*100)/100),
+          reason,
+          driftDetectedAt.toISOString(),   // exact time worker left geofence
+          exitClockoutMin,                  // minutes of grace/deduction recorded
+          s.id
+        ).run()
+        item.action           = 'auto_clocked_out_drift'
+        item.reason           = reason
+        item.hours            = Math.max(0, Math.round(paidHours*10)/10)
+        item.geofence_exit_time = driftDetectedAt.toISOString()
+        item.deduction_min    = exitClockoutMin
+        item.clock_out_at     = clockOutAt.toISOString()
 
         // Notify worker via SMS
         if (s.worker_phone) {
-          const hrsF = `${Math.floor(hoursWorked)}h ${Math.round((hoursWorked % 1) * 60)}m`
+          const hrsF = `${Math.floor(Math.max(0,paidHours))}h ${Math.round(((Math.max(0,paidHours)) % 1) * 60)}m`
           await sendWorkerSms(env, s.worker_phone,
-            `📍 ClockInProof: You have been automatically clocked out.\nReason: You were ${dist} outside the job site geofence for ${Math.round(driftMinutes)} minutes.\nHours recorded: ${hrsF}\nIf this is an error, contact your manager.`
+            `📍 ClockInProof: You were automatically clocked out.\n` +
+            `You left the job site at ${exitTimeStr} (${dist} from "${s.job_location || 'site'}").\n` +
+            `After ${exitClockoutMin}min grace period, your clock-out was recorded at ${clockOutTimeStr}.\n` +
+            `Hours paid: ${hrsF}\n` +
+            `If this is an error, tap the app to submit a dispute.`
           ).catch(() => {})
         }
 
@@ -1954,7 +1983,7 @@ app.get('/api/sessions/watchdog', async (c) => {
           worker_name: s.worker_name,
           worker_phone: s.worker_phone,
           job_location: s.job_location || 'Unknown',
-          job_description: `📍 GEOFENCE AUTO CLOCK-OUT: Worker was ${dist} outside the job site for ${Math.round(driftMinutes)} min. Session automatically closed. Hours recorded: ${item.hours}h. Task: ${s.job_description || 'N/A'}`,
+          job_description: `📍 GEOFENCE AUTO CLOCK-OUT: ${s.worker_name} left the site at ${exitTimeStr} (${dist} away). After ${exitClockoutMin}min grace, clocked out at ${clockOutTimeStr}. Hours paid: ${item.hours}h. Task: ${s.job_description || 'N/A'}`,
           distance_meters: s.drift_distance_meters || 0,
           worker_address: null,
           worker_lat: null,
@@ -1962,7 +1991,11 @@ app.get('/api/sessions/watchdog', async (c) => {
         }).catch(() => {})
         if (settings.notify_sms === '1') {
           sendAdminSms(settings, env,
-            `📍 ClockInProof AUTO CLOCK-OUT\n${s.worker_name} LEFT the site and was auto clocked out.\nAway: ${dist} for ${Math.round(driftMinutes)} min.\nHours: ${item.hours}h | Site: ${s.job_location || 'Unknown'}\nView: ${settings.admin_host || 'https://admin.clockinproof.com'}/#live`
+            `📍 AUTO CLOCK-OUT — ${s.worker_name}\n` +
+            `Left site at ${exitTimeStr} (${dist} from "${s.job_location || 'site'}").\n` +
+            `Grace: ${exitClockoutMin}min → clocked out at ${clockOutTimeStr}.\n` +
+            `Hours paid: ${item.hours}h\n` +
+            `View: ${settings.admin_host || 'https://admin.clockinproof.com'}/#sessions`
           ).catch(() => {})
         }
 
@@ -5805,10 +5838,13 @@ function getAdminHTML(): string {
         <!-- WORKFORCE -->
         <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2 mt-5">Workforce</p>
 
-        <!-- Workforce dropdown -->
-        <button id="workforce-btn" onclick="toggleWorkforce()"
-          class="sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
-          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-blue-100 text-blue-600 flex-shrink-0">
+        <!-- Workforce accordion button -->
+        <button id="workforce-btn"
+          onclick="toggleWorkforce(event)"
+          type="button"
+          class="tab-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors"
+          data-tab="workers">
+          <span id="workforce-icon" class="w-8 h-8 flex items-center justify-center rounded-lg bg-blue-100 text-blue-600 flex-shrink-0">
             <i class="fas fa-users text-sm"></i>
           </span>
           <span>Workforce</span>
@@ -5817,32 +5853,37 @@ function getAdminHTML(): string {
             <i id="workforce-chevron" class="fas fa-chevron-down text-[10px] text-gray-400 transition-transform duration-200"></i>
           </span>
         </button>
-        <!-- Workforce sub-menu: hidden by default -->
+
+        <!-- Workforce sub-menu (hidden by default, toggled by JS) -->
         <div id="workers-submenu" class="hidden ml-2 mt-0.5 pl-3 border-l-2 border-blue-100 space-y-0.5">
 
-          <button onclick="doShowWorkersView('onsite')" id="wv-onsite"
-            class="wv-btn sidebar-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-green-50 hover:text-green-700 transition-colors">
-            <span class="wv-icon w-6 h-6 flex items-center justify-center rounded-md bg-green-100 text-green-600 flex-shrink-0">
+          <button type="button" id="wv-onsite"
+            onclick="doShowWorkersView('onsite')"
+            class="wv-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-green-50 hover:text-green-700 transition-colors">
+            <span class="w-6 h-6 flex items-center justify-center rounded-md bg-green-100 text-green-600 flex-shrink-0">
               <i class="fas fa-hard-hat text-[10px]"></i>
             </span>
             <span>Onsite Now</span>
             <span id="onsite-count-badge" class="ml-auto bg-green-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full hidden">0</span>
           </button>
 
-          <button onclick="doShowWorkersView('active')" id="wv-active"
-            class="wv-btn sidebar-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-700 transition-colors">
-            <span class="wv-icon w-6 h-6 flex items-center justify-center rounded-md bg-blue-100 text-blue-600 flex-shrink-0">
+          <button type="button" id="wv-active"
+            onclick="doShowWorkersView('active')"
+            class="wv-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-700 transition-colors">
+            <span class="w-6 h-6 flex items-center justify-center rounded-md bg-blue-100 text-blue-600 flex-shrink-0">
               <i class="fas fa-user-check text-[10px]"></i>
             </span>
             <span>Active</span>
           </button>
 
-          <button onclick="doShowWorkersView('all')" id="wv-all"
-            class="wv-btn sidebar-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors">
-            <span class="wv-icon w-6 h-6 flex items-center justify-center rounded-md bg-gray-100 text-gray-500 flex-shrink-0">
+          <button type="button" id="wv-all"
+            onclick="doShowWorkersView('all')"
+            class="wv-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors">
+            <span class="w-6 h-6 flex items-center justify-center rounded-md bg-gray-100 text-gray-500 flex-shrink-0">
               <i class="fas fa-list text-[10px]"></i>
             </span>
             <span>All Workers</span>
+            <span class="ml-auto text-xs text-gray-400" id="stat-total-workers-badge"></span>
           </button>
 
         </div>

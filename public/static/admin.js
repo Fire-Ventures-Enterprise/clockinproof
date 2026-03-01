@@ -1141,24 +1141,57 @@ async function loadLive() {
 
 // ── Workforce dropdown (sidebar) ─────────────────────────────────────────────
 let _currentWorkersView = 'all'
+let _workforceOpen = false
 
-function toggleWorkforce() {
+function toggleWorkforce(e) {
+  if (e) e.stopPropagation()
+  _workforceOpen = !_workforceOpen
   const menu    = document.getElementById('workers-submenu')
   const chevron = document.getElementById('workforce-chevron')
   const btn     = document.getElementById('workforce-btn')
+  const icon    = document.getElementById('workforce-icon')
   if (!menu) return
-  const isOpen = !menu.classList.contains('hidden')
-  if (isOpen) {
-    menu.classList.add('hidden')
-    if (chevron) chevron.style.transform = ''
-    if (btn) btn.classList.remove('bg-indigo-50','text-indigo-700')
-  } else {
+
+  if (_workforceOpen) {
     menu.classList.remove('hidden')
     if (chevron) chevron.style.transform = 'rotate(180deg)'
-    if (btn) btn.classList.add('bg-indigo-50','text-indigo-700')
-    // Show workers tab when opening
-    showTab('workers')
+    if (btn) {
+      btn.classList.add('bg-indigo-50','text-indigo-700','tab-active')
+      btn.classList.remove('text-gray-600')
+    }
+    if (icon) {
+      icon.classList.remove('bg-blue-100','text-blue-600')
+      icon.classList.add('bg-indigo-600','text-white')
+    }
+    // Show workers tab and render default view
+    _showWorkersTabContent()
     _highlightWvBtn(_currentWorkersView)
+  } else {
+    menu.classList.add('hidden')
+    if (chevron) chevron.style.transform = ''
+    if (btn) {
+      btn.classList.remove('bg-indigo-50','text-indigo-700','tab-active')
+      btn.classList.add('text-gray-600')
+    }
+    if (icon) {
+      icon.classList.add('bg-blue-100','text-blue-600')
+      icon.classList.remove('bg-indigo-600','text-white')
+    }
+  }
+}
+
+function _showWorkersTabContent() {
+  // Show only the workers tab panel without touching sidebar button highlights
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'))
+  const tabEl = document.getElementById('tab-workers')
+  if (tabEl) tabEl.classList.remove('hidden')
+  // Render the current view
+  if (_currentWorkersView === 'onsite') {
+    renderOnsiteWorkers()
+  } else if (_currentWorkersView === 'active') {
+    setWorkerFilter('active')
+  } else {
+    setWorkerFilter('all')
   }
 }
 
@@ -1166,29 +1199,49 @@ function _highlightWvBtn(view) {
   document.querySelectorAll('.wv-btn').forEach(el => {
     const v = el.id.replace('wv-','')
     if (v === view) {
-      el.classList.add('bg-indigo-50','text-indigo-700','font-semibold')
-      el.classList.remove('text-gray-600','font-medium')
+      el.style.backgroundColor = 'rgb(238 242 255)'
+      el.style.color = 'rgb(79 70 229)'
+      el.style.fontWeight = '600'
     } else {
-      el.classList.remove('bg-indigo-50','text-indigo-700','font-semibold')
-      el.classList.add('text-gray-600','font-medium')
+      el.style.backgroundColor = ''
+      el.style.color = ''
+      el.style.fontWeight = ''
     }
   })
 }
 
 function doShowWorkersView(view) {
   _currentWorkersView = view
-  // Show the workers tab content (without resetting wv buttons)
+  // Make sure workforce is open
+  if (!_workforceOpen) {
+    _workforceOpen = true
+    const menu    = document.getElementById('workers-submenu')
+    const chevron = document.getElementById('workforce-chevron')
+    const btn     = document.getElementById('workforce-btn')
+    const icon    = document.getElementById('workforce-icon')
+    if (menu) menu.classList.remove('hidden')
+    if (chevron) chevron.style.transform = 'rotate(180deg)'
+    if (btn) { btn.classList.add('bg-indigo-50','text-indigo-700','tab-active'); btn.classList.remove('text-gray-600') }
+    if (icon) { icon.classList.remove('bg-blue-100','text-blue-600'); icon.classList.add('bg-indigo-600','text-white') }
+  }
+  // Un-highlight all other tab-btns (nav items) but keep workforce-btn highlighted
+  document.querySelectorAll('.tab-btn').forEach(t => {
+    if (t.id !== 'workforce-btn') {
+      t.classList.remove('tab-active')
+      const ic = t.querySelector('#workforce-icon, span.w-8')
+      if (ic && ic.id !== 'workforce-icon') {
+        ic.classList.remove('bg-indigo-600','text-white')
+      }
+    }
+  })
+  // Show the workers tab panel
   document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'))
   const tabEl = document.getElementById('tab-workers')
   if (tabEl) tabEl.classList.remove('hidden')
-  // Highlight sub-button
+  // Highlight selected sub-button
   _highlightWvBtn(view)
   // Update tab title + subtitle
-  const titles = {
-    onsite: ['Onsite Now', 'Workers currently clocked in'],
-    active: ['Active Workers', 'Currently employed'],
-    all:    ['All Workers', 'Everyone on the team']
-  }
+  const titles = { onsite: ['Onsite Now','Workers currently clocked in'], active: ['Active Workers','Currently employed'], all: ['All Workers','Everyone on the team'] }
   const [title, sub] = titles[view] || titles.all
   const titleEl = document.getElementById('workers-tab-title')
   const subEl   = document.getElementById('workers-tab-subtitle')
@@ -1197,7 +1250,7 @@ function doShowWorkersView(view) {
   // Show/hide filter pills
   const filterBar = document.getElementById('workers-filter-bar')
   if (filterBar) filterBar.classList.toggle('hidden', view === 'onsite')
-  // Render content
+  // Render
   if (view === 'onsite') {
     renderOnsiteWorkers()
   } else if (view === 'active') {
@@ -1425,8 +1478,21 @@ async function loadSessions() {
                   <p class="text-sm font-semibold text-gray-700">${sess.job_location}</p>
                 </div>
               ` : ''}
-              <!-- Admin clock-out reason (single line, never duplicated) -->
-              ${sess.auto_clockout && cleanReason(sess.auto_clockout_reason) ? `
+              <!-- Admin clock-out reason — geofence deduction gets special treatment -->
+              ${sess.auto_clockout && sess.geofence_exit_time ? `
+                <div class="ml-9 mb-2 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2">
+                  <p class="text-xs font-semibold text-orange-700 mb-1"><i class="fas fa-map-marker-slash mr-1"></i>Geofence Auto Clock-Out — Deduction Record</p>
+                  <div class="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs text-gray-600">
+                    <span class="text-gray-400">Left site at:</span>
+                    <span class="font-medium text-orange-700">${new Date(sess.geofence_exit_time).toLocaleTimeString('en-CA',{hour:'2-digit',minute:'2-digit',hour12:true})}</span>
+                    <span class="text-gray-400">Grace period:</span>
+                    <span class="font-medium">${sess.geofence_deduction_min} min</span>
+                    <span class="text-gray-400">Clocked out at:</span>
+                    <span class="font-medium text-red-600">${sess.clock_out_time ? new Date(sess.clock_out_time).toLocaleTimeString('en-CA',{hour:'2-digit',minute:'2-digit',hour12:true}) : '—'}</span>
+                    <span class="text-gray-400">Hours paid:</span>
+                    <span class="font-medium text-gray-800">${(sess.total_hours||0).toFixed(2)}h</span>
+                  </div>
+                </div>` : sess.auto_clockout && cleanReason(sess.auto_clockout_reason) ? `
                 <div class="ml-9 mb-1">
                   <span class="text-xs text-red-500 italic"><i class="fas fa-info-circle mr-1"></i>${cleanReason(sess.auto_clockout_reason)}</span>
                 </div>` : ''}
@@ -1843,8 +1909,22 @@ function showTab(name) {
     adminMap = null
   }
 
+  // Close workforce submenu if navigating away from workers
+  if (name !== 'workers') {
+    _workforceOpen = false
+    const menu    = document.getElementById('workers-submenu')
+    const chevron = document.getElementById('workforce-chevron')
+    const btn     = document.getElementById('workforce-btn')
+    const icon    = document.getElementById('workforce-icon')
+    if (menu) menu.classList.add('hidden')
+    if (chevron) chevron.style.transform = ''
+    if (btn) { btn.classList.remove('bg-indigo-50','text-indigo-700','tab-active'); btn.classList.add('text-gray-600') }
+    if (icon) { icon.classList.add('bg-blue-100','text-blue-600'); icon.classList.remove('bg-indigo-600','text-white') }
+  }
+
   document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'))
   document.querySelectorAll('.tab-btn').forEach(t => {
+    if (t.id === 'workforce-btn') return  // workforce manages its own highlight
     t.classList.remove('tab-active')
     const icon = t.querySelector('span.w-8')
     if (icon) {
@@ -1853,7 +1933,7 @@ function showTab(name) {
   })
   const tabEl = document.getElementById('tab-' + name)
   if (tabEl) tabEl.classList.remove('hidden')
-  const btnEl = document.querySelector('[data-tab="' + name + '"]')
+  const btnEl = document.querySelector('[data-tab="' + name + '"]:not(#workforce-btn)')
   if (btnEl) btnEl.classList.add('tab-active')
   if (name === 'map') { loadMap(); setTimeout(() => { if (adminMap) adminMap.invalidateSize() }, 200) }
   if (name === 'calendar') loadCalendar()
