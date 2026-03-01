@@ -105,18 +105,6 @@ document.getElementById('admin-pin-input').addEventListener('keyup', e => {
   if (e.key === 'Enter') adminLogin()
 })
 
-// Set default worker sub-nav highlight on load
-document.addEventListener('DOMContentLoaded', () => {
-  // Highlight "All Workers" as default selected
-  const allBtn = document.getElementById('wv-all')
-  if (allBtn) {
-    allBtn.classList.add('bg-indigo-50','text-indigo-700','font-semibold')
-    allBtn.classList.remove('text-gray-600','font-medium')
-    const icon = allBtn.querySelector('span.w-6')
-    if (icon) { icon.classList.add('bg-indigo-600','text-white'); icon.classList.remove('bg-gray-100','text-gray-500') }
-  }
-})
-
 // ── Data Loading ──────────────────────────────────────────────────────────────
 async function refreshAll() {
   document.getElementById('admin-last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString()
@@ -1098,40 +1086,51 @@ async function loadLive() {
   } catch(e) { console.error(e) }
 }
 
-// ── Workers sidebar sub-navigation ───────────────────────────────────────────
-let _currentWorkersView = 'all' // 'onsite' | 'active' | 'all'
+// ── Workforce dropdown (sidebar) ─────────────────────────────────────────────
+let _currentWorkersView = 'all'
 
-function showWorkersView(view) {
-  _currentWorkersView = view
+function toggleWorkforce() {
+  const menu    = document.getElementById('workers-submenu')
+  const chevron = document.getElementById('workforce-chevron')
+  const btn     = document.getElementById('workforce-btn')
+  if (!menu) return
+  const isOpen = !menu.classList.contains('hidden')
+  if (isOpen) {
+    menu.classList.add('hidden')
+    if (chevron) chevron.style.transform = ''
+    if (btn) btn.classList.remove('bg-indigo-50','text-indigo-700')
+  } else {
+    menu.classList.remove('hidden')
+    if (chevron) chevron.style.transform = 'rotate(180deg)'
+    if (btn) btn.classList.add('bg-indigo-50','text-indigo-700')
+    // Show workers tab when opening
+    showTab('workers')
+    _highlightWvBtn(_currentWorkersView)
+  }
+}
 
-  // First run showTab so it clears all tab-btn highlights...
-  showTab('workers')
-
-  // ...then re-apply the correct sub-button highlight manually
-  ;['onsite','active','all'].forEach(v => {
-    const el = document.getElementById('wv-' + v)
-    if (!el) return
+function _highlightWvBtn(view) {
+  document.querySelectorAll('.wv-btn').forEach(el => {
+    const v = el.id.replace('wv-','')
     if (v === view) {
-      // Active: use indigo highlight matching tab-active
       el.classList.add('bg-indigo-50','text-indigo-700','font-semibold')
       el.classList.remove('text-gray-600','font-medium')
-      const icon = el.querySelector('span.w-6')
-      if (icon) { icon.classList.add('bg-indigo-600','text-white'); icon.classList.remove('bg-green-100','text-green-600','bg-blue-100','text-blue-600','bg-gray-100','text-gray-500') }
     } else {
       el.classList.remove('bg-indigo-50','text-indigo-700','font-semibold')
       el.classList.add('text-gray-600','font-medium')
-      // Restore original icon colours
-      const icon = el.querySelector('span.w-6')
-      if (icon) {
-        icon.classList.remove('bg-indigo-600','text-white')
-        if (v === 'onsite') { icon.classList.add('bg-green-100','text-green-600') }
-        else if (v === 'active') { icon.classList.add('bg-blue-100','text-blue-600') }
-        else { icon.classList.add('bg-gray-100','text-gray-500') }
-      }
     }
   })
+}
 
-  // Update Workers tab title + subtitle
+function doShowWorkersView(view) {
+  _currentWorkersView = view
+  // Show the workers tab content (without resetting wv buttons)
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'))
+  const tabEl = document.getElementById('tab-workers')
+  if (tabEl) tabEl.classList.remove('hidden')
+  // Highlight sub-button
+  _highlightWvBtn(view)
+  // Update tab title + subtitle
   const titles = {
     onsite: ['Onsite Now', 'Workers currently clocked in'],
     active: ['Active Workers', 'Currently employed'],
@@ -1142,12 +1141,10 @@ function showWorkersView(view) {
   const subEl   = document.getElementById('workers-tab-subtitle')
   if (titleEl) titleEl.textContent = title
   if (subEl)   subEl.textContent   = sub
-
-  // Show/hide status filter pills — hidden in 'onsite' view
+  // Show/hide filter pills
   const filterBar = document.getElementById('workers-filter-bar')
   if (filterBar) filterBar.classList.toggle('hidden', view === 'onsite')
-
-  // Render the correct content
+  // Render content
   if (view === 'onsite') {
     renderOnsiteWorkers()
   } else if (view === 'active') {
@@ -1155,18 +1152,21 @@ function showWorkersView(view) {
   } else {
     setWorkerFilter('all')
   }
+  // Close sidebar on mobile
+  const sidebar = document.getElementById('admin-sidebar')
+  if (sidebar && window.innerWidth < 1024) {
+    sidebar.classList.add('-translate-x-full')
+    const overlay = document.getElementById('sidebar-overlay')
+    if (overlay) overlay.classList.add('hidden')
+  }
 }
 
 function renderOnsiteWorkers() {
   const tbody   = document.getElementById('workers-tbody')
   const countEl = document.getElementById('workers-count')
   if (!tbody) return
-
-  // Filter workers that are currently clocked in
   const onsite = _allWorkersData.filter(w => w.currently_clocked_in > 0)
-
   if (countEl) countEl.textContent = onsite.length + ' worker' + (onsite.length !== 1 ? 's' : '') + ' onsite'
-
   if (onsite.length === 0) {
     tbody.innerHTML = `<tr><td colspan="8" class="text-center py-10 text-gray-400">
       <i class="fas fa-hard-hat text-3xl block mb-2 opacity-30"></i>
@@ -1174,29 +1174,18 @@ function renderOnsiteWorkers() {
     </td></tr>`
     return
   }
-
-  // Reuse existing renderWorkersTable logic but only for onsite workers
-  const savedFilter = _workerFilter
-  _workerFilter = '_onsite_override_'
-  // Temporarily replace allWorkersData with only onsite workers
   const savedAll = _allWorkersData
   _allWorkersData = onsite
   _workerFilter = 'all'
   renderWorkersTable()
   _allWorkersData = savedAll
-  _workerFilter = savedFilter
 }
 
-// Update the onsite count badge in the sidebar
 function updateOnsiteBadge(count) {
   const badge = document.getElementById('onsite-count-badge')
   if (!badge) return
-  if (count > 0) {
-    badge.textContent = count
-    badge.classList.remove('hidden')
-  } else {
-    badge.classList.add('hidden')
-  }
+  if (count > 0) { badge.textContent = count; badge.classList.remove('hidden') }
+  else { badge.classList.add('hidden') }
 }
 
 // ── Worker filter state ──────────────────────────────────────────────────────
@@ -1803,8 +1792,6 @@ function showTab(name) {
 
   document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'))
   document.querySelectorAll('.tab-btn').forEach(t => {
-    // Skip the worker sub-buttons — showWorkersView handles their highlighting
-    if (t.id && t.id.startsWith('wv-')) return
     t.classList.remove('tab-active')
     const icon = t.querySelector('span.w-8')
     if (icon) {
@@ -1813,8 +1800,7 @@ function showTab(name) {
   })
   const tabEl = document.getElementById('tab-' + name)
   if (tabEl) tabEl.classList.remove('hidden')
-  // Only highlight the direct tab button (not worker sub-buttons)
-  const btnEl = document.querySelector('[data-tab="' + name + '"]:not([id^="wv-"])')
+  const btnEl = document.querySelector('[data-tab="' + name + '"]')
   if (btnEl) btnEl.classList.add('tab-active')
   if (name === 'map') { loadMap(); setTimeout(() => { if (adminMap) adminMap.invalidateSize() }, 200) }
   if (name === 'calendar') loadCalendar()

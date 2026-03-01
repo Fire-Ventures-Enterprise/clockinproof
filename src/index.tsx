@@ -5765,34 +5765,44 @@ function getAdminHTML(): string {
         <!-- WORKFORCE -->
         <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2 mt-5">Workforce</p>
 
-        <!-- Workers: 3 always-visible sub-items -->
-        <p class="text-[10px] font-semibold text-gray-400 uppercase tracking-widest px-3 mb-1 mt-1">Workers</p>
-        <div class="ml-1 space-y-0.5 border-l-2 border-blue-100 pl-2">
+        <!-- Workforce dropdown -->
+        <button id="workforce-btn" onclick="toggleWorkforce()"
+          class="sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-blue-100 text-blue-600 flex-shrink-0">
+            <i class="fas fa-users text-sm"></i>
+          </span>
+          <span>Workforce</span>
+          <span class="ml-auto flex items-center gap-1.5">
+            <span class="text-xs text-gray-400" id="stat-total-workers">–</span>
+            <i id="workforce-chevron" class="fas fa-chevron-down text-[10px] text-gray-400 transition-transform duration-200"></i>
+          </span>
+        </button>
+        <!-- Workforce sub-menu: hidden by default -->
+        <div id="workers-submenu" class="hidden ml-2 mt-0.5 pl-3 border-l-2 border-blue-100 space-y-0.5">
 
-          <button onclick="showWorkersView('onsite')" id="wv-onsite" data-tab="workers"
-            class="tab-btn sidebar-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-green-50 hover:text-green-700 transition-colors">
-            <span class="w-6 h-6 flex items-center justify-center rounded-md bg-green-100 text-green-600 flex-shrink-0">
+          <button onclick="doShowWorkersView('onsite')" id="wv-onsite"
+            class="wv-btn sidebar-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-green-50 hover:text-green-700 transition-colors">
+            <span class="wv-icon w-6 h-6 flex items-center justify-center rounded-md bg-green-100 text-green-600 flex-shrink-0">
               <i class="fas fa-hard-hat text-[10px]"></i>
             </span>
             <span>Onsite Now</span>
             <span id="onsite-count-badge" class="ml-auto bg-green-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full hidden">0</span>
           </button>
 
-          <button onclick="showWorkersView('active')" id="wv-active" data-tab="workers"
-            class="tab-btn sidebar-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-700 transition-colors">
-            <span class="w-6 h-6 flex items-center justify-center rounded-md bg-blue-100 text-blue-600 flex-shrink-0">
+          <button onclick="doShowWorkersView('active')" id="wv-active"
+            class="wv-btn sidebar-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-700 transition-colors">
+            <span class="wv-icon w-6 h-6 flex items-center justify-center rounded-md bg-blue-100 text-blue-600 flex-shrink-0">
               <i class="fas fa-user-check text-[10px]"></i>
             </span>
             <span>Active</span>
           </button>
 
-          <button onclick="showWorkersView('all')" id="wv-all" data-tab="workers"
-            class="tab-btn sidebar-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors">
-            <span class="w-6 h-6 flex items-center justify-center rounded-md bg-gray-100 text-gray-500 flex-shrink-0">
+          <button onclick="doShowWorkersView('all')" id="wv-all"
+            class="wv-btn sidebar-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors">
+            <span class="wv-icon w-6 h-6 flex items-center justify-center rounded-md bg-gray-100 text-gray-500 flex-shrink-0">
               <i class="fas fa-list text-[10px]"></i>
             </span>
             <span>All Workers</span>
-            <span class="ml-auto text-[10px] text-gray-400" id="stat-total-workers">–</span>
           </button>
 
         </div>
