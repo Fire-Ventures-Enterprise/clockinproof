@@ -112,6 +112,59 @@ async function refreshAll() {
   // Silently refresh badges for overrides and disputes
   loadOverrides().catch(() => {})
   loadDisputes().catch(() => {})
+  // Trigger server-side watchdog — auto-clocks out workers who left geofence / exceeded max shift
+  // This ensures auto-clockout fires even if the worker's phone is offline
+  runAdminWatchdog().catch(() => {})
+}
+
+async function runAdminWatchdog() {
+  try {
+    const res = await fetch('/api/sessions/watchdog')
+    if (!res.ok) return
+    const data = await res.json()
+    const acted = (data.results || []).filter(r => r.action && r.action.startsWith('auto_clocked_out'))
+    if (acted.length > 0) {
+      // Workers were auto-clocked out — refresh live + stats immediately
+      await Promise.all([loadLive(), loadStats(), loadWorkers()])
+      // Show admin alert banner
+      showGeofenceAlert(acted)
+    }
+    // Show drift warning banner for workers still outside geofence (not yet auto-clocked out)
+    const drifted = (data.results || []).filter(r => r.drift_flag && !r.action)
+    updateDriftBanner(drifted)
+  } catch(e) { /* silent */ }
+}
+
+function showGeofenceAlert(actedWorkers) {
+  let banner = document.getElementById('admin-geofence-alert')
+  if (!banner) {
+    banner = document.createElement('div')
+    banner.id = 'admin-geofence-alert'
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;padding:12px 16px;background:#dc2626;color:#fff;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:space-between;box-shadow:0 2px 8px rgba(0,0,0,.3)'
+    document.body.insertBefore(banner, document.body.firstChild)
+  }
+  const names = actedWorkers.map(w => w.worker_name).join(', ')
+  const reasons = { auto_clocked_out: 'max shift', auto_clocked_out_eod: 'end of day', auto_clocked_out_drift: 'left job site' }
+  const reasonText = actedWorkers.map(w => reasons[w.action] || 'auto clock-out').join('; ')
+  banner.innerHTML = `<span>🚨 Auto Clock-Out: <strong>${names}</strong> — ${reasonText}</span><button onclick="document.getElementById('admin-geofence-alert').remove()" style="background:rgba(255,255,255,.2);border:none;color:#fff;padding:4px 12px;border-radius:8px;cursor:pointer;font-weight:700">✕ Dismiss</button>`
+  // Auto-dismiss after 30 seconds
+  setTimeout(() => { if (document.getElementById('admin-geofence-alert')) document.getElementById('admin-geofence-alert').remove() }, 30000)
+}
+
+function updateDriftBanner(driftedWorkers) {
+  let banner = document.getElementById('admin-drift-banner')
+  if (driftedWorkers.length === 0) {
+    if (banner) banner.remove()
+    return
+  }
+  if (!banner) {
+    banner = document.createElement('div')
+    banner.id = 'admin-drift-banner'
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9998;padding:10px 16px;background:#ea580c;color:#fff;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:space-between;box-shadow:0 2px 8px rgba(0,0,0,.2)'
+    document.body.insertBefore(banner, document.body.firstChild)
+  }
+  const names = driftedWorkers.map(w => w.worker_name).join(', ')
+  banner.innerHTML = `<span>⚠️ Outside Geofence: <strong>${names}</strong> — left the job site. Will auto clock-out if still away.</span><button onclick="document.getElementById('admin-drift-banner').remove()" style="background:rgba(255,255,255,.2);border:none;color:#fff;padding:4px 12px;border-radius:8px;cursor:pointer;font-weight:700">✕</button>`
 }
 
 async function loadStats() {

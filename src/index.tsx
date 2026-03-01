@@ -1464,6 +1464,18 @@ async function sendWorkerSms(
   }
 }
 
+// ── SEND ADMIN SMS ────────────────────────────────────────────────────────────
+// Sends an SMS to the admin phone number configured in settings
+async function sendAdminSms(
+  settings: Record<string, string>,
+  env: any,
+  message: string
+): Promise<{ sent: boolean; error?: string }> {
+  const adminPhone = (settings.admin_phone || '').trim()
+  if (!adminPhone) return { sent: false, error: 'No admin phone configured' }
+  return sendWorkerSms(env, adminPhone, message)
+}
+
 // ── ADMIN FORCE CLOCK-OUT: stop any single active session ────────────────────
 app.post('/api/sessions/:id/admin-clockout', async (c) => {
   const db      = c.env.DB
@@ -1740,8 +1752,11 @@ app.post('/api/location/ping', async (c) => {
             `UPDATE sessions SET drift_flag=1, drift_distance_meters=?, drift_detected_at=? WHERE id=?`
           ).bind(Math.round(driftDistanceM), now, session_id).run()
 
-          // Send admin notification about drift
+          // Send admin notification about drift (email via sendOverrideNotification + direct SMS)
           const worker = await db.prepare('SELECT * FROM workers WHERE id = ?').bind(worker_id).first<any>()
+          const distStr = driftDistanceM >= 1000
+            ? (driftDistanceM / 1000).toFixed(1) + 'km'
+            : Math.round(driftDistanceM) + 'm'
           sendOverrideNotification(settings, env, {
             id: session_id as number,
             worker_name: worker?.name || 'Worker',
@@ -1753,6 +1768,17 @@ app.post('/api/location/ping', async (c) => {
             worker_lat: latitude,
             worker_lng: longitude
           }).catch(() => {})
+          // Also send a direct SMS to admin
+          if (settings.notify_sms === '1') {
+            const exitMin = parseFloat(settings.geofence_exit_clockout_min || '0')
+            const autoMsg = exitMin > 0 ? ` Will auto clock-out in ${exitMin} min if still away.` : ' Go to admin dashboard to clock out.'
+            sendAdminSms(settings, env,
+              `⚠️ ClockInProof: ${worker?.name || 'Worker'} LEFT the job site.\n` +
+              `Distance: ${distStr} from "${session.job_location}".\n` +
+              `${autoMsg}\n` +
+              `View live: ${settings.admin_host || 'https://admin.clockinproof.com'}/#live`
+            ).catch(() => {})
+          }
         }
       }
     }
@@ -1818,8 +1844,7 @@ app.get('/api/sessions/watchdog', async (c) => {
         ).catch(() => {})
       }
 
-      // Notify admin
-      const worker = await db.prepare('SELECT * FROM workers WHERE id=?').bind(s.worker_id).first<any>()
+      // Notify admin (email via sendOverrideNotification + direct SMS)
       sendOverrideNotification(settings, env, {
         id: s.id,
         worker_name: s.worker_name,
@@ -1831,6 +1856,11 @@ app.get('/api/sessions/watchdog', async (c) => {
         worker_lat: null,
         worker_lng: null
       }).catch(() => {})
+      if (settings.notify_sms === '1') {
+        sendAdminSms(settings, env,
+          `⏹ ClockInProof AUTO CLOCK-OUT\n${s.worker_name} was clocked out — reached ${maxShiftHours}h max shift.\nHours: ${item.hours}h\nSite: ${s.job_location || 'Unknown'}\nView: ${settings.admin_host || 'https://admin.clockinproof.com'}/#sessions`
+        ).catch(() => {})
+      }
 
       results.push(item)
       continue
@@ -1877,6 +1907,11 @@ app.get('/api/sessions/watchdog', async (c) => {
           worker_lat: null,
           worker_lng: null
         }).catch(() => {})
+        if (settings.notify_sms === '1') {
+          sendAdminSms(settings, env,
+            `🌙 ClockInProof AUTO CLOCK-OUT\n${s.worker_name} forgot to clock out. Clocked out at end of day (${workEnd}).\nHours: ${item.hours}h\nSite: ${s.job_location || 'Unknown'}\nView: ${settings.admin_host || 'https://admin.clockinproof.com'}/#sessions`
+          ).catch(() => {})
+        }
 
         results.push(item)
         continue
@@ -1925,6 +1960,11 @@ app.get('/api/sessions/watchdog', async (c) => {
           worker_lat: null,
           worker_lng: null
         }).catch(() => {})
+        if (settings.notify_sms === '1') {
+          sendAdminSms(settings, env,
+            `📍 ClockInProof AUTO CLOCK-OUT\n${s.worker_name} LEFT the site and was auto clocked out.\nAway: ${dist} for ${Math.round(driftMinutes)} min.\nHours: ${item.hours}h | Site: ${s.job_location || 'Unknown'}\nView: ${settings.admin_host || 'https://admin.clockinproof.com'}/#live`
+          ).catch(() => {})
+        }
 
         results.push(item)
         continue
