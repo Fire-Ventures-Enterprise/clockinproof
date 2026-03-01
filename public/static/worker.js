@@ -24,6 +24,22 @@ window.onload = async () => {
     showScreen('register')
   }
   getLocation()
+
+  // Close map when user presses ESC
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      const wrapper = document.getElementById('map-wrapper')
+      if (wrapper && !wrapper.classList.contains('hidden')) closeMap()
+    }
+  })
+
+  // Close map when screen locks / tab goes hidden (mobile screen lock)
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      const wrapper = document.getElementById('map-wrapper')
+      if (wrapper && !wrapper.classList.contains('hidden')) closeMap()
+    }
+  })
 }
 
 function showScreen(name) {
@@ -122,6 +138,8 @@ function setClockedInUI(isClockedIn) {
   const btnTxt = document.getElementById('clock-btn-text')
   const info = document.getElementById('clock-in-info')
   const jobBanner = document.getElementById('active-job-banner')
+
+  if (!isClockedIn) closeMap()  // always close map when not clocked in
 
   if (isClockedIn) {
     btn.className = 'w-full py-5 rounded-2xl text-white text-xl font-bold shadow-lg clock-btn flex items-center justify-center gap-3 bg-red-500 hover:bg-red-600'
@@ -586,6 +604,7 @@ async function clockOut() {
       stopWatchdog()
       clearInterval(durationTimer)
       clearInterval(pingInterval)
+      closeMap()  // always close map on clock-out
       hideAllBanners()
       setClockedInUI(false)
       showToast(`Clocked out! ${hrs}h worked · ${earned} earned 🎉`, 'success')
@@ -658,15 +677,14 @@ function showMap(lat, lng) {
 function renderMap(lat, lng) {
   const mapEl = document.getElementById('map')
   if (!mapEl) return
-  if (!map) {
-    map = L.map('map', { zoomControl: true, attributionControl: false })
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
-  }
+  // Destroy and recreate to prevent sticky grey tiles
+  if (map) { map.remove(); map = null; marker = null }
+  map = L.map('map', { zoomControl: true, attributionControl: false })
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
   map.setView([lat, lng], 16)
-  if (marker) marker.remove()
   marker = L.circleMarker([lat, lng], { color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.8, radius: 10 }).addTo(map)
   // Force Leaflet to recalculate size after reveal
-  setTimeout(() => { if (map) map.invalidateSize() }, 50)
+  setTimeout(() => { if (map) map.invalidateSize() }, 150)
 }
 
 function toggleMap() {
@@ -674,8 +692,10 @@ function toggleMap() {
   const btn = document.getElementById('toggle-map-btn')
   if (!wrapper) return
   if (wrapper.classList.contains('hidden')) {
+    // Open map
     wrapper.classList.remove('hidden')
-    btn.innerHTML = '<i class="fas fa-map mr-1"></i>Hide Map'
+    document.body.style.overflow = 'hidden' // prevent scroll behind mobile overlay
+    if (btn) btn.innerHTML = '<i class="fas fa-map mr-1"></i>Hide Map'
     if (currentLat && currentLng) renderMap(currentLat, currentLng)
   } else {
     closeMap()
@@ -686,7 +706,10 @@ function closeMap() {
   const wrapper = document.getElementById('map-wrapper')
   const btn = document.getElementById('toggle-map-btn')
   if (wrapper) wrapper.classList.add('hidden')
+  document.body.style.overflow = ''
   if (btn) btn.innerHTML = '<i class="fas fa-map mr-1"></i>View Map'
+  // Destroy Leaflet instance so it doesn't get stuck
+  if (map) { map.remove(); map = null; marker = null }
 }
 
 function startPingInterval() {
@@ -726,14 +749,39 @@ function startWatchdog() {
       const myResult = (data.results || []).find(r => r.session_id === activeSession?.id)
 
       if (!myResult) {
-        // Session no longer active — was auto-clocked out by server
+        // Session no longer active — check WHY it was closed
         clearInterval(watchdogTimer)
         clearInterval(durationTimer)
         clearInterval(pingInterval)
+
+        // Fetch the closed session to get the reason
+        let clockoutReason = 'You have been clocked out.'
+        let clockoutType   = 'admin'  // 'admin' | 'geofence' | 'maxshift' | 'eod'
+        try {
+          const sr = await fetch('/api/sessions/last/' + currentWorker.id)
+          if (sr.ok) {
+            const sd = await sr.json()
+            const reason = (sd.auto_clockout_reason || '').toLowerCase()
+            if (reason.includes('geofence') || reason.includes('drift') || reason.includes('left job site')) {
+              clockoutType = 'geofence'
+              clockoutReason = '📍 You were clocked out automatically because you left the job site geofence.'
+            } else if (reason.includes('max shift') || reason.includes('maximum shift')) {
+              clockoutType = 'maxshift'
+              clockoutReason = '⏰ You were clocked out automatically — you reached the maximum shift limit.'
+            } else if (reason.includes('end of day') || reason.includes('forgot to clock out')) {
+              clockoutType = 'eod'
+              clockoutReason = '🌙 You were automatically clocked out at end of day because you forgot to clock out.'
+            } else if (reason.includes('admin') || reason.includes('manager') || reason.includes('manually')) {
+              clockoutType = 'admin'
+              clockoutReason = '🔴 Your manager has clocked you out' + (sd.auto_clockout_reason ? ': ' + sd.auto_clockout_reason.replace('Admin clock-out: ', '') : '.') + '\nIf you have questions, contact your manager.'
+            }
+          }
+        } catch(e) {}
+
         activeSession = null
         setClockedInUI(false)
         hideAllBanners()
-        showToast('You have been automatically clocked out by the system.', 'info')
+        showClockoutNotification(clockoutType, clockoutReason)
         await loadStats()
         await loadWorkLog()
         return
@@ -769,6 +817,44 @@ function startWatchdog() {
 
 function stopWatchdog() {
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null }
+}
+
+// Show a prominent notification when a worker is clocked out remotely
+function showClockoutNotification(type, message) {
+  // Remove any existing notification
+  const existing = document.getElementById('clockout-notification')
+  if (existing) existing.remove()
+
+  const colors = {
+    admin:    { bg: '#dc2626', icon: '🔴', title: 'Clocked Out by Manager' },
+    geofence: { bg: '#d97706', icon: '📍', title: 'Auto Clock-Out: Left Job Site' },
+    maxshift: { bg: '#7c3aed', icon: '⏰', title: 'Auto Clock-Out: Max Shift Reached' },
+    eod:      { bg: '#2563eb', icon: '🌙', title: 'Auto Clock-Out: End of Day' }
+  }
+  const c = colors[type] || colors.admin
+
+  const notif = document.createElement('div')
+  notif.id = 'clockout-notification'
+  notif.style.cssText = `
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.85); z-index: 99999;
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  `
+  notif.innerHTML = `
+    <div style="background: white; border-radius: 20px; padding: 32px 24px; max-width: 360px; width: 100%; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.4);">
+      <div style="width: 72px; height: 72px; background: ${c.bg}; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 32px; margin: 0 auto 16px;">${c.icon}</div>
+      <h2 style="font-size: 20px; font-weight: 700; color: #111827; margin: 0 0 12px;">${c.title}</h2>
+      <p style="font-size: 14px; color: #4b5563; line-height: 1.6; margin: 0 0 24px; white-space: pre-line;">${message}</p>
+      <button onclick="document.getElementById('clockout-notification').remove()"
+        style="background: ${c.bg}; color: white; border: none; padding: 14px 32px; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; width: 100%;">
+        OK, Got It
+      </button>
+    </div>
+  `
+  document.body.appendChild(notif)
+
+  // Also vibrate phone if supported
+  if (navigator.vibrate) navigator.vibrate([300, 100, 300])
 }
 
 function showGuardrailBanner(type, msg) {

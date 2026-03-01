@@ -3,6 +3,43 @@ let currentPeriod = 'today'
 let allSessionsData = []
 let sessionStore = {}  // id → session object for modal lookup
 
+// ── Shared helpers ───────────────────────────────────────────────────────────────
+
+// Strip legacy prefixes and normalize auto_clockout_reason
+function cleanReason(raw) {
+  if (!raw) return ''
+  return raw
+    .replace(/^Admin clock-out:\s*/gi, '')
+    .replace(/^Manually stopped by admin\s*:?\s*/gi, '')
+    .replace(/^Worker left job site\s*:?\s*/gi, 'Left job site')
+    .trim()
+}
+
+// Full human-readable guardrail label for a session
+// Returns a SINGLE clean label — never double-prefixed
+function autoClockoutLabel(s) {
+  const r = cleanReason(s.auto_clockout_reason)
+  if (s.drift_flag)                              return 'Auto Clock-Out: Left Geofence'
+  if (r.toLowerCase().includes('end of day'))    return 'Auto Clock-Out: End of Day'
+  if (r.toLowerCase().includes('max shift'))     return 'Auto Clock-Out: Max Shift'
+  if (r.toLowerCase().includes('terminated'))    return 'Auto Clock-Out: Worker Terminated'
+  if (r.toLowerCase().includes('suspended'))     return 'Auto Clock-Out: Worker Suspended'
+  if (r.toLowerCase().includes('left'))          return 'Admin Clock-Out: Left Job Site'
+  if (r.toLowerCase().includes('forgot'))        return 'Admin Clock-Out: Forgot to Clock Out'
+  if (r.toLowerCase().includes('gps'))           return 'Admin Clock-Out: No GPS Signal'
+  // If reason is blank (legacy "Manually stopped by admin"), show generic
+  return r ? `Admin Clock-Out: ${r}` : 'Clocked Out by Manager'
+}
+
+// Returns true if notes string is system-generated (should never show in Notes block)
+function isSystemNote(notes) {
+  if (!notes || !notes.trim()) return true
+  const l = notes.toLowerCase()
+  return l.startsWith('admin clock-out') || l.startsWith('auto clocked out') ||
+         l.startsWith('worker left job') || l.startsWith('manually stopped') ||
+         l === 'admin clock-out'
+}
+
 // ── Admin Login ───────────────────────────────────────────────────────────────
 async function adminLogin() {
   const pin = document.getElementById('admin-pin-input').value.trim()
@@ -124,15 +161,26 @@ async function openWorkerDrawer(workerId) {
       const totalE = sessions.reduce((s, x) => s + (x.earnings || 0), 0)
       document.getElementById('wd-total-hours').textContent = totalH.toFixed(1) + 'h'
       document.getElementById('wd-total-earned').textContent = '$' + totalE.toFixed(2)
-      const statusBadge = worker.currently_clocked_in > 0
-        ? '<span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full pulse font-medium">● Working</span>'
-        : worker.active
-          ? '<span class="bg-gray-100 text-gray-600 text-xs px-2 py-0.5 rounded-full">Inactive</span>'
-          : '<span class="bg-red-100 text-red-600 text-xs px-2 py-0.5 rounded-full">Disabled</span>'
+      // Status badge — uses new worker_status field
+      const ws = worker.worker_status || (worker.active ? 'active' : 'terminated')
+      const wsConf2 = WS_CONFIG[ws] || WS_CONFIG['active']
+      let statusBadge = ''
+      if (worker.currently_clocked_in > 0) {
+        statusBadge = '<span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full pulse font-medium flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span>Working Now</span>'
+      } else {
+        statusBadge = `<span class="text-xs px-2 py-0.5 rounded-full font-medium ${wsConf2.bg} ${wsConf2.text}"><i class="fas ${wsConf2.icon} mr-1"></i>${wsConf2.label}</span>`
+      }
       document.getElementById('wd-status-badge').innerHTML = statusBadge
       document.getElementById('wd-filter-sessions-btn').dataset.workerId = workerId
 
-      // Force clock-out bar
+      // Invite link badge in drawer — always shows as active (link is permanent)
+      const wdInviteBadge = document.getElementById('wd-invite-badge')
+      if (wdInviteBadge) {
+        wdInviteBadge.innerHTML = `<button onclick="closeWorkerDrawer();generateInviteLink(${workerId},'${worker.name.replace(/'/g,"\\'")}');"
+          class="flex items-center gap-1 bg-green-50 hover:bg-green-100 border border-green-200 text-green-700 text-xs px-2 py-1 rounded-full font-medium transition-colors">
+          <i class="fas fa-link text-green-500"></i> Send App Link
+        </button>`
+      }
       const wdActionBar = document.getElementById('wd-action-bar')
       if (wdActionBar) {
         const activeSession = sessions.find(s => s.status === 'active')
@@ -227,21 +275,194 @@ async function openWorkerDrawer(workerId) {
 }
 
 function wdTab(tab) {
-  ;['sessions','profile','license'].forEach(t => {
+  ;['sessions','profile','status','license'].forEach(t => {
     document.getElementById('wd-tab-' + t)?.classList.toggle('hidden', t !== tab)
     const btn = document.getElementById('wdt-' + t)
     if (!btn) return
     if (t === tab) {
-      btn.className = 'px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-indigo-500 text-indigo-600 bg-white'
+      btn.className = 'px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-indigo-500 text-indigo-600 bg-white whitespace-nowrap'
     } else {
-      btn.className = 'px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700'
+      btn.className = 'px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap'
     }
   })
+  // Load status data when switching to status tab
+  if (tab === 'status' && _currentDrawerWorker) {
+    loadWorkerStatusTab(_currentDrawerWorker.id, _currentDrawerWorker.worker_status || (_currentDrawerWorker.active ? 'active' : 'terminated'))
+  }
 }
 
 function closeWorkerDrawer() {
   document.getElementById('worker-drawer').classList.add('hidden')
   document.body.style.overflow = ''
+}
+
+// ── Worker Status Tab ─────────────────────────────────────────────────────────
+
+// Status display config (colour + icon + label)
+const WS_CONFIG = {
+  active:      { label: 'Active',       icon: 'fa-check-circle',     bg: 'bg-green-100',  text: 'text-green-700',  border: 'border-green-400',  card: 'bg-green-50'  },
+  on_holiday:  { label: 'On Holiday',   icon: 'fa-umbrella-beach',   bg: 'bg-blue-100',   text: 'text-blue-700',   border: 'border-blue-400',   card: 'bg-blue-50'   },
+  sick_leave:  { label: 'Sick Leave',   icon: 'fa-thermometer-half', bg: 'bg-yellow-100', text: 'text-yellow-700', border: 'border-yellow-400', card: 'bg-yellow-50' },
+  suspended:   { label: 'Suspended',    icon: 'fa-pause-circle',     bg: 'bg-orange-100', text: 'text-orange-700', border: 'border-orange-400', card: 'bg-orange-50' },
+  terminated:  { label: 'Terminated',   icon: 'fa-user-slash',       bg: 'bg-red-100',    text: 'text-red-700',    border: 'border-red-400',    card: 'bg-red-50'    },
+}
+
+let _pendingWorkerStatus = null  // tracks which radio-style button is selected
+
+function wsConf(status) {
+  return WS_CONFIG[status] || WS_CONFIG['active']
+}
+
+function selectWorkerStatus(status) {
+  _pendingWorkerStatus = status
+  // Highlight selected button, reset others
+  Object.keys(WS_CONFIG).forEach(s => {
+    const btn = document.getElementById('wds-' + s)
+    if (!btn) return
+    const conf = wsConf(s)
+    if (s === status) {
+      btn.className = `flex items-center gap-3 p-3 rounded-xl border-2 ${conf.border} ${conf.card} transition-all text-left ring-2 ring-offset-1 ring-indigo-400`
+    } else {
+      btn.className = 'flex items-center gap-3 p-3 rounded-xl border-2 border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50 transition-all text-left'
+    }
+  })
+  // Show / hide return date field
+  const returnWrap = document.getElementById('wd-s-return-wrap')
+  if (returnWrap) returnWrap.classList.toggle('hidden', !['on_holiday','sick_leave'].includes(status))
+}
+
+async function loadWorkerStatusTab(workerId, currentStatus) {
+  const logEl    = document.getElementById('wd-s-log')
+  const badgeEl  = document.getElementById('wd-s-current-badge')
+  const sinceEl  = document.getElementById('wd-s-since')
+  if (!logEl) return
+
+  // Highlight current status in selector
+  selectWorkerStatus(currentStatus)
+
+  // Current status badge
+  const conf = wsConf(currentStatus)
+  if (badgeEl) badgeEl.className = `text-xs px-3 py-1 rounded-full font-bold ${conf.bg} ${conf.text}`
+  if (badgeEl) badgeEl.innerHTML = `<i class="fas ${conf.icon} mr-1"></i>${conf.label}`
+
+  logEl.innerHTML = '<p class="text-gray-400 text-sm text-center py-4"><i class="fas fa-spinner fa-spin mr-2"></i>Loading audit trail...</p>'
+
+  try {
+    const res  = await fetch('/api/workers/' + workerId + '/status')
+    const data = await res.json()
+
+    // Update current status from server
+    const serverStatus = data.current_status || currentStatus
+    const sConf = wsConf(serverStatus)
+    if (badgeEl) {
+      badgeEl.className = `text-xs px-3 py-1 rounded-full font-bold ${sConf.bg} ${sConf.text}`
+      badgeEl.innerHTML = `<i class="fas ${sConf.icon} mr-1"></i>${sConf.label}`
+    }
+    selectWorkerStatus(serverStatus)
+
+    const log = data.log || []
+    if (sinceEl) {
+      if (log.length > 0) {
+        const latest = log[0]
+        const dt = new Date(latest.changed_at).toLocaleString([],{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})
+        sinceEl.textContent = `Since ${dt} · set by ${latest.changed_by}`
+      } else {
+        sinceEl.textContent = 'No status changes recorded yet'
+      }
+    }
+
+    if (log.length === 0) {
+      logEl.innerHTML = '<div class="text-center py-8 text-gray-300"><i class="fas fa-history text-3xl mb-2 block"></i><p class="text-sm">No status changes yet</p></div>'
+      return
+    }
+
+    logEl.innerHTML = log.map(entry => {
+      const dt   = new Date(entry.changed_at).toLocaleString([],{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})
+      const oConf = wsConf(entry.old_status || 'active')
+      const nConf = wsConf(entry.new_status)
+      const returnStr = entry.return_date
+        ? `<p class="text-xs text-blue-600 mt-1"><i class="fas fa-calendar-check mr-1"></i>Expected return: ${new Date(entry.return_date + 'T00:00:00').toLocaleDateString([],{month:'short',day:'numeric',year:'numeric'})}</p>`
+        : ''
+      return `
+        <div class="bg-white border border-gray-100 rounded-xl p-3 shadow-sm">
+          <div class="flex items-center gap-2 mb-2 flex-wrap">
+            <span class="text-[10px] px-2 py-0.5 rounded-full font-medium ${oConf.bg} ${oConf.text}">
+              <i class="fas ${oConf.icon} mr-0.5"></i>${oConf.label}
+            </span>
+            <i class="fas fa-arrow-right text-gray-300 text-[10px]"></i>
+            <span class="text-[10px] px-2 py-0.5 rounded-full font-bold ${nConf.bg} ${nConf.text}">
+              <i class="fas ${nConf.icon} mr-0.5"></i>${nConf.label}
+            </span>
+            <span class="ml-auto text-[10px] text-gray-400">${dt}</span>
+          </div>
+          <p class="text-xs text-gray-700 font-medium"><i class="fas fa-comment-alt mr-1 text-gray-300"></i>${entry.reason || '—'}</p>
+          ${returnStr}
+          <p class="text-[10px] text-gray-400 mt-1"><i class="fas fa-user mr-1"></i>By: ${entry.changed_by}</p>
+        </div>`
+    }).join('')
+  } catch(e) {
+    logEl.innerHTML = '<p class="text-red-400 text-sm text-center py-4">Error loading audit trail</p>'
+    console.error(e)
+  }
+}
+
+async function confirmWorkerStatusChange() {
+  if (!_currentDrawerWorker) return
+  const btn      = document.getElementById('wd-s-submit-btn')
+  const reasonEl = document.getElementById('wd-s-reason')
+  const errEl    = document.getElementById('wd-s-reason-error')
+  const reason   = reasonEl ? reasonEl.value.trim() : ''
+  const status   = _pendingWorkerStatus
+
+  if (!status) { showAdminToast('Please select a status first', 'error'); return }
+
+  if (!reason) {
+    if (reasonEl) reasonEl.classList.add('border-red-400')
+    if (errEl)    errEl.classList.remove('hidden')
+    if (reasonEl) reasonEl.focus()
+    return
+  }
+  if (errEl) errEl.classList.add('hidden')
+  if (reasonEl) reasonEl.classList.remove('border-red-400')
+
+  const returnDate = (document.getElementById('wd-s-return-date') || {}).value || ''
+
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1.5"></i>Saving...'
+
+  try {
+    const res = await fetch('/api/workers/' + _currentDrawerWorker.id + '/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, reason, return_date: returnDate, changed_by: 'admin' })
+    })
+    const data = await res.json()
+    if (data.success) {
+      const conf = wsConf(status)
+      showAdminToast(`✅ ${_currentDrawerWorker.name} status → ${conf.label}`, 'success')
+      // Clear form
+      if (reasonEl) reasonEl.value = ''
+      const rdEl = document.getElementById('wd-s-return-date')
+      if (rdEl) rdEl.value = ''
+      // Update in-memory worker object
+      _currentDrawerWorker.worker_status = status
+      _currentDrawerWorker.active = ['active','on_holiday','sick_leave'].includes(status) ? 1 : 0
+      // Reload status tab + refresh worker list
+      await loadWorkerStatusTab(_currentDrawerWorker.id, status)
+      await loadWorkers()
+      // Update the status badge in the drawer header
+      const sbEl = document.getElementById('wd-status-badge')
+      if (sbEl) sbEl.innerHTML = `<span class="text-xs px-2 py-0.5 rounded-full font-medium ${conf.bg} ${conf.text}"><i class="fas ${conf.icon} mr-1"></i>${conf.label}</span>`
+    } else {
+      showAdminToast(data.error || 'Failed to update status', 'error')
+    }
+  } catch(e) {
+    showAdminToast('Connection error', 'error')
+    console.error(e)
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-save mr-1.5"></i>Save Status Change'
+  }
 }
 
 // ── Edit Worker Modal ─────────────────────────────────────────────────────────
@@ -396,7 +617,9 @@ function openSessionModal(s) {
   if (s.session_type === 'emergency_job')   flags.push('<span class="bg-rose-100 text-rose-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-bolt mr-1"></i>Emergency Job</span>')
   if (s.drift_flag)    flags.push(`<span class="bg-orange-100 text-orange-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-exclamation-triangle mr-1"></i>Left Job Site${s.drift_distance_meters ? ' (' + (s.drift_distance_meters >= 1000 ? (s.drift_distance_meters/1000).toFixed(1)+'km' : Math.round(s.drift_distance_meters)+'m') + ')' : ''}</span>`)
   if (s.away_flag)     flags.push('<span class="bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-wifi mr-1"></i>Away / No GPS</span>')
-  if (s.auto_clockout) flags.push(`<span class="bg-red-100 text-red-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-clock mr-1"></i>Auto Clocked Out${s.auto_clockout_reason ? ': ' + s.auto_clockout_reason : ''}</span>`)
+  if (s.auto_clockout) {
+    flags.push(`<span class="bg-red-100 text-red-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-stop-circle mr-1"></i>${autoClockoutLabel(s)}</span>`)
+  }
 
   document.getElementById('sm-body').innerHTML = `
     <!-- Time block -->
@@ -455,8 +678,8 @@ function openSessionModal(s) {
       <div class="flex flex-wrap gap-2">${flags.join('')}</div>
     </div>` : ''}
 
-    <!-- Notes -->
-    ${s.notes ? `
+    <!-- Notes (worker-entered notes only) -->
+    ${!isSystemNote(s.notes) ? `
     <div class="bg-yellow-50 rounded-2xl p-4">
       <p class="text-xs text-yellow-500 font-medium mb-1"><i class="fas fa-sticky-note mr-1"></i>Notes</p>
       <p class="text-sm text-gray-700">${s.notes}</p>
@@ -534,12 +757,37 @@ function closeAdminClockoutModal() {
   document.getElementById('admin-clockout-modal').classList.add('hidden')
   document.body.style.overflow = ''
   pendingClockoutSessionId = null
+  // Reset validation state
+  const noteEl = document.getElementById('aco-note')
+  const errEl  = document.getElementById('aco-note-error')
+  if (noteEl) { noteEl.value = ''; noteEl.classList.remove('border-red-400') }
+  if (errEl)  errEl.classList.add('hidden')
+}
+
+// Quick-reason chip helper — fills textarea AND clears error state
+function pickAcoReason(text) {
+  const noteEl = document.getElementById('aco-note')
+  const errEl  = document.getElementById('aco-note-error')
+  if (noteEl) { noteEl.value = text; noteEl.classList.remove('border-red-400') }
+  if (errEl)  errEl.classList.add('hidden')
 }
 
 async function confirmAdminClockout() {
   if (!pendingClockoutSessionId) return
-  const btn = document.getElementById('aco-confirm-btn')
-  const note = document.getElementById('aco-note').value.trim() || 'Admin clock-out'
+  const btn    = document.getElementById('aco-confirm-btn')
+  const noteEl = document.getElementById('aco-note')
+  const errEl  = document.getElementById('aco-note-error')
+  const note   = noteEl ? noteEl.value.trim() : ''
+
+  // Validate — reason is required
+  if (!note) {
+    if (noteEl) noteEl.classList.add('border-red-400')
+    if (errEl)  errEl.classList.remove('hidden')
+    if (noteEl) noteEl.focus()
+    return
+  }
+  if (errEl) errEl.classList.add('hidden')
+
   btn.disabled = true
   btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1.5"></i>Stopping...'
 
@@ -553,9 +801,12 @@ async function confirmAdminClockout() {
 
     if (data.success) {
       closeAdminClockoutModal()
-      showAdminToast(`✅ ${data.message} · ${data.total_hours}h · $${data.earnings.toFixed(2)}`, 'success')
-      // Refresh live, sessions, and stats
-      await Promise.all([loadLive(), loadSessions(), loadStats()])
+      showAdminToast(`✅ ${data.message} · ${data.total_hours}h · $${(data.earnings||0).toFixed(2)}`, 'success')
+      // Small delay so D1 write propagates before we re-read
+      await new Promise(r => setTimeout(r, 400))
+      // Sequential refresh: live first (removes the card), then sessions + stats
+      await loadLive()
+      await Promise.all([loadSessions(), loadStats()])
     } else {
       showAdminToast(data.error || 'Clock-out failed', 'error')
       btn.disabled = false
@@ -725,11 +976,13 @@ async function loadLive() {
       if (bulkBtn) bulkBtn.classList.add('hidden')
       return
     }
+    // Deduplicate live sessions by ID
+    const liveSessions = (data.sessions || []).filter((s, i, arr) => arr.findIndex(x => x.id === s.id) === i)
     // Populate sessionStore for modal lookups
-    data.sessions.forEach(s => { if (s.id) sessionStore[s.id] = s })
+    liveSessions.forEach(s => { if (s.id) sessionStore[s.id] = s })
 
     // Show/hide bulk drift clock-out button
-    const driftedCount = data.sessions.filter(s => s.drift_flag && !s.auto_clockout).length
+    const driftedCount = liveSessions.filter(s => s.drift_flag && !s.auto_clockout).length
     if (bulkBtn) {
       if (driftedCount > 0) {
         bulkBtn.classList.remove('hidden')
@@ -740,7 +993,7 @@ async function loadLive() {
       }
     }
 
-    el.innerHTML = data.sessions.map(s => {
+    el.innerHTML = liveSessions.map(s => {
       const start = new Date(s.clock_in_time)
       const now = new Date()
       const hoursWorked = ((now - start) / 3600000).toFixed(1)
@@ -769,8 +1022,10 @@ async function loadLive() {
         ? `<p class="text-xs text-orange-600 mt-1"><i class="fas fa-route mr-1"></i>${s.drift_distance_meters >= 1000 ? (s.drift_distance_meters/1000).toFixed(1)+'km' : Math.round(s.drift_distance_meters)+'m'} from job site</p>`
         : ''
 
-      const autoReason = s.auto_clockout && s.auto_clockout_reason
-        ? `<p class="text-xs text-red-600 mt-1 italic"><i class="fas fa-info-circle mr-1"></i>${s.auto_clockout_reason}</p>`
+      // autoReason: only show if there's a meaningful reason beyond the badge
+      const _cleanR = s.auto_clockout ? cleanReason(s.auto_clockout_reason) : ''
+      const autoReason = (_cleanR && !s.drift_flag)
+        ? `<p class="text-xs text-red-600 mt-1 italic"><i class="fas fa-info-circle mr-1"></i>${_cleanR}</p>`
         : ''
 
       // Admin clock-out button — only for active sessions
@@ -813,63 +1068,101 @@ async function loadLive() {
   } catch(e) { console.error(e) }
 }
 
+// ── Worker filter state ──────────────────────────────────────────────────────
+let _workerFilter = 'all'
+let _allWorkersData = []
+
+function setWorkerFilter(f) {
+  _workerFilter = f
+  // Update pill styles
+  const filters = ['all','active','on_holiday','sick_leave','suspended','terminated']
+  const confMap = { all: { border:'border-indigo-500', bg:'bg-indigo-50', text:'text-indigo-700' }, active: { border:'border-green-500', bg:'bg-green-50', text:'text-green-700' }, on_holiday: { border:'border-blue-500', bg:'bg-blue-50', text:'text-blue-700' }, sick_leave: { border:'border-yellow-500', bg:'bg-yellow-50', text:'text-yellow-700' }, suspended: { border:'border-orange-500', bg:'bg-orange-50', text:'text-orange-700' }, terminated: { border:'border-red-500', bg:'bg-red-50', text:'text-red-700' } }
+  filters.forEach(v => {
+    const btn = document.getElementById('wf-' + v)
+    if (!btn) return
+    if (v === f) {
+      const c = confMap[v] || confMap.all
+      btn.className = `text-xs px-3 py-1.5 rounded-full border-2 ${c.border} ${c.bg} ${c.text} font-semibold transition-all`
+    } else {
+      btn.className = 'text-xs px-3 py-1.5 rounded-full border-2 border-transparent bg-gray-100 text-gray-600 font-medium hover:border-gray-300 hover:bg-gray-200 transition-all'
+    }
+  })
+  renderWorkersTable()
+}
+
+function renderWorkersTable() {
+  const tbody = document.getElementById('workers-tbody')
+  const countEl = document.getElementById('workers-count')
+  if (!tbody) return
+
+  const filtered = _workerFilter === 'all'
+    ? _allWorkersData
+    : _allWorkersData.filter(w => {
+        const ws = w.worker_status || (w.active ? 'active' : 'terminated')
+        return ws === _workerFilter
+      })
+
+  if (countEl) countEl.textContent = filtered.length + ' worker' + (filtered.length !== 1 ? 's' : '')
+
+  if (filtered.length === 0) {
+    const msg = _workerFilter === 'all' ? 'No workers registered' : 'No workers with this status'
+    tbody.innerHTML = `<tr><td colspan="8" class="text-center py-10 text-gray-400"><i class="fas fa-users-slash text-3xl block mb-2 opacity-30"></i>${msg}</td></tr>`
+    return
+  }
+
+  tbody.innerHTML = filtered.map(w => {
+    const ws2  = w.worker_status || (w.active ? 'active' : 'terminated')
+    const wsC2 = WS_CONFIG[ws2] || WS_CONFIG['active']
+    const status = w.currently_clocked_in > 0
+      ? '<span class="bg-green-100 text-green-700 text-xs px-2 py-1 rounded-full pulse font-medium flex items-center gap-1 justify-center"><span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span>Working</span>'
+      : `<span class="${wsC2.bg} ${wsC2.text} text-xs px-2 py-1 rounded-full font-medium"><i class="fas ${wsC2.icon} mr-1"></i>${wsC2.label}</span>`
+
+    // Invite link — always active (permanent /join/:id URL)
+    const canInvite = ['active','on_holiday','sick_leave'].includes(ws2)
+    const linkBadge = canInvite
+      ? `<span class="bg-green-50 text-green-600 border border-green-200 text-[10px] px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap"><i class="fas fa-circle" style="font-size:5px"></i> Active</span>`
+      : `<span class="bg-gray-100 text-gray-400 border border-gray-200 text-[10px] px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap">Inactive</span>`
+    const inviteBtn = canInvite
+      ? `<button data-id="${w.id}" data-name="${w.name.replace(/"/g,'&quot;')}" onclick="generateInviteLink(+this.dataset.id, this.dataset.name)" class="text-emerald-600 hover:text-emerald-800 text-xs mr-2" title="Send app link"><i class="fas fa-link"></i></button>`
+      : `<span class="text-gray-200 text-xs mr-2 cursor-not-allowed" title="Worker is ${wsC2.label}"><i class="fas fa-link"></i></span>`
+
+    return `<tr class="border-b border-gray-50 hover:bg-indigo-50 cursor-pointer transition-colors" onclick="openWorkerDrawer(${w.id})">
+      <td class="py-3 font-medium text-gray-800 pl-1">
+        <span class="flex items-center gap-2">
+          <span class="w-7 h-7 rounded-full ${wsC2.bg} flex items-center justify-center ${wsC2.text} text-xs font-bold flex-shrink-0">${w.name.charAt(0).toUpperCase()}</span>
+          <span class="${ws2 === 'terminated' ? 'line-through text-gray-400' : ''}">${w.name}</span>
+        </span>
+      </td>
+      <td class="py-3 text-gray-500 text-xs">${w.phone}</td>
+      <td class="py-3 text-right font-medium text-green-600">$${(w.hourly_rate||0).toFixed(2)}</td>
+      <td class="py-3 text-right text-gray-700">${(w.total_hours_all_time||0).toFixed(1)}h</td>
+      <td class="py-3 text-right font-bold text-gray-800">$${(w.total_earnings_all_time||0).toFixed(2)}</td>
+      <td class="py-3 text-center">${status}</td>
+      <td class="py-3 text-center">${linkBadge}</td>
+      <td class="py-3 text-right" onclick="event.stopPropagation()">
+        ${inviteBtn}
+        <button data-id="${w.id}" data-name="${w.name.replace(/"/g,'&quot;')}" data-rate="${w.hourly_rate}" onclick="editWorkerRate(+this.dataset.id, this.dataset.name, +this.dataset.rate)" class="text-indigo-600 hover:text-indigo-800 text-xs mr-2" title="Edit worker"><i class="fas fa-edit"></i></button>
+        <button data-id="${w.id}" data-name="${w.name.replace(/"/g,'&quot;')}" onclick="openDeleteWorkerModal(+this.dataset.id, this.dataset.name)" class="text-red-400 hover:text-red-600 text-xs" title="Remove worker"><i class="fas fa-trash"></i></button>
+      </td>
+    </tr>`
+  }).join('')
+}
+
 async function loadWorkers() {
   try {
     const res = await fetch('/api/workers')
     const data = await res.json()
-    const tbody = document.getElementById('workers-tbody')
+    _allWorkersData = data.workers || []
 
-    // Populate the worker filter dropdown
+    // Populate the worker filter dropdown in Sessions tab
     const workerSelect = document.getElementById('filter-worker')
-    if (workerSelect && data.workers) {
+    if (workerSelect) {
       const currentVal = workerSelect.value
       workerSelect.innerHTML = '<option value="">All Workers</option>' +
-        data.workers.map(w => `<option value="${w.id}" ${currentVal == w.id ? 'selected' : ''}>${w.name}</option>`).join('')
+        _allWorkersData.map(w => `<option value="${w.id}" ${currentVal == w.id ? 'selected' : ''}>${w.name}</option>`).join('')
     }
 
-    if (!data.workers || data.workers.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-gray-400">No workers registered</td></tr>'
-      return
-    }
-    
-    tbody.innerHTML = data.workers.map(w => {
-      const status = w.currently_clocked_in > 0
-        ? '<span class="bg-green-100 text-green-700 text-xs px-2 py-1 rounded-full pulse">Working</span>'
-        : w.active
-          ? '<span class="bg-gray-100 text-gray-600 text-xs px-2 py-1 rounded-full">Inactive</span>'
-          : '<span class="bg-red-100 text-red-600 text-xs px-2 py-1 rounded-full">Disabled</span>'
-      
-      return `<tr class="border-b border-gray-50 hover:bg-indigo-50 cursor-pointer transition-colors" onclick="openWorkerDrawer(${w.id})">
-        <td class="py-3 font-medium text-gray-800 pl-1">
-          <span class="flex items-center gap-2">
-            <span class="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 text-xs font-bold flex-shrink-0">${w.name.charAt(0).toUpperCase()}</span>
-            ${w.name}
-          </span>
-        </td>
-        <td class="py-3 text-gray-500">${w.phone}</td>
-        <td class="py-3 text-right font-medium text-green-600">$${(w.hourly_rate||0).toFixed(2)}</td>
-        <td class="py-3 text-right text-gray-700">${(w.total_hours_all_time||0).toFixed(1)}h</td>
-        <td class="py-3 text-right font-bold text-gray-800">$${(w.total_earnings_all_time||0).toFixed(2)}</td>
-        <td class="py-3 text-center">${status}</td>
-        <td class="py-3 text-right" onclick="event.stopPropagation()">
-          <button data-id="${w.id}" data-name="${w.name.replace(/"/g,'&quot;')}"
-            onclick="generateInviteLink(+this.dataset.id, this.dataset.name)"
-            class="text-emerald-600 hover:text-emerald-800 text-xs mr-2" title="Generate invite link">
-            <i class="fas fa-link"></i>
-          </button>
-          <button data-id="${w.id}" data-name="${w.name.replace(/"/g,'&quot;')}" data-rate="${w.hourly_rate}"
-            onclick="editWorkerRate(+this.dataset.id, this.dataset.name, +this.dataset.rate)"
-            class="text-indigo-600 hover:text-indigo-800 text-xs mr-2" title="Edit rate">
-            <i class="fas fa-edit"></i>
-          </button>
-          <button data-id="${w.id}" data-name="${w.name.replace(/"/g,'&quot;')}"
-            onclick="deleteWorker(+this.dataset.id, this.dataset.name)"
-            class="text-red-500 hover:text-red-700 text-xs" title="Remove worker">
-            <i class="fas fa-trash"></i>
-          </button>
-        </td>
-      </tr>`
-    }).join('')
+    renderWorkersTable()
   } catch(e) { console.error(e) }
 }
 
@@ -884,6 +1177,12 @@ async function loadSessions() {
     const res = await fetch(url)
     const data = await res.json()
     allSessionsData = data.sessions || []
+    // Deduplicate by session ID (guard against any edge-case double-fetch)
+    const seen = new Set()
+    allSessionsData = allSessionsData.filter(s => {
+      if (seen.has(s.id)) return false
+      seen.add(s.id); return true
+    })
     // Populate sessionStore for modal lookups
     allSessionsData.forEach(s => { if (s.id) sessionStore[s.id] = s })
     const container = document.getElementById('sessions-by-day')
@@ -927,17 +1226,18 @@ async function loadSessions() {
           ? `<a href="https://maps.google.com/?q=${sess.clock_in_lat},${sess.clock_in_lng}" target="_blank" class="text-blue-500 hover:text-blue-700 text-xs ml-2"><i class="fas fa-map-marker-alt mr-0.5"></i>Map</a>`
           : ''
 
-        return `<div class="bg-gray-50 rounded-xl p-4 border border-gray-100 hover:border-indigo-300 hover:shadow-md transition-all cursor-pointer" onclick="openSessionById(${sess.id})">
+        return `<div class="bg-gray-50 rounded-xl p-4 border ${sess.auto_clockout ? 'border-red-100' : 'border-gray-100'} hover:border-indigo-300 hover:shadow-md transition-all cursor-pointer" onclick="openSessionById(${sess.id})">
           <div class="flex items-start justify-between gap-2">
             <div class="flex-1">
-              <!-- Worker name -->
+              <!-- Worker name + status -->
               <div class="flex items-center gap-2 mb-2">
                 <div class="w-7 h-7 bg-indigo-100 rounded-full flex items-center justify-center flex-shrink-0">
-                  <i class="fas fa-user text-indigo-500 text-xs"></i>
+                  <span class="text-indigo-600 text-xs font-bold">${(sess.worker_name||'?').charAt(0).toUpperCase()}</span>
                 </div>
                 <span class="font-bold text-gray-800 text-sm">${sess.worker_name || '–'}</span>
                 <span class="text-gray-400 text-xs">${sess.worker_phone || ''}</span>
-                ${isActive ? `<span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium pulse ml-auto">● LIVE</span>` : ''}
+                ${isActive ? `<span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium pulse ml-auto">● LIVE</span>`
+                  : sess.auto_clockout ? `<span class="bg-red-100 text-red-600 text-xs px-2 py-0.5 rounded-full font-medium ml-auto"><i class="fas fa-stop-circle mr-0.5"></i>Admin Out</span>` : ''}
               </div>
               <!-- Job location -->
               ${sess.job_location ? `
@@ -946,13 +1246,11 @@ async function loadSessions() {
                   <p class="text-sm font-semibold text-gray-700">${sess.job_location}</p>
                 </div>
               ` : ''}
-              <!-- Job description -->
-              ${sess.job_description ? `
-                <div class="flex items-start gap-1.5 mb-2 ml-9">
-                  <i class="fas fa-tools text-blue-400 mt-0.5 text-xs flex-shrink-0"></i>
-                  <p class="text-xs text-gray-500">${sess.job_description}</p>
-                </div>
-              ` : ''}
+              <!-- Admin clock-out reason (single line, never duplicated) -->
+              ${sess.auto_clockout && cleanReason(sess.auto_clockout_reason) ? `
+                <div class="ml-9 mb-1">
+                  <span class="text-xs text-red-500 italic"><i class="fas fa-info-circle mr-1"></i>${cleanReason(sess.auto_clockout_reason)}</span>
+                </div>` : ''}
               <!-- Time row -->
               <div class="flex items-center gap-3 ml-9 text-xs text-gray-500">
                 <span><i class="fas fa-sign-in-alt text-green-500 mr-1"></i>${clockIn}</span>
@@ -1157,54 +1455,93 @@ async function editWorkerRate(id, name, currentRate) {
   } catch(e) { showAdminToast('Error updating rate', 'error') }
 }
 
-async function deleteWorker(id, name) {
-  if (!confirm(`Remove ${name} from the system?`)) return
-  try {
-    await fetch('/api/workers/' + id, { method: 'DELETE' })
-    showAdminToast(name + ' removed', 'success')
-    await loadWorkers()
-  } catch(e) { showAdminToast('Error removing worker', 'error') }
+// ── Delete Worker Modal ───────────────────────────────────────────────────────
+let _pendingDeleteWorkerId   = null
+let _pendingDeleteWorkerName = ''
+
+function openDeleteWorkerModal(id, name) {
+  _pendingDeleteWorkerId   = id
+  _pendingDeleteWorkerName = name
+  const nameEl = document.getElementById('dw-worker-name')
+  if (nameEl) nameEl.textContent = name
+  document.getElementById('delete-worker-modal').classList.remove('hidden')
+  document.body.style.overflow = 'hidden'
 }
 
+function closeDeleteWorkerModal() {
+  document.getElementById('delete-worker-modal').classList.add('hidden')
+  document.body.style.overflow = ''
+  _pendingDeleteWorkerId   = null
+  _pendingDeleteWorkerName = ''
+}
+
+async function confirmDeleteWorker() {
+  if (!_pendingDeleteWorkerId) return
+  const btn = document.getElementById('dw-confirm-btn')
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1.5"></i>Deleting...'
+  try {
+    const res  = await fetch('/api/workers/' + _pendingDeleteWorkerId, { method: 'DELETE' })
+    const data = await res.json().catch(() => ({}))
+    if (res.ok) {
+      closeDeleteWorkerModal()
+      showAdminToast(_pendingDeleteWorkerName + ' removed permanently', 'success')
+      await loadWorkers()
+    } else {
+      showAdminToast(data.error || 'Could not delete — they may have active sessions', 'error')
+    }
+  } catch(e) {
+    showAdminToast('Connection error', 'error')
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-trash mr-1.5"></i>Delete Permanently'
+  }
+}
+
+// ── Invite Link Management ────────────────────────────────────────────────────
+// Opens invite modal with the permanent /join/:id link — no codes involved
 async function generateInviteLink(id, name) {
   try {
-    // 1. Generate / refresh the invite code
-    const res  = await fetch('/api/workers/' + id + '/invite', { method: 'POST' })
+    const res  = await fetch('/api/workers/' + id + '/invite')
     const data = await res.json()
-    if (!data.invite_code) { showAdminToast('Could not generate link', 'error'); return }
+    if (data.error) { showAdminToast('Error: ' + data.error, 'error'); return }
 
-    const appBase = (currentSettings && currentSettings.app_host)
-      ? currentSettings.app_host.replace(/\/$/, '')
-      : 'https://app.clockinproof.com'
-    const link       = appBase + '/invite/' + data.invite_code
+    const link        = data.join_link || ('https://app.clockinproof.com/join/' + id)
     const workerPhone = data.worker_phone || '?'
 
-    // 2. Show modal
     const existing = document.getElementById('invite-modal')
     if (existing) existing.remove()
+
     const modal = document.createElement('div')
     modal.id = 'invite-modal'
     modal.className = 'fixed inset-0 z-50 flex items-center justify-center p-4'
     modal.style.background = 'rgba(0,0,0,0.55)'
     modal.innerHTML = `
       <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 slide-up">
+
+        <!-- Header -->
         <div class="flex items-center gap-3 mb-4">
-          <div class="w-11 h-11 bg-indigo-100 rounded-xl flex items-center justify-center flex-shrink-0">
-            <i class="fas fa-link text-indigo-600 text-lg"></i>
+          <div class="w-11 h-11 bg-green-100 rounded-xl flex items-center justify-center flex-shrink-0">
+            <i class="fas fa-link text-green-600 text-lg"></i>
           </div>
-          <div>
-            <h3 class="font-bold text-gray-800 text-base">Invite Link — ${name}</h3>
-            <p class="text-xs text-gray-400">Send to their phone: ${workerPhone}</p>
+          <div class="flex-1 min-w-0">
+            <h3 class="font-bold text-gray-800 text-base">${name} — App Link</h3>
+            <p class="text-xs text-gray-400">${workerPhone}</p>
           </div>
+          <span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span>Always Active
+          </span>
         </div>
 
-        <div class="bg-indigo-50 border border-indigo-200 rounded-xl p-3 mb-3">
-          <p class="text-xs font-semibold text-indigo-600 mb-1">Access Code</p>
-          <p class="font-mono text-2xl font-bold text-indigo-800 tracking-widest text-center py-1">${data.invite_code}</p>
+        <!-- Info notice -->
+        <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 flex items-start gap-2">
+          <i class="fas fa-info-circle text-blue-500 mt-0.5 flex-shrink-0"></i>
+          <p class="text-xs text-blue-700 leading-relaxed">This link works forever. Send it once — the worker taps it to open the app anytime.</p>
         </div>
 
+        <!-- Link display -->
         <div class="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-4">
-          <p class="text-xs font-semibold text-gray-500 mb-1">Invite Link</p>
+          <p class="text-xs font-semibold text-gray-500 mb-1">Worker App Link</p>
           <p class="text-xs text-gray-700 break-all font-mono">${link}</p>
         </div>
 
@@ -1212,20 +1549,17 @@ async function generateInviteLink(id, name) {
         <div id="invite-sms-status" class="hidden mb-3 p-3 rounded-xl text-sm font-medium"></div>
 
         <div class="space-y-2">
-          <!-- PRIMARY: Send via Twilio -->
           <button id="invite-twilio-btn"
             onclick="sendInviteViaTwilio(${id}, '${name}')"
-            class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2">
-            <i class="fas fa-sms"></i> Send SMS to ${workerPhone}
+            class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2 transition-colors">
+            <i class="fas fa-paper-plane"></i> Send SMS to ${workerPhone}
           </button>
-          <!-- FALLBACK: Copy link -->
           <button onclick="navigator.clipboard.writeText('${link}').then(()=>showAdminToast('Link copied!','success'))"
-            class="w-full bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold py-2.5 rounded-xl text-sm">
+            class="w-full bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold py-2.5 rounded-xl text-sm transition-colors">
             <i class="fas fa-copy mr-2"></i>Copy Link
           </button>
-          <!-- FALLBACK: Native SMS on mobile -->
-          <button onclick="(()=>{ const txt=encodeURIComponent('Hi ${name}! Tap this link to open your ClockInProof app: ${link}\\n\\nAccess code: ${data.invite_code}'); window.open('sms:${workerPhone}?body='+txt,'_blank') })()"
-            class="w-full text-gray-500 hover:text-gray-700 py-2 text-xs font-medium border border-gray-200 rounded-xl">
+          <button onclick="(()=>{ const txt=encodeURIComponent('Hi ${name}! Tap this link to open your ClockInProof app:\\n${link}'); window.open('sms:${workerPhone}?body='+txt,'_blank') })()"
+            class="w-full text-gray-500 hover:text-gray-700 py-2 text-xs font-medium border border-gray-200 rounded-xl transition-colors">
             <i class="fas fa-mobile-alt mr-1"></i>Open Native SMS App (mobile only)
           </button>
           <button onclick="document.getElementById('invite-modal').remove()"
@@ -1238,14 +1572,13 @@ async function generateInviteLink(id, name) {
     document.body.appendChild(modal)
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
 
-  } catch(e) { showAdminToast('Error generating invite link', 'error') }
+  } catch(e) { showAdminToast('Error loading invite link', 'error') }
 }
 
 async function sendInviteViaTwilio(workerId, workerName) {
   const btn    = document.getElementById('invite-twilio-btn')
   const status = document.getElementById('invite-sms-status')
 
-  // Show loading state
   btn.disabled = true
   btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Sending...'
 
@@ -1254,24 +1587,20 @@ async function sendInviteViaTwilio(workerId, workerName) {
     const data = await res.json()
 
     if (data.success) {
-      // Success!
       status.className = 'mb-3 p-3 rounded-xl text-sm font-medium bg-green-50 border border-green-200 text-green-700'
-      status.innerHTML = `<i class="fas fa-check-circle mr-2"></i>✅ SMS sent to ${data.sent_to}!`
+      status.innerHTML = `<i class="fas fa-check-circle mr-2"></i>SMS sent to ${data.sent_to}!`
       status.classList.remove('hidden')
       btn.innerHTML = '<i class="fas fa-check mr-2"></i>SMS Sent!'
       btn.className = 'w-full bg-gray-200 text-gray-500 font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2 cursor-default'
-      showAdminToast('✅ Invite SMS sent to ' + workerName, 'success')
+      showAdminToast('✅ App link sent to ' + workerName, 'success')
     } else {
-      // Error from Twilio
       let errMsg = data.error || 'SMS failed'
-
-      // Helpful error explanations
-      if (data.twilio_code === 21211) errMsg = 'Invalid phone number format — check the worker\'s phone number'
-      else if (data.twilio_code === 21265) errMsg = 'Phone needs country code — save worker phone as +1XXXXXXXXXX'
-      else if (data.twilio_code === 21608) errMsg = `Unverified number — Twilio trial only allows verified numbers. Add ${data.error?.match(/\+\d+/)?.[0] || 'this number'} at twilio.com/user/account/phone-numbers/verified, or upgrade your Twilio account ($20)`
-      else if (data.twilio_code === 21219) errMsg = 'Phone number not verified — upgrade Twilio or verify the number at twilio.com'
+      if (data.twilio_code === 21211) errMsg = 'Invalid phone number format'
+      else if (data.twilio_code === 21265) errMsg = 'Phone needs country code — save as +1XXXXXXXXXX'
+      else if (data.twilio_code === 21608) errMsg = 'Unverified number on Twilio trial — verify at twilio.com or upgrade account'
+      else if (data.twilio_code === 21219) errMsg = 'Phone not verified — upgrade Twilio or verify the number'
       else if (data.twilio_code === 20003) errMsg = 'Twilio auth failed — check Account SID & Auth Token in Settings'
-      else if (data.twilio_missing)        errMsg = 'Twilio not set up — go to Settings → Notifications and add credentials'
+      else if (data.twilio_missing)        errMsg = 'Twilio not set up — add credentials in Settings → Notifications'
 
       status.className = 'mb-3 p-3 rounded-xl text-sm font-medium bg-red-50 border border-red-200 text-red-700'
       status.innerHTML = `<i class="fas fa-exclamation-triangle mr-2"></i>${errMsg}`
@@ -1284,10 +1613,9 @@ async function sendInviteViaTwilio(workerId, workerName) {
     status.innerHTML = '<i class="fas fa-times-circle mr-2"></i>Network error — check your connection'
     status.classList.remove('hidden')
     btn.disabled = false
-    btn.innerHTML = '<i class="fas fa-sms mr-2"></i>Retry SMS'
+    btn.innerHTML = '<i class="fas fa-paper-plane mr-2"></i>Retry SMS'
   }
 }
-
 // ── Export CSV ────────────────────────────────────────────────────────────────
 function exportCSV() {
   if (!allSessionsData.length) { showAdminToast('No data to export', 'error'); return }
@@ -1314,10 +1642,15 @@ function exportCSV() {
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 function showTab(name) {
+  // Destroy admin map when leaving the map tab to prevent sticky Leaflet
+  if (name !== 'map' && adminMap) {
+    adminMap.remove()
+    adminMap = null
+  }
+
   document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'))
   document.querySelectorAll('.tab-btn').forEach(t => {
     t.classList.remove('tab-active')
-    // Update sidebar icon bg when active
     const icon = t.querySelector('span.w-8')
     if (icon) {
       icon.classList.remove('bg-indigo-600','text-white')
@@ -1327,7 +1660,7 @@ function showTab(name) {
   if (tabEl) tabEl.classList.remove('hidden')
   const btnEl = document.querySelector('[data-tab="' + name + '"]')
   if (btnEl) btnEl.classList.add('tab-active')
-  if (name === 'map') loadMap()
+  if (name === 'map') { loadMap(); setTimeout(() => { if (adminMap) adminMap.invalidateSize() }, 200) }
   if (name === 'calendar') loadCalendar()
   if (name === 'settings') loadSettings()
   if (name === 'export') initExportTab()
@@ -3057,7 +3390,6 @@ function selectSiteAddress(address) {
 let qbStatus = null  // cache: {connected, token_valid, company_name, ...}
 let qbEmployees = []  // QB employee list
 let qbWorkers = []   // Our workers with mapping status
-let qbPayPeriods = []
 
 // ── Update status badges in the Settings tab QB section ──────────────────
 async function updateQbSettingsStatus() {
@@ -3235,6 +3567,8 @@ async function loadQbMapping() {
 
     list.innerHTML = qbWorkers.map(w => {
       const isMapped = !!w.qb_employee_id
+      // Try to auto-suggest a QB employee with matching name
+      const suggested = qbEmployees.find(e => e.name.toLowerCase().includes(w.name.toLowerCase().split(' ')[0]) || w.name.toLowerCase().includes(e.name.toLowerCase().split(' ')[0]))
       return `
       <div class="flex items-center gap-3 p-3 rounded-xl border ${isMapped ? 'border-green-200 bg-green-50' : 'border-gray-100 bg-white'}" id="qb-worker-row-${w.id}">
         <div class="w-9 h-9 rounded-xl bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 font-bold text-sm">
@@ -3244,24 +3578,30 @@ async function loadQbMapping() {
           <p class="font-semibold text-gray-800 text-sm truncate">${w.name}</p>
           <p class="text-xs text-gray-400">${w.job_title || w.phone || ''}</p>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 flex-shrink-0">
           ${isMapped ? `
             <span class="text-xs text-green-700 font-medium bg-green-100 px-2 py-0.5 rounded-full">
-              <i class="fas fa-check mr-1"></i>${w.qb_employee_name}
+              <i class="fas fa-check mr-1"></i>Linked: ${w.qb_employee_name}
             </span>
             <button onclick="qbUnmapWorker(${w.id})" class="text-xs text-red-400 hover:text-red-600 px-2 py-1 rounded-lg hover:bg-red-50 transition-colors">
-              <i class="fas fa-times"></i>
+              <i class="fas fa-unlink"></i> Unlink
             </button>
           ` : `
-            <select id="qb-emp-select-${w.id}"
-              class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-green-400 max-w-[200px]">
-              <option value="">— Select QB employee —</option>
-              ${empOptions}
-            </select>
-            <button onclick="qbMapWorker(${w.id})" 
-              class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded-lg transition-colors">
-              Map
-            </button>
+            <div class="flex flex-col gap-1">
+              <label class="text-xs text-gray-400">Link to QuickBooks employee:</label>
+              <div class="flex items-center gap-2">
+                <select id="qb-emp-select-${w.id}"
+                  class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-green-400 max-w-[200px]">
+                  <option value="">— Select QB employee —</option>
+                  ${empOptions}
+                </select>
+                <button onclick="qbMapWorker(${w.id})" 
+                  class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded-lg transition-colors whitespace-nowrap">
+                  <i class="fas fa-link mr-1"></i>Link
+                </button>
+              </div>
+              ${suggested ? `<p class="text-xs text-indigo-500"><i class="fas fa-lightbulb mr-1"></i>Suggested: ${suggested.name}</p>` : ''}
+            </div>
           `}
         </div>
       </div>`
@@ -3307,6 +3647,39 @@ async function qbUnmapWorker(workerId) {
     showAdminToast('Mapping removed', 'info')
     loadQbMapping()
   } catch (e) { showAdminToast(e.message, 'error') }
+}
+
+// Auto-match workers to QB employees by name similarity
+async function qbAutoMap() {
+  if (!qbWorkers.length || !qbEmployees.length) {
+    showAdminToast('Load mapping first', 'error'); return
+  }
+  let matched = 0
+  for (const w of qbWorkers) {
+    if (w.qb_employee_id) continue // already mapped
+    const match = qbEmployees.find(e => 
+      e.name.toLowerCase() === w.name.toLowerCase() ||
+      e.name.toLowerCase().includes(w.name.toLowerCase().split(' ')[0]) ||
+      w.name.toLowerCase().includes(e.name.toLowerCase().split(' ')[0])
+    )
+    if (match) {
+      try {
+        const res = await fetch('/api/qb/map', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ worker_id: w.id, qb_employee_id: match.id, qb_employee_name: match.name })
+        })
+        const data = await res.json()
+        if (data.success) matched++
+      } catch (e) {}
+    }
+  }
+  if (matched > 0) {
+    showAdminToast(`✅ Auto-matched ${matched} worker(s)`, 'success')
+    loadQbMapping()
+  } else {
+    showAdminToast('No automatic matches found — please link manually', 'info')
+  }
 }
 
 // ── Set sync date range ───────────────────────────────────────────────────
@@ -3479,5 +3852,25 @@ async function loadQbSyncLog() {
 // ── Boot: check QB status on page load ───────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   setTimeout(updateQbSettingsStatus, 1500)
+
+  // Close modals with ESC key
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return
+    // Delete worker modal
+    const dwModal = document.getElementById('delete-worker-modal')
+    if (dwModal && !dwModal.classList.contains('hidden')) { closeDeleteWorkerModal(); return }
+    // Admin clock-out modal
+    const acoModal = document.getElementById('admin-clockout-modal')
+    if (acoModal && !acoModal.classList.contains('hidden')) { closeAdminClockoutModal(); return }
+    // Bulk clock-out modal
+    const bcoModal = document.getElementById('bulk-clockout-modal')
+    if (bcoModal && !bcoModal.classList.contains('hidden')) { closeBulkClockoutModal(); return }
+    // Session modal
+    const smModal = document.getElementById('session-modal')
+    if (smModal && !smModal.classList.contains('hidden')) { closeSessionModal(); return }
+    // Worker drawer
+    const drawer = document.getElementById('worker-drawer')
+    if (drawer && !drawer.classList.contains('hidden')) { closeWorkerDrawer(); return }
+  })
 })
 

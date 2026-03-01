@@ -1,8 +1,9 @@
 {
   "name": "ClockInProof",
   "short_name": "ClockInProof",
-  "description": "GPS-verified time tracking for field teams",
-  "start_url": "/",
+  "description": "Clock in and out with GPS verification",
+  "start_url": "/app",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#1e1b4b",
   "theme_color": "#4f46e5",
@@ -19,8 +20,15 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ],
   "categories": ["business", "productivity"],
-  "lang": "en"
+  "lang": "en",
+  "prefer_related_applications": false
 }

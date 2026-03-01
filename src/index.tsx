@@ -269,6 +269,19 @@ async function ensureSchema(db: D1Database) {
     `ALTER TABLE workers ADD COLUMN license_back_b64 TEXT`,
     `ALTER TABLE workers ADD COLUMN emergency_contact TEXT`,
     `ALTER TABLE workers ADD COLUMN worker_notes TEXT`,
+    // ── Feature: worker employment status ────────────────────────────────────
+    `ALTER TABLE workers ADD COLUMN worker_status TEXT DEFAULT 'active'`,
+    `CREATE TABLE IF NOT EXISTS worker_status_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      worker_id INTEGER NOT NULL,
+      changed_by TEXT DEFAULT 'admin',
+      old_status TEXT,
+      new_status TEXT NOT NULL,
+      reason TEXT,
+      return_date TEXT,
+      changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (worker_id) REFERENCES workers(id)
+    )`,
     // ── Feature: session edit audit log ───────────────────────────────────────
     `CREATE TABLE IF NOT EXISTS session_edits (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -476,48 +489,205 @@ app.put('/api/workers/:id', async (c) => {
 
 // Delete worker
 app.delete('/api/workers/:id', async (c) => {
-  const db = c.env.DB
-  const id = c.req.param('id')
+  const db  = c.env.DB
+  const id  = parseInt(c.req.param('id'))
+
+  // Check for active sessions — block delete if worker is currently clocked in
+  const activeSession = await db.prepare(
+    "SELECT id FROM sessions WHERE worker_id = ? AND status = 'active'"
+  ).bind(id).first<any>()
+  if (activeSession) {
+    return c.json({ error: 'Worker is currently clocked in. Clock them out first before deleting.' }, 409)
+  }
+
+  // Cascade delete all related data in order (FK safe)
+  await db.prepare('DELETE FROM worker_status_log WHERE worker_id = ?').bind(id).run()
+  await db.prepare('DELETE FROM qb_employee_map WHERE worker_id = ?').bind(id).run()
+  await db.prepare('DELETE FROM clock_in_requests WHERE worker_id = ?').bind(id).run()
+  await db.prepare('DELETE FROM location_pings WHERE worker_id = ?').bind(id).run()
+  await db.prepare('DELETE FROM session_edits WHERE session_id IN (SELECT id FROM sessions WHERE worker_id = ?)').bind(id).run()
+  await db.prepare('DELETE FROM session_disputes WHERE session_id IN (SELECT id FROM sessions WHERE worker_id = ?)').bind(id).run()
+  await db.prepare('DELETE FROM sessions WHERE worker_id = ?').bind(id).run()
   await db.prepare('DELETE FROM workers WHERE id = ?').bind(id).run()
+
   return c.json({ success: true })
+})
+
+// ─── WORKER STATUS & AUDIT TRAIL API ─────────────────────────────────────────
+
+// GET /api/workers/:id/status — get current status + full audit trail
+app.get('/api/workers/:id/status', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = parseInt(c.req.param('id'))
+
+  const worker = await db.prepare(
+    'SELECT id, name, active, worker_status FROM workers WHERE id = ?'
+  ).bind(id).first<any>()
+  if (!worker) return c.json({ error: 'Worker not found' }, 404)
+
+  // Derive current status: if active=0 and no worker_status, it's 'terminated'
+  const currentStatus = worker.worker_status || (worker.active ? 'active' : 'terminated')
+
+  const logRaw = await db.prepare(
+    'SELECT * FROM worker_status_log WHERE worker_id = ? ORDER BY changed_at DESC LIMIT 100'
+  ).bind(id).all<any>()
+
+  return c.json({ worker_id: id, current_status: currentStatus, log: logRaw.results || [] })
+})
+
+// POST /api/workers/:id/status — change worker employment status
+app.post('/api/workers/:id/status', async (c) => {
+  const db  = c.env.DB
+  const env = c.env as any
+  await ensureSchema(db)
+  const id   = parseInt(c.req.param('id'))
+  const body = await c.req.json().catch(() => ({})) as any
+
+  const newStatus  = (body.status || '').trim().toLowerCase()
+  const reason     = (body.reason || '').trim()
+  const returnDate = (body.return_date || '').trim()
+  const changedBy  = (body.changed_by || 'admin').trim()
+
+  const validStatuses = ['active', 'on_holiday', 'sick_leave', 'suspended', 'terminated']
+  if (!validStatuses.includes(newStatus)) {
+    return c.json({ error: 'Invalid status. Must be one of: ' + validStatuses.join(', ') }, 400)
+  }
+  if (!reason) return c.json({ error: 'A reason is required when changing worker status.' }, 400)
+
+  const worker = await db.prepare(
+    'SELECT id, name, active, worker_status FROM workers WHERE id = ?'
+  ).bind(id).first<any>()
+  if (!worker) return c.json({ error: 'Worker not found' }, 404)
+
+  const oldStatus = worker.worker_status || (worker.active ? 'active' : 'terminated')
+
+  // Update workers table — sync active flag
+  const isActive = newStatus === 'active' || newStatus === 'on_holiday' || newStatus === 'sick_leave' ? 1 : 0
+  await db.prepare(
+    'UPDATE workers SET worker_status = ?, active = ? WHERE id = ?'
+  ).bind(newStatus, isActive, id).run()
+
+  // Write audit log entry
+  await db.prepare(
+    `INSERT INTO worker_status_log (worker_id, changed_by, old_status, new_status, reason, return_date)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).bind(id, changedBy, oldStatus, newStatus, reason, returnDate || null).run()
+
+  // If suspended or terminated — force clock out any active session
+  if (newStatus === 'suspended' || newStatus === 'terminated') {
+    const activeSession = await db.prepare(
+      "SELECT s.*, w.hourly_rate, w.name as worker_name, w.phone as worker_phone FROM sessions s JOIN workers w ON s.worker_id=w.id WHERE s.worker_id=? AND s.status='active'"
+    ).bind(id).first<any>()
+
+    if (activeSession) {
+      const now        = new Date()
+      const clockInMs  = new Date(activeSession.clock_in_time).getTime()
+      const hoursWorked = (now.getTime() - clockInMs) / (1000 * 60 * 60)
+      const earnings    = hoursWorked * (activeSession.hourly_rate || 0)
+      const autoReason  = newStatus === 'terminated'
+        ? `Worker terminated — auto clocked out by admin`
+        : `Worker suspended: ${reason}`
+
+      await db.prepare(`
+        UPDATE sessions SET clock_out_time=?, total_hours=?, earnings=?,
+          status='completed', auto_clockout=1, auto_clockout_reason=?
+        WHERE id=?
+      `).bind(now.toISOString(), Math.round(hoursWorked*100)/100, Math.round(earnings*100)/100, autoReason, activeSession.id).run()
+
+      // Notify worker via SMS
+      const settingsRaw = await db.prepare('SELECT * FROM settings').all()
+      const settings: Record<string, string> = {}
+      ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+      const appName = settings.app_name || 'ClockInProof'
+
+      const smsMap: Record<string, string> = {
+        suspended: `⚠️ ${appName}: Your account has been suspended.\nReason: ${reason}\nContact your manager for details.`,
+        terminated: `🔴 ${appName}: Your employment has been recorded as terminated.\nReason: ${reason}\nContact your manager for details.`
+      }
+      if (activeSession.worker_phone && smsMap[newStatus]) {
+        await sendWorkerSms(env, activeSession.worker_phone, smsMap[newStatus])
+      }
+    }
+  }
+
+  const logRaw = await db.prepare(
+    'SELECT * FROM worker_status_log WHERE worker_id = ? ORDER BY changed_at DESC LIMIT 100'
+  ).bind(id).all<any>()
+
+  return c.json({ success: true, worker_id: id, old_status: oldStatus, new_status: newStatus, log: logRaw.results || [] })
 })
 
 // ─── SESSIONS API (Clock In / Out) ────────────────────────────────────────────
 
-// ─── INVITE CODE API ──────────────────────────────────────────────────────────
+// ─── WORKER JOIN LINK API (no codes needed) ───────────────────────────────────
 
-// POST /api/workers/:id/invite  — generate (or regenerate) an invite code
+// GET /api/workers/:id/invite  — return worker's join link info
+app.get('/api/workers/:id/invite', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = parseInt(c.req.param('id'))
+  const worker = await db.prepare('SELECT id, name, phone FROM workers WHERE id = ? AND active = 1').bind(id).first() as any
+  if (!worker) return c.json({ error: 'Worker not found' }, 404)
+  const appHost   = 'https://app.clockinproof.com'
+  const joinLink  = `${appHost}/join/${worker.id}`
+  return c.json({ worker_id: worker.id, worker_name: worker.name, worker_phone: worker.phone, join_link: joinLink, is_active: true })
+})
+
+// POST /api/workers/:id/invite  — kept for compatibility, just returns the join link
 app.post('/api/workers/:id/invite', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const id   = parseInt(c.req.param('id'))
-  const code = Math.random().toString(36).substring(2, 8).toUpperCase()   // e.g. "K7XM2P"
-  await db.prepare('UPDATE workers SET invite_code = ? WHERE id = ?').bind(code, id).run()
-  const worker = await db.prepare('SELECT id, name, phone, invite_code FROM workers WHERE id = ?').bind(id).first() as any
-  return c.json({ invite_code: code, worker_name: worker?.name, worker_phone: worker?.phone })
+  const id = parseInt(c.req.param('id'))
+  const worker = await db.prepare('SELECT id, name, phone FROM workers WHERE id = ? AND active = 1').bind(id).first() as any
+  if (!worker) return c.json({ error: 'Worker not found' }, 404)
+  const appHost  = 'https://app.clockinproof.com'
+  const joinLink = `${appHost}/join/${worker.id}`
+  return c.json({ invite_code: String(worker.id), worker_name: worker.name, worker_phone: worker.phone, invite_link: joinLink, join_link: joinLink })
 })
 
-// POST /api/workers/:id/invite/send-sms  — send invite link via Twilio to worker's phone
+// DELETE /api/workers/:id/invite  — no-op kept for compatibility
+app.delete('/api/workers/:id/invite', async (c) => {
+  return c.json({ success: true, message: 'Links cannot be revoked (use Terminate worker status instead)' })
+})
+
+// GET /api/workers/join/:id  — returns worker data by numeric ID (used by /join page)
+app.get('/api/workers/join/:id', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = parseInt(c.req.param('id'))
+  if (isNaN(id)) return c.json({ error: 'Invalid worker ID' }, 400)
+  const worker = await db.prepare(
+    'SELECT id, name, phone, hourly_rate, role, active, worker_status FROM workers WHERE id = ? AND active = 1'
+  ).bind(id).first() as any
+  if (!worker) return c.json({ error: 'Worker not found or no longer active' }, 404)
+  // Block suspended/terminated workers from logging in via link
+  const blocked = ['suspended', 'terminated']
+  if (blocked.includes(worker.worker_status || '')) {
+    return c.json({ error: 'Your access has been suspended. Contact your manager.' }, 403)
+  }
+  return c.json({ worker })
+})
+
+// POST /api/workers/:id/invite/send-sms  — send join link via Twilio
 app.post('/api/workers/:id/invite/send-sms', async (c) => {
   const db  = c.env.DB
   const env = c.env
   await ensureSchema(db)
   const id = parseInt(c.req.param('id'))
 
-  const worker = await db.prepare('SELECT id, name, phone, invite_code FROM workers WHERE id = ?').bind(id).first() as any
+  const worker = await db.prepare('SELECT id, name, phone FROM workers WHERE id = ?').bind(id).first() as any
   if (!worker) return c.json({ error: 'Worker not found' }, 404)
-  if (!worker.invite_code) return c.json({ error: 'No invite code — generate one first' }, 400)
 
   // Get Twilio credentials
-  const twilioSid     = (env.TWILIO_ACCOUNT_SID      || '').trim()
-  const twilioToken   = (env.TWILIO_AUTH_TOKEN        || '').trim()
-  const twilioMsgSvc  = (env.TWILIO_MESSAGING_SERVICE || '').trim()
-  const twilioFrom    = (env.TWILIO_FROM_NUMBER       || '').trim()
+  const twilioSid     = ((env as any).TWILIO_ACCOUNT_SID      || '').trim()
+  const twilioToken   = ((env as any).TWILIO_AUTH_TOKEN        || '').trim()
+  const twilioMsgSvc  = ((env as any).TWILIO_MESSAGING_SERVICE || '').trim()
+  const twilioFrom    = ((env as any).TWILIO_FROM_NUMBER       || '').trim()
 
-  // Also try DB settings as fallback
   const dbSettings = await db.prepare("SELECT key, value FROM settings WHERE key IN ('twilio_account_sid','twilio_auth_token','twilio_from_number','twilio_messaging_service','app_host')").all()
   const cfg: Record<string,string> = {}
-  dbSettings.results.forEach((r: any) => { cfg[r.key] = r.value })
+  ;(dbSettings.results as any[]).forEach((r: any) => { cfg[r.key] = r.value })
 
   const sid    = twilioSid    || cfg.twilio_account_sid       || ''
   const token  = twilioToken  || cfg.twilio_auth_token        || ''
@@ -528,79 +698,76 @@ app.post('/api/workers/:id/invite/send-sms', async (c) => {
     return c.json({ error: 'Twilio not configured — add credentials in Settings', twilio_missing: true }, 400)
   }
 
-  // Build invite link
-  const appHost = cfg.app_host ? cfg.app_host.replace(/\/$/, '') : 'https://app.clockinproof.com'
-  const inviteLink = `${appHost}/invite/${worker.invite_code}`
-  const appName = 'ClockInProof'
+  const appHost  = cfg.app_host ? cfg.app_host.replace(/\/$/, '') : 'https://app.clockinproof.com'
+  const joinLink = `${appHost}/join/${worker.id}`
 
   const smsBody =
     `Hi ${worker.name}! 👋\n` +
-    `Your ${appName} clock-in app is ready.\n` +
+    `Your ClockInProof clock-in app is ready.\n` +
     `Tap this link to get started:\n` +
-    `${inviteLink}\n\n` +
-    `Your access code: ${worker.invite_code}`
+    `${joinLink}\n\n` +
+    `Bookmark it or add to your Home Screen for quick access.`
 
-  // Normalize phone to E.164: 10-digit NA → +1XXXXXXXXXX, already has + → keep, else prepend +
-  const rawPhone = worker.phone.replace(/[\s\-\(\)\.]/g, '')
-  const workerPhone = rawPhone.startsWith('+')
-    ? rawPhone
-    : rawPhone.length === 10
-      ? `+1${rawPhone}`
-      : `+${rawPhone}`
-  const twilioUrl   = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`
-  const auth        = btoa(`${sid}:${token}`)
+  // Normalize phone to E.164
+  const rawPhone    = worker.phone.replace(/[\s\-\(\)\.]/g, '')
+  const workerPhone = rawPhone.startsWith('+') ? rawPhone
+    : rawPhone.length === 10 ? `+1${rawPhone}` : `+${rawPhone}`
+
+  const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`
+  const auth      = btoa(`${sid}:${token}`)
 
   try {
     const smsRes = await fetch(twilioUrl, {
       method: 'POST',
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
+      headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams(
-        msgSvc
-          ? { MessagingServiceSid: msgSvc, To: workerPhone, Body: smsBody }
-          : { From: from,               To: workerPhone, Body: smsBody }
+        msgSvc ? { MessagingServiceSid: msgSvc, To: workerPhone, Body: smsBody }
+               : { From: from,               To: workerPhone, Body: smsBody }
       ).toString()
     })
-
     const smsData = await smsRes.json() as any
-
     if (smsRes.ok && smsData.sid) {
-      return c.json({
-        success: true,
-        message_sid: smsData.sid,
-        sent_to: workerPhone,
-        invite_link: inviteLink
-      })
+      return c.json({ success: true, message_sid: smsData.sid, sent_to: workerPhone, invite_link: joinLink })
     } else {
-      return c.json({
-        error: smsData.message || 'Twilio returned an error',
-        twilio_code: smsData.code,
-        twilio_status: smsRes.status
-      }, 400)
+      return c.json({ error: smsData.message || 'Twilio returned an error', twilio_code: smsData.code, twilio_status: smsRes.status }, 400)
     }
   } catch(e: any) {
     return c.json({ error: `SMS send failed: ${e.message}` }, 500)
   }
 })
 
-// GET /api/workers/by-invite/:code  — resolve an invite code → worker data (no auth needed)
+// GET /api/workers/by-invite/:code  — legacy redirect (kept so old links don't 404)
 app.get('/api/workers/by-invite/:code', async (c) => {
-  const db   = c.env.DB
-  await ensureSchema(db)
-  const code = c.req.param('code').toUpperCase()
-  const worker = await db.prepare(
-    'SELECT id, name, phone, hourly_rate, role, active, invite_code FROM workers WHERE invite_code = ? AND active = 1'
-  ).bind(code).first() as any
-  if (!worker) return c.json({ error: 'Invalid or expired invite code' }, 404)
-  return c.json({ worker })
+  return c.json({ error: 'This is an old-format link. Please ask your manager to resend your invite.' }, 410)
 })
 
-// GET /invite/:code  — landing page that auto-logs the worker in
+// GET /invite/:code  — legacy redirect to /join flow
 app.get('/invite/:code', async (c) => {
+  // Old invite links: try to find worker by invite_code and redirect to /join/:id
+  const db   = c.env.DB
   const code = c.req.param('code').toUpperCase()
-  // Tiny redirect page: sets localStorage then sends to /
+  const worker = await db.prepare(
+    'SELECT id FROM workers WHERE invite_code = ? AND active = 1'
+  ).bind(code).first() as any
+  if (worker) {
+    return c.redirect(`/join/${worker.id}`, 301)
+  }
+  // Code not found — show helpful error page
+  return c.html(`<!DOCTYPE html><html><head><meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>ClockInProof</title>
+    <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#1e40af;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}.card{background:#fff;border-radius:24px;padding:40px 32px;text-align:center;max-width:360px;width:100%}.icon{font-size:48px;margin-bottom:16px}h1{font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:8px}p{color:#6b7280;font-size:15px;line-height:1.5}</style>
+    </head><body><div class="card"><div class="icon">🔗</div>
+    <h1>Link Expired</h1>
+    <p>This link is no longer valid.<br>Please ask your manager to send you a new link.</p>
+    </div></body></html>`)
+})
+
+// GET /join/:workerId  — NEW clean join page (no codes, no API call needed for display)
+app.get('/join/:workerId', async (c) => {
+  const workerIdRaw = c.req.param('workerId')
+  const workerId    = parseInt(workerIdRaw)
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -609,84 +776,139 @@ app.get('/invite/:code', async (c) => {
   <meta name="theme-color" content="#1e40af"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
-  <title>ClockInProof — Joining...</title>
-  <link rel="manifest" href="/static/manifest.json"/>
+  <meta name="apple-mobile-web-app-title" content="ClockInProof"/>
+  <title>ClockInProof — Opening App...</title>
+  <link rel="manifest" href="/static/manifest-worker.json"/>
   <link rel="apple-touch-icon" href="/static/icon-192.png"/>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:system-ui,sans-serif;background:#1e40af;min-height:100vh;
+    body{font-family:system-ui,-apple-system,sans-serif;background:#1e40af;min-height:100vh;
       display:flex;align-items:center;justify-content:center;padding:24px}
-    .card{background:#fff;border-radius:24px;padding:40px 32px;text-align:center;
-      max-width:360px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+    .card{background:#fff;border-radius:24px;padding:40px 28px;text-align:center;
+      max-width:360px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.25)}
     .icon{width:80px;height:80px;background:#1e40af;border-radius:50%;
       display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:36px}
     h1{font-size:22px;font-weight:700;color:#1e3a8a;margin-bottom:8px}
-    p{color:#6b7280;font-size:15px;line-height:1.5;margin-bottom:24px}
     .spinner{width:44px;height:44px;border:4px solid #e0e7ff;border-top-color:#1e40af;
-      border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px}
+      border-radius:50%;animation:spin 0.8s linear infinite;margin:16px auto}
     @keyframes spin{to{transform:rotate(360deg)}}
-    .name{font-size:20px;font-weight:700;color:#1e3a8a;margin:16px 0 4px}
-    .sub{color:#6b7280;font-size:14px;margin-bottom:28px}
-    .btn{display:block;width:100%;padding:14px;background:#1e40af;color:#fff;
-      font-size:16px;font-weight:600;border:none;border-radius:14px;
-      cursor:pointer;text-decoration:none;margin-top:8px}
-    .btn:hover{background:#1d4ed8}
-    .error{color:#dc2626;font-size:14px;margin-top:12px}
-    .code-badge{display:inline-block;background:#eff6ff;border:1.5px solid #bfdbfe;
-      color:#1e40af;font-family:monospace;font-size:18px;font-weight:700;
-      letter-spacing:3px;padding:8px 20px;border-radius:10px;margin:12px 0}
+    .name{font-size:22px;font-weight:700;color:#1e3a8a;margin:16px 0 6px}
+    .sub{color:#6b7280;font-size:15px;margin-bottom:24px}
+    .btn{display:block;width:100%;padding:16px;background:#1e40af;color:#fff;
+      font-size:17px;font-weight:700;border:none;border-radius:14px;
+      cursor:pointer;text-decoration:none;margin-top:10px;letter-spacing:.01em}
+    .btn:active{background:#1d4ed8}
+    .error-box{background:#fef2f2;border:1.5px solid #fca5a5;border-radius:14px;
+      padding:16px;color:#dc2626;font-size:14px;line-height:1.6;margin-top:16px}
+    .install-box{background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;
+      padding:14px;margin-top:14px;font-size:13px;color:#0369a1;line-height:1.7;text-align:left}
   </style>
 </head>
 <body>
 <div class="card" id="card">
   <div class="icon">⏱</div>
   <h1>ClockInProof</h1>
-  <p>Verifying your access code&hellip;</p>
+  <p style="color:#6b7280;font-size:15px;margin-bottom:8px">Opening your app&hellip;</p>
   <div class="spinner" id="spinner"></div>
   <div id="msg" style="display:none"></div>
 </div>
 <script>
 (async () => {
-  const code = '${code}'
-  const card = document.getElementById('card')
-  const spinner = document.getElementById('spinner')
-  const msg = document.getElementById('msg')
+  const workerId = ${isNaN(workerId) ? 'null' : workerId}
+  const spinner  = document.getElementById('spinner')
+  const msg      = document.getElementById('msg')
+
+  if (!workerId) {
+    spinner.style.display = 'none'
+    msg.style.display = 'block'
+    msg.innerHTML = '<div class="error-box"><strong>❌ Invalid link.</strong><br>Please ask your manager to send you a new link.</div>'
+    return
+  }
 
   try {
-    const res  = await fetch('/api/workers/by-invite/' + code)
+    const res  = await fetch('/api/workers/join/' + workerId)
     const data = await res.json()
+
     if (!res.ok || !data.worker) {
       spinner.style.display = 'none'
       msg.style.display = 'block'
-      msg.innerHTML = '<p class="error"><strong>❌ Invalid invite link.</strong><br>Please ask your manager for a new link.</p>'
+      const errText = data.error || 'Link not working. Please contact your manager.'
+      msg.innerHTML = '<div class="error-box"><strong>❌ ' + errText + '</strong></div>'
       return
     }
-    const w = data.worker
-    // Persist worker session exactly like normal login
-    localStorage.setItem('workerToken', JSON.stringify({ id: w.id, name: w.name, phone: w.phone, hourly_rate: w.hourly_rate || 0, role: w.role || 'worker' }))
-    localStorage.setItem('workerId',   w.id)
-    localStorage.setItem('workerName', w.name)
-    localStorage.setItem('workerPhone', w.phone)
 
-    // Show success + "Open App" button
+    const w = data.worker
+    // Save worker data using the EXACT same key the app reads (wt_worker)
+    const workerObj = { id: w.id, name: w.name, phone: w.phone, hourly_rate: w.hourly_rate || 0, role: w.role || 'worker' }
+    localStorage.setItem('wt_worker', JSON.stringify(workerObj))
+
+    // Show success
     spinner.style.display = 'none'
     msg.style.display = 'block'
     msg.innerHTML = \`
       <p class="name">👋 Hi, \${w.name}!</p>
-      <p class="sub">Your access code is verified.<br>Tap below to open the app.</p>
-      <a href="/" class="btn">📲 Open ClockInProof</a>
-      <p style="margin-top:16px;font-size:12px;color:#9ca3af">
-        Tip: tap <strong>Share → Add to Home Screen</strong><br>for quick access next time.
-      </p>
+      <p class="sub">You're all set. Tap below to open the app.</p>
+      <a href="/app" class="btn">📲 Open ClockInProof</a>
+      <div class="install-box" id="install-hint">
+        <strong>📌 Save to your Home Screen</strong><br>
+        Tap your browser's <strong>Share → Add to Home Screen</strong> button.<br>
+        After that, just tap the ClockInProof icon — no link needed!
+      </div>
     \`
-    // Auto-redirect in 1.8s
-    setTimeout(() => { window.location.href = '/' }, 1800)
+    // Auto-redirect in 1.5s
+    setTimeout(() => { window.location.href = '/app' }, 1500)
+    if (window.showPwaInstall) window.showPwaInstall()
+
   } catch(e) {
     spinner.style.display = 'none'
     msg.style.display = 'block'
-    msg.innerHTML = '<p class="error">Connection error. Please try again.</p>'
+    msg.innerHTML = \`
+      <div class="error-box">
+        <strong>⚠️ Could not connect.</strong><br>
+        Check your internet and <a href="javascript:location.reload()" style="color:#1e40af;font-weight:600;">tap here to try again</a>.
+      </div>
+    \`
   }
 })()
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/static/sw.js').catch(() => {});
+  });
+}
+let deferredInstallPrompt;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  window._pwaReady = true;
+});
+window.showPwaInstall = function() {
+  const hint = document.getElementById('install-hint');
+  if (!hint) return;
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+  if (isStandalone) { hint.style.display = 'none'; return; }
+  if (deferredInstallPrompt) {
+    hint.innerHTML = \`<strong>📲 Install App on Your Phone</strong><br>
+      <button id="pwa-do-install" style="margin-top:10px;background:#1d4ed8;color:white;border:none;padding:12px 24px;border-radius:10px;font-size:15px;font-weight:700;width:100%;cursor:pointer;">
+        ➕ Add ClockInProof to Home Screen</button>
+      <p style="margin-top:8px;font-size:11px;color:#64748b;">Tap once — no App Store needed</p>\`;
+    document.getElementById('pwa-do-install').onclick = async () => {
+      deferredInstallPrompt.prompt();
+      const { outcome } = await deferredInstallPrompt.userChoice;
+      deferredInstallPrompt = null;
+      if (outcome === 'accepted') hint.innerHTML = '<strong>✅ App installed!</strong>';
+    };
+  } else if (isIOS) {
+    hint.innerHTML = \`<strong>📲 Add to Home Screen (iPhone/iPad)</strong><br>
+      <ol style="text-align:left;margin:10px 0 0;padding-left:18px;line-height:2;">
+        <li>Tap the <strong>Share</strong> button ⬆️ in Safari</li>
+        <li>Tap <strong>"Add to Home Screen"</strong></li>
+        <li>Tap <strong>"Add"</strong> — done!</li>
+      </ol>\`;
+  }
+}
 </script>
 </body>
 </html>`
@@ -1196,6 +1418,52 @@ app.post('/api/override/:id/notify', async (c) => {
   })
 })
 
+// ── HELPER: Send SMS to a worker via Twilio ───────────────────────────────────
+async function sendWorkerSms(
+  env: any,
+  workerPhone: string,
+  message: string
+): Promise<{ sent: boolean; error?: string }> {
+  try {
+    const db = env.DB
+    const settingsRaw = await db.prepare('SELECT key, value FROM settings').all()
+    const s: Record<string, string> = {}
+    ;(settingsRaw.results as any[]).forEach((r: any) => { s[r.key] = r.value })
+
+    const sid     = (env.TWILIO_ACCOUNT_SID || s.twilio_account_sid || '').trim()
+    const token   = (env.TWILIO_AUTH_TOKEN  || s.twilio_auth_token  || '').trim()
+    const msgSvc  = (env.TWILIO_MESSAGING_SERVICE || s.twilio_messaging_service || '').trim()
+    const from    = (env.TWILIO_FROM_NUMBER || s.twilio_from_number || '').trim()
+
+    if (!sid || !token || (!msgSvc && !from)) {
+      return { sent: false, error: 'Twilio not configured' }
+    }
+
+    // Normalize phone number
+    const rawPhone = workerPhone.replace(/[\s\-\(\)\.]/g, '')
+    const toPhone  = rawPhone.startsWith('+') ? rawPhone : `+1${rawPhone}`
+
+    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`
+    const auth      = btoa(`${sid}:${token}`)
+    const body      = new URLSearchParams(
+      msgSvc
+        ? { MessagingServiceSid: msgSvc, To: toPhone, Body: message }
+        : { From: from,                  To: toPhone, Body: message }
+    )
+
+    const res  = await fetch(twilioUrl, {
+      method: 'POST',
+      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body
+    })
+    const data = await res.json() as any
+    if (res.ok && data.sid) return { sent: true }
+    return { sent: false, error: data.message || `Twilio error ${res.status}` }
+  } catch (e: any) {
+    return { sent: false, error: e?.message || 'Unknown error' }
+  }
+}
+
 // ── ADMIN FORCE CLOCK-OUT: stop any single active session ────────────────────
 app.post('/api/sessions/:id/admin-clockout', async (c) => {
   const db      = c.env.DB
@@ -1216,19 +1484,19 @@ app.post('/api/sessions/:id/admin-clockout', async (c) => {
   const clockInMs  = new Date(session.clock_in_time).getTime()
   const hoursWorked = (now.getTime() - clockInMs) / (1000 * 60 * 60)
   const earnings    = hoursWorked * (session.hourly_rate || 0)
-  const reason      = `Admin clock-out: ${adminNote}`
+  // Store clean note only — no prefix, no duplication into notes field
+  const reason = adminNote
 
   await db.prepare(`
     UPDATE sessions SET
       clock_out_time=?, total_hours=?, earnings=?,
-      status='completed', auto_clockout=1, auto_clockout_reason=?,
-      notes=CASE WHEN notes IS NULL OR notes='' THEN ? ELSE notes||' | '||? END
+      status='completed', auto_clockout=1, auto_clockout_reason=?
     WHERE id=?
   `).bind(
     now.toISOString(),
     Math.round(hoursWorked * 100) / 100,
     Math.round(earnings * 100) / 100,
-    reason, reason, reason, id
+    reason, id
   ).run()
 
   // Fetch settings for notifications
@@ -1236,13 +1504,30 @@ app.post('/api/sessions/:id/admin-clockout', async (c) => {
   const settings: Record<string, string> = {}
   ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
 
+  const appName   = settings.app_name || 'ClockInProof'
+  const appHost   = settings.app_host || 'https://app.clockinproof.com'
+  const hrsFormatted = `${Math.floor(hoursWorked)}h ${Math.round((hoursWorked % 1) * 60)}m`
+
+  // ── Notify worker via SMS ──────────────────────────────────────────────────
+  let workerSmsResult = { sent: false, error: 'No phone' }
+  if (session.worker_phone) {
+    const smsMsg =
+      `⏹ ${appName}: You have been clocked out by your manager.\n` +
+      `Reason: ${adminNote}\n` +
+      `Hours worked: ${hrsFormatted}\n` +
+      `If you have questions, contact your manager.`
+    workerSmsResult = await sendWorkerSms(env, session.worker_phone, smsMsg)
+  }
+
   return c.json({
     success: true,
     message: `${session.worker_name} clocked out by admin`,
     session_id: id,
     total_hours: Math.round(hoursWorked * 100) / 100,
     earnings: Math.round(earnings * 100) / 100,
-    reason
+    reason,
+    worker_notified: workerSmsResult.sent,
+    worker_sms_error: workerSmsResult.error
   })
 })
 
@@ -1272,20 +1557,32 @@ app.post('/api/sessions/clockout-drifted', async (c) => {
     const clockInMs  = new Date((s as any).clock_in_time).getTime()
     const hoursWorked = (now.getTime() - clockInMs) / (1000 * 60 * 60)
     const earnings    = hoursWorked * ((s as any).hourly_rate || 0)
-    const reason      = `${adminNote} (${((s as any).drift_distance_meters / 1000).toFixed(1)}km from site)`
+    const distKmStr = ((s as any).drift_distance_meters / 1000).toFixed(1)
+    const reason = `Left job site (${distKmStr}km from site)`
 
     await db.prepare(`
       UPDATE sessions SET
         clock_out_time=?, total_hours=?, earnings=?,
-        status='completed', auto_clockout=1, auto_clockout_reason=?,
-        notes=CASE WHEN notes IS NULL OR notes='' THEN ? ELSE notes||' | '||? END
+        status='completed', auto_clockout=1, auto_clockout_reason=?
       WHERE id=?
     `).bind(
       now.toISOString(),
       Math.round(hoursWorked * 100) / 100,
       Math.round(earnings * 100) / 100,
-      reason, reason, reason, (s as any).id
+      reason, (s as any).id
     ).run()
+
+    // Notify worker via SMS
+    if ((s as any).worker_phone) {
+      const hrsF = `${Math.floor(hoursWorked)}h ${Math.round((hoursWorked % 1) * 60)}m`
+      const distKm = ((s as any).drift_distance_meters / 1000).toFixed(1)
+      const smsMsg =
+        `⚠️ ClockInProof: You have been automatically clocked out.\n` +
+        `Reason: You were detected ${distKm}km outside the job site geofence.\n` +
+        `Hours recorded: ${hrsF}\n` +
+        `If this is an error, contact your manager.`
+      await sendWorkerSms(env, (s as any).worker_phone, smsMsg)
+    }
 
     stopped.push({
       session_id: (s as any).id,
@@ -1373,6 +1670,19 @@ app.get('/api/sessions', async (c) => {
 
   const sessions = await db.prepare(query).bind(...params).all()
   return c.json({ sessions: sessions.results })
+})
+
+// GET /api/sessions/last/:worker_id — fetch most recent completed session (for clockout reason)
+app.get('/api/sessions/last/:worker_id', async (c) => {
+  const db = c.env.DB
+  const worker_id = c.req.param('worker_id')
+  const session = await db.prepare(
+    `SELECT id, auto_clockout, auto_clockout_reason, clock_out_time, total_hours
+     FROM sessions WHERE worker_id = ? AND status = 'completed'
+     ORDER BY clock_out_time DESC LIMIT 1`
+  ).bind(parseInt(worker_id)).first<any>()
+  if (!session) return c.json({ error: 'No completed session found' }, 404)
+  return c.json(session)
 })
 
 // ─── LOCATION PINGS API ───────────────────────────────────────────────────────
@@ -1500,6 +1810,14 @@ app.get('/api/sessions/watchdog', async (c) => {
       item.reason = reason
       item.hours  = Math.round(hoursWorked*10)/10
 
+      // Notify worker via SMS
+      if (s.worker_phone) {
+        const hrsF = `${Math.floor(hoursWorked)}h ${Math.round((hoursWorked % 1) * 60)}m`
+        await sendWorkerSms(env, s.worker_phone,
+          `⏹ ClockInProof: You have been automatically clocked out.\nReason: You reached the ${maxShiftHours}h maximum shift limit.\nHours recorded: ${hrsF}\nIf this is an error, contact your manager.`
+        ).catch(() => {})
+      }
+
       // Notify admin
       const worker = await db.prepare('SELECT * FROM workers WHERE id=?').bind(s.worker_id).first<any>()
       sendOverrideNotification(settings, env, {
@@ -1540,6 +1858,14 @@ app.get('/api/sessions/watchdog', async (c) => {
         item.reason = reason
         item.hours  = Math.round(workHours*10)/10
 
+        // Notify worker via SMS
+        if (s.worker_phone) {
+          const hrsF = `${Math.floor(workHours)}h ${Math.round((workHours % 1) * 60)}m`
+          await sendWorkerSms(env, s.worker_phone,
+            `🌙 ClockInProof: You forgot to clock out.\nYou have been automatically clocked out at end of day (${workEnd}).\nHours recorded: ${hrsF}\nIf this is an error, contact your manager.`
+          ).catch(() => {})
+        }
+
         sendOverrideNotification(settings, env, {
           id: s.id,
           worker_name: s.worker_name,
@@ -1579,6 +1905,14 @@ app.get('/api/sessions/watchdog', async (c) => {
         item.action = 'auto_clocked_out_drift'
         item.reason = reason
         item.hours  = Math.round(hoursWorked*10)/10
+
+        // Notify worker via SMS
+        if (s.worker_phone) {
+          const hrsF = `${Math.floor(hoursWorked)}h ${Math.round((hoursWorked % 1) * 60)}m`
+          await sendWorkerSms(env, s.worker_phone,
+            `📍 ClockInProof: You have been automatically clocked out.\nReason: You were ${dist} outside the job site geofence for ${Math.round(driftMinutes)} minutes.\nHours recorded: ${hrsF}\nIf this is an error, contact your manager.`
+          ).catch(() => {})
+        }
 
         sendOverrideNotification(settings, env, {
           id: s.id,
@@ -3462,6 +3796,7 @@ app.delete('/api/qb/map/:worker_id', async (c) => {
 // ── POST /api/qb/sync — push TimeActivity records to QB ───────────────────
 // Body: { start: 'YYYY-MM-DD', end: 'YYYY-MM-DD', dry_run?: boolean }
 app.post('/api/qb/sync', async (c) => {
+  try {
   const db = c.env.DB
   await ensureSchema(db)
   const qb = await loadQbSettings(db)
@@ -3555,6 +3890,9 @@ app.post('/api/qb/sync', async (c) => {
 
   return c.json({ success: true, dry_run, period: `${start} → ${end}`,
     total_sessions: (sessions.results as any[]).length, pushed, errors, unmapped_workers: unmapped, results })
+  } catch (e: any) {
+    return c.json({ error: e.message || 'Sync failed', details: String(e) }, 500)
+  }
 })
 
 // ── GET /api/qb/sync-log ──────────────────────────────────────────────────
@@ -4156,8 +4494,8 @@ function getLandingHTML(): string {
       <a href="#faq" class="hover:text-white transition">FAQ</a>
     </div>
     <div class="flex items-center gap-3">
-      <a href="/app" class="text-sm text-gray-300 hover:text-white transition hidden md:block">Worker Login</a>
-      <a href="/admin" class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold px-4 py-2 rounded-lg transition">Admin Login</a>
+      <a href="https://app.clockinproof.com" class="text-sm text-gray-300 hover:text-white transition hidden md:block">Worker Login</a>
+      <a href="https://admin.clockinproof.com" class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold px-4 py-2 rounded-lg transition">Admin Login</a>
     </div>
   </div>
 </nav>
@@ -4507,9 +4845,16 @@ function getLandingHTML(): string {
           <li><a href="/terms" class="hover:text-white transition">Terms of Service</a></li>
         </ul>
       </div>
+      <div>
+        <h4 class="font-semibold mb-4 text-sm uppercase tracking-wider text-gray-400">Support</h4>
+        <ul class="space-y-2 text-sm text-gray-500">
+          <li><a href="mailto:support@clockinproof.com" class="hover:text-white transition"><i class="fas fa-envelope mr-1"></i>support@clockinproof.com</a></li>
+          <li><a href="mailto:admin@clockinproof.com" class="hover:text-white transition"><i class="fas fa-user-shield mr-1"></i>admin@clockinproof.com</a></li>
+        </ul>
+      </div>
     </div>
     <div class="border-t border-white/5 pt-8 flex flex-col md:flex-row justify-between items-center gap-4">
-      <p class="text-gray-600 text-sm">© 2025 ClockInProof. All rights reserved.</p>
+      <p class="text-gray-600 text-sm">© 2026 ClockInProof Inc. All rights reserved.</p>
       <p class="text-gray-700 text-xs">Powered by Cloudflare · GPS by OpenStreetMap</p>
     </div>
   </div>
@@ -4550,7 +4895,7 @@ function getWorkerHTML(tenant?: any): string {
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="${companyName}"/>
   <title>${companyName} — Clock In/Out</title>
-  <link rel="manifest" href="/static/manifest.json"/>
+  <link rel="manifest" href="/static/manifest-worker.json"/>
   <link rel="apple-touch-icon" href="/static/icon-180.png"/>
   <link rel="apple-touch-icon" sizes="192x192" href="/static/icon-192.png"/>
   <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png"/>
@@ -4787,14 +5132,23 @@ function getWorkerHTML(tenant?: any): string {
         <i class="fas fa-circle-notch spinner mr-1"></i> Getting location...
       </div>
       <!-- Collapsible map — hidden by default, toggled by View Map button -->
+      <!-- On mobile this renders as a fixed overlay; on desktop it's inline below the location row -->
       <div id="map-wrapper" class="hidden mt-3">
-        <div class="flex items-center justify-between mb-1.5">
-          <p class="text-xs text-gray-400 font-medium">Your current position</p>
-          <button onclick="closeMap()" class="text-gray-400 hover:text-gray-600 text-xs flex items-center gap-1 bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded-lg transition-colors">
-            <i class="fas fa-times"></i> Close map
-          </button>
+        <!-- Mobile backdrop — tap outside map to close -->
+        <div id="map-backdrop" class="fixed inset-0 bg-black/40 z-30 lg:hidden" onclick="closeMap()"></div>
+        <!-- Map card — fixed on mobile, inline on desktop -->
+        <div class="relative fixed bottom-0 left-0 right-0 z-40 bg-white rounded-t-2xl shadow-2xl p-3 lg:static lg:rounded-xl lg:shadow-none lg:p-0 lg:z-auto">
+          <div class="flex items-center justify-between mb-2 lg:mb-1.5">
+            <p class="text-xs text-gray-500 font-semibold flex items-center gap-1">
+              <i class="fas fa-crosshairs text-blue-500"></i> Your current position
+            </p>
+            <button onclick="closeMap()" class="text-gray-400 hover:text-gray-600 text-xs flex items-center gap-1 bg-gray-100 hover:bg-gray-200 px-2.5 py-1.5 rounded-lg transition-colors font-medium">
+              <i class="fas fa-times mr-1"></i>Close
+            </button>
+          </div>
+          <div id="map" class="rounded-xl overflow-hidden" style="height:220px"></div>
+          <p class="text-[10px] text-gray-400 mt-1.5 text-center">© OpenStreetMap contributors</p>
         </div>
-        <div id="map" class="rounded-xl overflow-hidden" style="height:200px"></div>
       </div>
     </div>
 
@@ -5191,6 +5545,64 @@ function getWorkerHTML(tenant?: any): string {
   </div>
 </div>
 
+<!-- PWA Install Banner -->
+<div id="pwa-banner" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:9999;background:#4f46e5;color:white;padding:14px 20px;align-items:center;gap:12px;box-shadow:0 -4px 20px rgba(0,0,0,0.3);">
+  <img src="/static/icon-192.png" style="width:40px;height:40px;border-radius:10px;flex-shrink:0;"/>
+  <div style="flex:1;">
+    <div style="font-weight:700;font-size:14px;">Add ClockInProof to Home Screen</div>
+    <div style="font-size:12px;opacity:0.85;">Tap Install — open anytime like a real app, no link needed</div>
+  </div>
+  <button id="pwa-install-btn" style="background:white;color:#4f46e5;border:none;padding:8px 16px;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;flex-shrink:0;">Install</button>
+  <button onclick="document.getElementById('pwa-banner').style.display='none'" style="background:transparent;border:none;color:white;font-size:20px;cursor:pointer;padding:0 4px;flex-shrink:0;">✕</button>
+</div>
+
+<script>
+// PWA: Register service worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/static/sw.js').catch(() => {});
+  });
+}
+
+// PWA: Android/Chrome install prompt
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  setTimeout(() => {
+    const banner = document.getElementById('pwa-banner');
+    if (banner) banner.style.display = 'flex';
+  }, 4000);
+});
+
+document.getElementById('pwa-install-btn')?.addEventListener('click', async () => {
+  const banner = document.getElementById('pwa-banner');
+  if (deferredPrompt) {
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    deferredPrompt = null;
+  }
+  if (banner) banner.style.display = 'none';
+});
+
+// PWA: iOS Safari — show manual instructions
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const isInStandalone = window.navigator.standalone === true;
+if (isIOS && !isInStandalone) {
+  setTimeout(() => {
+    const banner = document.getElementById('pwa-banner');
+    const btn = document.getElementById('pwa-install-btn');
+    if (banner && btn) {
+      banner.style.display = 'flex';
+      btn.textContent = 'How to Install';
+      btn.onclick = () => {
+        alert('Add ClockInProof to your Home Screen:\n\n1. Tap the Share button (⬆️ box with arrow) at the bottom of Safari\n2. Scroll down and tap "Add to Home Screen"\n3. Tap "Add" — done!\n\nYou can then open the app anytime from your home screen.');
+      };
+    }
+  }, 4000);
+}
+</script>
+
 </body>
 </html>`
 }
@@ -5203,6 +5615,7 @@ function getAdminHTML(): string {
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>ClockInProof — Admin Dashboard</title>
+  <link rel="icon" type="image/png" href="/static/icon-192.png"/>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -5439,6 +5852,10 @@ function getAdminHTML(): string {
 
       <!-- Sidebar footer -->
       <div class="border-t px-4 py-3 bg-gray-50">
+        <a href="mailto:support@clockinproof.com" class="flex items-center gap-2 text-xs text-gray-500 hover:text-indigo-600 transition mb-3">
+          <i class="fas fa-life-ring"></i>
+          <span>support@clockinproof.com</span>
+        </a>
         <div class="flex gap-2">
           <button onclick="changePeriod('today')" data-period="today" class="period-btn flex-1 py-1.5 text-xs rounded-lg bg-indigo-600 text-white font-medium">Today</button>
           <button onclick="changePeriod('week')" data-period="week" class="period-btn flex-1 py-1.5 text-xs rounded-lg bg-white border text-gray-600 font-medium">Week</button>
@@ -5519,11 +5936,40 @@ function getAdminHTML(): string {
 
     <!-- Tab: Workers -->
     <div id="tab-workers" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
-      <div class="flex items-center justify-between mb-4">
+      <!-- Header row -->
+      <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
         <h3 class="font-bold text-gray-700">All Workers</h3>
         <button onclick="showAddWorkerModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-4 py-2 rounded-xl font-medium">
           <i class="fas fa-plus mr-1"></i>Add Worker
         </button>
+      </div>
+      <!-- Status filter pills -->
+      <div class="flex flex-wrap gap-2 mb-4" id="workers-filter-bar">
+        <button onclick="setWorkerFilter('all')" id="wf-all"
+          class="text-xs px-3 py-1.5 rounded-full border-2 border-indigo-500 bg-indigo-50 text-indigo-700 font-semibold transition-all">
+          <i class="fas fa-users mr-1"></i>All
+        </button>
+        <button onclick="setWorkerFilter('active')" id="wf-active"
+          class="text-xs px-3 py-1.5 rounded-full border-2 border-transparent bg-gray-100 text-gray-600 font-medium hover:border-green-400 hover:bg-green-50 transition-all">
+          <i class="fas fa-check-circle mr-1"></i>Active
+        </button>
+        <button onclick="setWorkerFilter('on_holiday')" id="wf-on_holiday"
+          class="text-xs px-3 py-1.5 rounded-full border-2 border-transparent bg-gray-100 text-gray-600 font-medium hover:border-blue-400 hover:bg-blue-50 transition-all">
+          <i class="fas fa-umbrella-beach mr-1"></i>On Holiday
+        </button>
+        <button onclick="setWorkerFilter('sick_leave')" id="wf-sick_leave"
+          class="text-xs px-3 py-1.5 rounded-full border-2 border-transparent bg-gray-100 text-gray-600 font-medium hover:border-yellow-400 hover:bg-yellow-50 transition-all">
+          <i class="fas fa-thermometer-half mr-1"></i>Sick Leave
+        </button>
+        <button onclick="setWorkerFilter('suspended')" id="wf-suspended"
+          class="text-xs px-3 py-1.5 rounded-full border-2 border-transparent bg-gray-100 text-gray-600 font-medium hover:border-orange-400 hover:bg-orange-50 transition-all">
+          <i class="fas fa-pause-circle mr-1"></i>Suspended
+        </button>
+        <button onclick="setWorkerFilter('terminated')" id="wf-terminated"
+          class="text-xs px-3 py-1.5 rounded-full border-2 border-transparent bg-gray-100 text-gray-600 font-medium hover:border-red-400 hover:bg-red-50 transition-all">
+          <i class="fas fa-user-slash mr-1"></i>Terminated
+        </button>
+        <span id="workers-count" class="ml-auto text-xs text-gray-400 self-center"></span>
       </div>
       <div id="workers-table" class="overflow-x-auto">
         <table class="w-full text-sm">
@@ -5534,10 +5980,11 @@ function getAdminHTML(): string {
             <th class="py-3 text-right">Total Hrs</th>
             <th class="py-3 text-right">Total Earned</th>
             <th class="py-3 text-center">Status</th>
+            <th class="py-3 text-center">Link</th>
             <th class="py-3"></th>
           </tr></thead>
           <tbody id="workers-tbody">
-            <tr><td colspan="7" class="text-center py-8 text-gray-400">Loading...</td></tr>
+            <tr><td colspan="8" class="text-center py-8 text-gray-400">Loading...</td></tr>
           </tbody>
         </table>
       </div>
@@ -5909,6 +6356,7 @@ function getAdminHTML(): string {
               <input id="s-geofence-radius" type="number" min="50" max="5000" step="50" value="300"
                 class="flex-1 px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-red-400 text-sm"/>
               <div class="flex gap-1">
+                <button onclick="setVal('s-geofence-radius','50')" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">50m</button>
                 <button onclick="setVal('s-geofence-radius','100')" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">100m</button>
                 <button onclick="setVal('s-geofence-radius','300')" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">300m</button>
                 <button onclick="setVal('s-geofence-radius','500')" class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg">500m</button>
@@ -6540,9 +6988,16 @@ function getAdminHTML(): string {
             <i class="fas fa-sync-alt"></i> Refresh
           </button>
         </div>
-        <p class="text-xs text-gray-500 mb-3">
-          Match each ClockInProof worker to their QuickBooks employee record. Names don't need to match exactly.
+        <p class="text-xs text-gray-500 mb-2">
+          Match each of your workers (left) to their record in your accountant's QuickBooks (right). 
+          Once mapped, hours sync automatically.
         </p>
+        <div class="mb-3">
+          <button onclick="qbAutoMap()" class="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold px-3 py-1.5 rounded-lg border border-indigo-200 transition-colors">
+            <i class="fas fa-magic mr-1"></i> Auto-Match by Name
+          </button>
+          <span class="text-xs text-gray-400 ml-2">or map each worker manually below</span>
+        </div>
         <div id="qb-mapping-list" class="space-y-2">
           <p class="text-gray-400 text-sm text-center py-4"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p>
         </div>
@@ -6917,6 +7372,7 @@ function getAdminHTML(): string {
       <span id="wd-rate" class="text-green-600 font-bold"></span>
       <span id="wd-role" class="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-xs"></span>
       <span id="wd-status-badge"></span>
+      <span id="wd-invite-badge"></span>
       <button id="wd-filter-sessions-btn" onclick="filterSessionsByWorker()" class="ml-auto text-xs text-indigo-600 hover:text-indigo-800 font-medium">
         <i class="fas fa-filter mr-1"></i>Filter Sessions Tab
       </button>
@@ -6925,17 +7381,21 @@ function getAdminHTML(): string {
     <div id="wd-action-bar" class="hidden px-5 py-3 border-b bg-red-50"></div>
 
     <!-- Tab navigation -->
-    <div class="flex border-b bg-gray-50 px-5 pt-3 gap-1">
+    <div class="flex border-b bg-gray-50 px-5 pt-3 gap-1 overflow-x-auto">
       <button onclick="wdTab('sessions')" id="wdt-sessions"
-        class="px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-indigo-500 text-indigo-600 bg-white">
+        class="px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-indigo-500 text-indigo-600 bg-white whitespace-nowrap">
         <i class="fas fa-history mr-1"></i>Sessions
       </button>
       <button onclick="wdTab('profile')" id="wdt-profile"
-        class="px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+        class="px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap">
         <i class="fas fa-id-badge mr-1"></i>Profile
       </button>
+      <button onclick="wdTab('status')" id="wdt-status"
+        class="px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap">
+        <i class="fas fa-user-tag mr-1"></i>Status
+      </button>
       <button onclick="wdTab('license')" id="wdt-license"
-        class="px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+        class="px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap">
         <i class="fas fa-id-card mr-1"></i>License
       </button>
     </div>
@@ -6991,6 +7451,114 @@ function getAdminHTML(): string {
       <div id="wd-p-notes-block" class="hidden bg-yellow-50 rounded-2xl p-4">
         <p class="text-xs font-bold text-yellow-600 uppercase tracking-wider mb-2">Notes</p>
         <p class="text-sm text-gray-700" id="wd-p-notes">–</p>
+      </div>
+    </div>
+
+    <!-- Status tab (hidden by default) -->
+    <div id="wd-tab-status" class="hidden px-5 py-4 flex-1 space-y-4">
+
+      <!-- Current status card -->
+      <div class="bg-white border-2 border-gray-200 rounded-2xl p-4" id="wd-s-current-card">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-xs font-bold text-gray-500 uppercase tracking-wider">Current Status</p>
+          <span id="wd-s-current-badge" class="text-xs px-3 py-1 rounded-full font-bold">–</span>
+        </div>
+        <p class="text-sm text-gray-600" id="wd-s-since">–</p>
+      </div>
+
+      <!-- Change status form -->
+      <div class="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 space-y-3">
+        <p class="text-xs font-bold text-indigo-700 uppercase tracking-wider flex items-center gap-2">
+          <i class="fas fa-exchange-alt"></i> Change Employment Status
+        </p>
+
+        <!-- Status selector -->
+        <div>
+          <label class="text-xs text-gray-600 font-semibold block mb-1.5">New Status <span class="text-red-500">*</span></label>
+          <div class="grid grid-cols-1 gap-2" id="wd-s-options">
+            <button onclick="selectWorkerStatus('active')" id="wds-active"
+              class="flex items-center gap-3 p-3 rounded-xl border-2 border-gray-200 bg-white hover:border-green-400 hover:bg-green-50 transition-all text-left">
+              <span class="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-check-circle text-green-600"></i>
+              </span>
+              <div>
+                <p class="text-sm font-bold text-gray-800">Active</p>
+                <p class="text-xs text-gray-400">Working normally</p>
+              </div>
+            </button>
+            <button onclick="selectWorkerStatus('on_holiday')" id="wds-on_holiday"
+              class="flex items-center gap-3 p-3 rounded-xl border-2 border-gray-200 bg-white hover:border-blue-400 hover:bg-blue-50 transition-all text-left">
+              <span class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-umbrella-beach text-blue-600"></i>
+              </span>
+              <div>
+                <p class="text-sm font-bold text-gray-800">On Holiday</p>
+                <p class="text-xs text-gray-400">Approved vacation / time off</p>
+              </div>
+            </button>
+            <button onclick="selectWorkerStatus('sick_leave')" id="wds-sick_leave"
+              class="flex items-center gap-3 p-3 rounded-xl border-2 border-gray-200 bg-white hover:border-yellow-400 hover:bg-yellow-50 transition-all text-left">
+              <span class="w-8 h-8 rounded-full bg-yellow-100 flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-thermometer-half text-yellow-600"></i>
+              </span>
+              <div>
+                <p class="text-sm font-bold text-gray-800">Sick Leave</p>
+                <p class="text-xs text-gray-400">Medical / illness absence</p>
+              </div>
+            </button>
+            <button onclick="selectWorkerStatus('suspended')" id="wds-suspended"
+              class="flex items-center gap-3 p-3 rounded-xl border-2 border-gray-200 bg-white hover:border-orange-400 hover:bg-orange-50 transition-all text-left">
+              <span class="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-pause-circle text-orange-600"></i>
+              </span>
+              <div>
+                <p class="text-sm font-bold text-gray-800">Suspended</p>
+                <p class="text-xs text-gray-400">Temporarily removed from work — clocks out immediately</p>
+              </div>
+            </button>
+            <button onclick="selectWorkerStatus('terminated')" id="wds-terminated"
+              class="flex items-center gap-3 p-3 rounded-xl border-2 border-gray-200 bg-white hover:border-red-400 hover:bg-red-50 transition-all text-left">
+              <span class="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-user-slash text-red-600"></i>
+              </span>
+              <div>
+                <p class="text-sm font-bold text-gray-800">Terminated</p>
+                <p class="text-xs text-gray-400">Employment ended — access revoked immediately</p>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Reason field -->
+        <div>
+          <label class="text-xs text-gray-600 font-semibold block mb-1.5">Reason <span class="text-red-500">*</span></label>
+          <textarea id="wd-s-reason" rows="2" placeholder="Enter reason for status change..."
+            class="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 resize-none bg-white transition-colors"></textarea>
+          <p id="wd-s-reason-error" class="hidden text-xs text-red-500 mt-1"><i class="fas fa-exclamation-circle mr-1"></i>Reason is required.</p>
+        </div>
+
+        <!-- Expected return date (shown for holiday / sick leave) -->
+        <div id="wd-s-return-wrap" class="hidden">
+          <label class="text-xs text-gray-600 font-semibold block mb-1.5">Expected Return Date <span class="text-gray-400 font-normal">(optional)</span></label>
+          <input type="date" id="wd-s-return-date"
+            class="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 bg-white transition-colors"/>
+        </div>
+
+        <!-- Submit button -->
+        <button onclick="confirmWorkerStatusChange()" id="wd-s-submit-btn"
+          class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl transition-colors shadow-sm disabled:opacity-50">
+          <i class="fas fa-save mr-1.5"></i>Save Status Change
+        </button>
+      </div>
+
+      <!-- Audit trail -->
+      <div>
+        <p class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <i class="fas fa-history text-gray-400"></i> Audit Trail
+        </p>
+        <div id="wd-s-log" class="space-y-2">
+          <p class="text-gray-400 text-sm text-center py-4"><i class="fas fa-spinner fa-spin mr-2"></i>Loading...</p>
+        </div>
       </div>
     </div>
 
@@ -7266,19 +7834,23 @@ function getAdminHTML(): string {
     <div class="p-6 space-y-4">
       <!-- Session info strip -->
       <div id="aco-info" class="bg-gray-50 rounded-2xl p-4 text-sm space-y-1.5"></div>
-      <!-- Reason input -->
+      <!-- Reason input (REQUIRED) -->
       <div>
-        <label class="text-xs font-semibold text-gray-600 block mb-1.5">
-          <i class="fas fa-comment-alt mr-1 text-gray-400"></i>Reason / Note <span class="text-gray-400 font-normal">(optional)</span>
+        <label class="text-xs font-semibold text-gray-700 block mb-1.5">
+          <i class="fas fa-comment-alt mr-1 text-red-400"></i>Reason for Clock-Out <span class="text-red-500 font-bold">*</span>
         </label>
-        <textarea id="aco-note" rows="2" placeholder="e.g. Worker left site, No-show after 2h, End of day..."
-          class="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"></textarea>
+        <textarea id="aco-note" rows="2" placeholder="Select a quick reason below or type your own..."
+          class="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-400 focus:border-red-400 resize-none transition-colors"></textarea>
+        <p id="aco-note-error" class="hidden text-xs text-red-500 mt-1"><i class="fas fa-exclamation-circle mr-1"></i>Please enter a reason before clocking out.</p>
         <!-- Quick reasons -->
-        <div class="flex flex-wrap gap-1.5 mt-2">
-          <button onclick="setVal('aco-note','Worker left the job site')" class="text-xs bg-orange-50 text-orange-600 border border-orange-200 px-2 py-1 rounded-lg hover:bg-orange-100">Left site</button>
-          <button onclick="setVal('aco-note','Worker forgot to clock out')" class="text-xs bg-yellow-50 text-yellow-600 border border-yellow-200 px-2 py-1 rounded-lg hover:bg-yellow-100">Forgot to clock out</button>
-          <button onclick="setVal('aco-note','No GPS signal — admin action')" class="text-xs bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded-lg hover:bg-blue-100">No GPS</button>
-          <button onclick="setVal('aco-note','End of work day')" class="text-xs bg-gray-100 text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-200">End of day</button>
+        <p class="text-xs text-gray-400 mt-2 mb-1.5">Quick reasons:</p>
+        <div class="flex flex-wrap gap-1.5">
+          <button onclick="pickAcoReason('Worker left the job site')" class="text-xs bg-orange-50 text-orange-700 border border-orange-300 px-2.5 py-1.5 rounded-lg hover:bg-orange-100 font-medium transition-colors"><i class="fas fa-walking mr-1"></i>Left site</button>
+          <button onclick="pickAcoReason('Worker forgot to clock out')" class="text-xs bg-yellow-50 text-yellow-700 border border-yellow-300 px-2.5 py-1.5 rounded-lg hover:bg-yellow-100 font-medium transition-colors"><i class="fas fa-clock mr-1"></i>Forgot to clock out</button>
+          <button onclick="pickAcoReason('No GPS signal — admin action')" class="text-xs bg-blue-50 text-blue-700 border border-blue-300 px-2.5 py-1.5 rounded-lg hover:bg-blue-100 font-medium transition-colors"><i class="fas fa-map-marker-slash mr-1"></i>No GPS</button>
+          <button onclick="pickAcoReason('End of work day')" class="text-xs bg-gray-100 text-gray-700 border border-gray-300 px-2.5 py-1.5 rounded-lg hover:bg-gray-200 font-medium transition-colors"><i class="fas fa-sun mr-1"></i>End of day</button>
+          <button onclick="pickAcoReason('Worker left geofence area')" class="text-xs bg-purple-50 text-purple-700 border border-purple-300 px-2.5 py-1.5 rounded-lg hover:bg-purple-100 font-medium transition-colors"><i class="fas fa-map-marked-alt mr-1"></i>Left geofence</button>
+          <button onclick="pickAcoReason('No-show / absent')" class="text-xs bg-rose-50 text-rose-700 border border-rose-300 px-2.5 py-1.5 rounded-lg hover:bg-rose-100 font-medium transition-colors"><i class="fas fa-user-slash mr-1"></i>No-show</button>
         </div>
       </div>
       <!-- Action buttons -->
@@ -7312,6 +7884,40 @@ function getAdminHTML(): string {
         <button onclick="closeBulkClockoutModal()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 rounded-xl">Cancel</button>
         <button id="bco-confirm-btn" onclick="confirmBulkClockout()" class="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-bold py-3 rounded-xl shadow-lg shadow-orange-200">
           <i class="fas fa-stop-circle mr-1.5"></i>Stop All
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Delete Worker Confirmation Modal ───────────────────────────────────── -->
+<div id="delete-worker-modal" class="hidden fixed inset-0 z-[70] flex items-center justify-center p-4" onclick="if(event.target===this)closeDeleteWorkerModal()">
+  <div class="absolute inset-0 bg-black bg-opacity-60 backdrop-blur-sm"></div>
+  <div class="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
+    <div class="bg-gradient-to-r from-gray-700 to-gray-900 px-6 py-5 text-center">
+      <div class="w-14 h-14 bg-white bg-opacity-10 rounded-full flex items-center justify-center mx-auto mb-3">
+        <i class="fas fa-trash text-white text-xl"></i>
+      </div>
+      <h2 class="text-white text-lg font-bold">Remove Worker</h2>
+      <p id="dw-worker-name" class="text-gray-300 text-sm mt-1"></p>
+    </div>
+    <div class="p-6 space-y-4">
+      <div class="bg-red-50 border border-red-100 rounded-2xl p-4">
+        <p class="text-sm text-red-700 font-medium mb-1"><i class="fas fa-exclamation-triangle mr-1.5"></i>This will permanently delete:</p>
+        <ul class="text-xs text-red-600 space-y-1 mt-2 ml-4 list-disc">
+          <li>All their clock-in / clock-out sessions</li>
+          <li>GPS location history</li>
+          <li>Their invite link</li>
+        </ul>
+        <p class="text-xs text-red-500 mt-3 font-medium">This action cannot be undone.</p>
+      </div>
+      <p class="text-xs text-gray-500 text-center">If you want to keep their history, use the <strong>Status tab</strong> to set them as <strong>Terminated</strong> instead.</p>
+      <div class="flex gap-3 pt-1">
+        <button onclick="closeDeleteWorkerModal()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 rounded-xl transition-colors">
+          Cancel
+        </button>
+        <button id="dw-confirm-btn" onclick="confirmDeleteWorker()" class="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-red-200">
+          <i class="fas fa-trash mr-1.5"></i>Delete Permanently
         </button>
       </div>
     </div>
@@ -7352,7 +7958,7 @@ app.get('/privacy', (c) => {
       <section>
         <h2 class="text-lg font-bold text-gray-800 mb-2">1. Who We Are</h2>
         <p>ClockInProof ("we", "us", "our") is a GPS-verified employee time-tracking platform operated by Noweis Inc., based in Ontario, Canada. Our service is available at <strong>app.clockinproof.com</strong> (worker app) and <strong>admin.clockinproof.com</strong> (employer dashboard).</p>
-        <p class="mt-2">Contact: <a href="mailto:Noweis2020@gmail.com" class="text-indigo-600 underline">Noweis2020@gmail.com</a></p>
+        <p class="mt-2">Contact: <a href="mailto:support@clockinproof.com" class="text-indigo-600 underline">support@clockinproof.com</a></p>
       </section>
 
       <section>
@@ -7421,7 +8027,7 @@ app.get('/privacy', (c) => {
           <li>Right to withdraw consent and request deletion</li>
           <li>Right to be informed of data breaches</li>
         </ul>
-        <p class="mt-2">To exercise these rights, email <a href="mailto:Noweis2020@gmail.com" class="text-indigo-600 underline">Noweis2020@gmail.com</a>.</p>
+        <p class="mt-2">To exercise these rights, email <a href="mailto:support@clockinproof.com" class="text-indigo-600 underline">support@clockinproof.com</a>.</p>
       </section>
 
       <section>
@@ -7534,7 +8140,7 @@ app.get('/terms', (c) => {
 
       <section>
         <h2 class="text-lg font-bold text-gray-800 mb-2">10. Contact</h2>
-        <p>For questions about these terms: <a href="mailto:Noweis2020@gmail.com" class="text-indigo-600 underline">Noweis2020@gmail.com</a></p>
+        <p>For questions about these terms: <a href="mailto:support@clockinproof.com" class="text-indigo-600 underline">support@clockinproof.com</a></p>
         <p class="mt-1">Noweis Inc., Ontario, Canada</p>
       </section>
 
@@ -7548,6 +8154,13 @@ app.get('/terms', (c) => {
 </body>
 </html>`)
 })
+
+// ─── LEGAL ALIAS ROUTES (for Intuit App Store compliance) ────────────────────
+// /legal/privacy → same as /privacy
+// /legal/eula    → same as /terms
+app.get('/legal/privacy', (c) => c.redirect('/privacy', 301))
+app.get('/legal/eula',    (c) => c.redirect('/terms', 301))
+app.get('/legal/terms',   (c) => c.redirect('/terms', 301))
 
 // ─── CLOUDFLARE SCHEDULED TRIGGER ────────────────────────────────────────────
 // Fires every Friday at 23:59 UTC  →  cron: "59 23 * * 5"
