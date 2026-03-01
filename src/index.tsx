@@ -5631,6 +5631,8 @@ function getAdminHTML(): string {
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
     .spinner { animation: spin 1s linear infinite; }
     @keyframes spin { to{transform:rotate(360deg)} }
+    .wv-selected { background:#eff6ff; color:#1d4ed8; font-weight:600; }
+    .wv-selected .w-5 { background-color:#1d4ed8 !important; color:white !important; }
   </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
@@ -5765,14 +5767,45 @@ function getAdminHTML(): string {
         <!-- WORKFORCE -->
         <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2 mt-5">Workforce</p>
 
-        <button onclick="showTab('workers')" data-tab="workers"
-          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
-          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-blue-100 text-blue-600 flex-shrink-0">
-            <i class="fas fa-users text-sm"></i>
-          </span>
-          <span>Workers</span>
-          <span class="ml-auto text-xs text-gray-400" id="stat-total-workers">–</span>
-        </button>
+        <!-- Workers collapsible dropdown -->
+        <div>
+          <button onclick="toggleWorkersDropdown()" id="workers-dropdown-btn"
+            class="sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+            <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-blue-100 text-blue-600 flex-shrink-0">
+              <i class="fas fa-users text-sm"></i>
+            </span>
+            <span>Workers</span>
+            <span class="ml-auto flex items-center gap-1.5">
+              <span class="text-xs text-gray-400" id="stat-total-workers">–</span>
+              <i id="workers-dropdown-chevron" class="fas fa-chevron-right text-[10px] text-gray-400 transition-transform duration-200"></i>
+            </span>
+          </button>
+          <!-- Sub-items -->
+          <div id="workers-dropdown" class="hidden ml-3 mt-0.5 space-y-0.5 border-l-2 border-blue-100 pl-2">
+            <button onclick="showWorkersView('onsite')" id="wv-onsite"
+              class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-green-50 hover:text-green-700 transition-colors">
+              <span class="w-5 h-5 flex items-center justify-center rounded-md bg-green-100 text-green-600 flex-shrink-0">
+                <i class="fas fa-hard-hat" style="font-size:9px"></i>
+              </span>
+              <span>Onsite Now</span>
+              <span id="onsite-count-badge" class="ml-auto bg-green-100 text-green-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full hidden">0</span>
+            </button>
+            <button onclick="showWorkersView('active')" id="wv-active"
+              class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-700 transition-colors">
+              <span class="w-5 h-5 flex items-center justify-center rounded-md bg-blue-100 text-blue-600 flex-shrink-0">
+                <i class="fas fa-user-check" style="font-size:9px"></i>
+              </span>
+              <span>Active</span>
+            </button>
+            <button onclick="showWorkersView('all')" id="wv-all"
+              class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors wv-selected">
+              <span class="w-5 h-5 flex items-center justify-center rounded-md bg-gray-100 text-gray-500 flex-shrink-0">
+                <i class="fas fa-list" style="font-size:9px"></i>
+              </span>
+              <span>All Workers</span>
+            </button>
+          </div>
+        </div>
 
         <button onclick="showTab('overrides')" data-tab="overrides"
           class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors relative">
@@ -5938,12 +5971,15 @@ function getAdminHTML(): string {
     <div id="tab-workers" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <!-- Header row -->
       <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
-        <h3 class="font-bold text-gray-700">All Workers</h3>
+        <div>
+          <h3 class="font-bold text-gray-700" id="workers-tab-title">All Workers</h3>
+          <p class="text-xs text-gray-400" id="workers-tab-subtitle">Everyone on the team</p>
+        </div>
         <button onclick="showAddWorkerModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-4 py-2 rounded-xl font-medium">
           <i class="fas fa-plus mr-1"></i>Add Worker
         </button>
       </div>
-      <!-- Status filter pills -->
+      <!-- Status filter pills — shown only in 'all' and 'active' views -->
       <div class="flex flex-wrap gap-2 mb-4" id="workers-filter-bar">
         <button onclick="setWorkerFilter('all')" id="wf-all"
           class="text-xs px-3 py-1.5 rounded-full border-2 border-indigo-500 bg-indigo-50 text-indigo-700 font-semibold transition-all">
@@ -6012,13 +6048,18 @@ function getAdminHTML(): string {
     <!-- Tab: Map -->
     <div id="tab-map" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <div class="flex items-center justify-between mb-4">
-        <h3 class="font-bold text-gray-700">Worker Locations</h3>
-        <button onclick="loadMap()" class="text-indigo-600 text-sm font-medium hover:text-indigo-700">
-          <i class="fas fa-sync-alt mr-1"></i>Refresh Map
+        <div>
+          <h3 class="font-bold text-gray-700 flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-green-500 inline-block animate-pulse"></span>
+            <span id="map-live-label">Live — Currently Onsite</span>
+          </h3>
+          <p class="text-xs text-gray-400 mt-0.5">Only workers currently clocked in are shown</p>
+        </div>
+        <button onclick="loadMap()" class="text-indigo-600 text-sm font-medium hover:text-indigo-700 flex items-center gap-1">
+          <i class="fas fa-sync-alt"></i> Refresh
         </button>
       </div>
       <div id="admin-map" class="rounded-xl overflow-hidden"></div>
-      <p class="text-xs text-gray-400 mt-2">Shows clock-in locations for today's sessions</p>
     </div>
 
     <!-- Tab: Calendar -->

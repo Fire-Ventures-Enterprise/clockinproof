@@ -1086,6 +1086,105 @@ async function loadLive() {
   } catch(e) { console.error(e) }
 }
 
+// ── Workers sidebar dropdown ──────────────────────────────────────────────────
+let _workersDropdownOpen = false
+let _currentWorkersView = 'all' // 'onsite' | 'active' | 'all'
+
+function toggleWorkersDropdown() {
+  _workersDropdownOpen = !_workersDropdownOpen
+  const dropdown = document.getElementById('workers-dropdown')
+  const chevron  = document.getElementById('workers-dropdown-chevron')
+  const btn      = document.getElementById('workers-dropdown-btn')
+  if (dropdown) dropdown.classList.toggle('hidden', !_workersDropdownOpen)
+  if (chevron)  chevron.style.transform = _workersDropdownOpen ? 'rotate(90deg)' : ''
+  if (btn)      btn.classList.toggle('bg-indigo-50', _workersDropdownOpen)
+  // Auto-navigate to workers tab when opening
+  if (_workersDropdownOpen) showTab('workers')
+}
+
+function showWorkersView(view) {
+  _currentWorkersView = view
+  // Highlight selected sub-item
+  ;['onsite','active','all'].forEach(v => {
+    const el = document.getElementById('wv-' + v)
+    if (!el) return
+    if (v === view) {
+      el.classList.add('wv-selected')
+    } else {
+      el.classList.remove('wv-selected')
+    }
+  })
+  // Update tab title + subtitle
+  const titles = {
+    onsite: ['Onsite Now', 'Workers currently clocked in'],
+    active: ['Active Workers', 'Currently employed'],
+    all:    ['All Workers', 'Everyone on the team']
+  }
+  const [title, sub] = titles[view] || titles.all
+  const titleEl = document.getElementById('workers-tab-title')
+  const subEl   = document.getElementById('workers-tab-subtitle')
+  if (titleEl) titleEl.textContent = title
+  if (subEl)   subEl.textContent   = sub
+
+  // Show/hide filter bar — only visible in 'all' and 'active' views
+  const filterBar = document.getElementById('workers-filter-bar')
+  if (filterBar) filterBar.classList.toggle('hidden', view === 'onsite')
+
+  // Switch to workers tab
+  showTab('workers')
+
+  // Apply the correct rendering
+  if (view === 'onsite') {
+    renderOnsiteWorkers()
+  } else if (view === 'active') {
+    setWorkerFilter('active')
+  } else {
+    setWorkerFilter('all')
+  }
+}
+
+function renderOnsiteWorkers() {
+  const tbody   = document.getElementById('workers-tbody')
+  const countEl = document.getElementById('workers-count')
+  if (!tbody) return
+
+  // Filter workers that are currently clocked in
+  const onsite = _allWorkersData.filter(w => w.currently_clocked_in > 0)
+
+  if (countEl) countEl.textContent = onsite.length + ' worker' + (onsite.length !== 1 ? 's' : '') + ' onsite'
+
+  if (onsite.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" class="text-center py-10 text-gray-400">
+      <i class="fas fa-hard-hat text-3xl block mb-2 opacity-30"></i>
+      No workers currently onsite
+    </td></tr>`
+    return
+  }
+
+  // Reuse existing renderWorkersTable logic but only for onsite workers
+  const savedFilter = _workerFilter
+  _workerFilter = '_onsite_override_'
+  // Temporarily replace allWorkersData with only onsite workers
+  const savedAll = _allWorkersData
+  _allWorkersData = onsite
+  _workerFilter = 'all'
+  renderWorkersTable()
+  _allWorkersData = savedAll
+  _workerFilter = savedFilter
+}
+
+// Update the onsite count badge in the sidebar
+function updateOnsiteBadge(count) {
+  const badge = document.getElementById('onsite-count-badge')
+  if (!badge) return
+  if (count > 0) {
+    badge.textContent = count
+    badge.classList.remove('hidden')
+  } else {
+    badge.classList.add('hidden')
+  }
+}
+
 // ── Worker filter state ──────────────────────────────────────────────────────
 let _workerFilter = 'all'
 let _allWorkersData = []
@@ -1172,6 +1271,10 @@ async function loadWorkers() {
     const data = await res.json()
     _allWorkersData = data.workers || []
 
+    // Update onsite badge in sidebar
+    const onsiteCount = _allWorkersData.filter(w => w.currently_clocked_in > 0).length
+    updateOnsiteBadge(onsiteCount)
+
     // Populate the worker filter dropdown in Sessions tab
     const workerSelect = document.getElementById('filter-worker')
     if (workerSelect) {
@@ -1181,6 +1284,8 @@ async function loadWorkers() {
     }
 
     renderWorkersTable()
+    // If currently showing 'onsite' view, re-render that
+    if (_currentWorkersView === 'onsite') renderOnsiteWorkers()
   } catch(e) { console.error(e) }
 }
 
@@ -1324,42 +1429,58 @@ async function loadMap() {
     adminMap = L.map('admin-map', { attributionControl: false })
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(adminMap)
   } else {
-    // Clear previous markers before reloading
+    // Clear all previous markers
     adminMap.eachLayer(layer => {
-      if (layer instanceof L.CircleMarker) adminMap.removeLayer(layer)
+      if (layer instanceof L.CircleMarker || layer instanceof L.Marker) adminMap.removeLayer(layer)
     })
   }
-  // Remove any stale "no sessions" overlay
+  // Remove any stale overlay
   document.querySelectorAll('#admin-map > div[style*="pointer-events:none"]').forEach(el => el.remove())
 
+  // Map header — update label
+  const mapHeader = document.getElementById('map-live-label')
+  if (mapHeader) mapHeader.textContent = 'Live — Currently Onsite'
+
   try {
-    const today = new Date().toISOString().split('T')[0]
-    const res = await fetch('/api/sessions?date=' + today + '&limit=200')
+    // Only fetch ACTIVE sessions (workers currently clocked in)
+    const res = await fetch('/api/sessions/active')
     const data = await res.json()
     
     const sessions = (data.sessions || []).filter(s => s.clock_in_lat && s.clock_in_lng)
     
     if (sessions.length === 0) {
-      // No sessions today — show world view, no pin
       adminMap.setView([20, 0], 2)
       const overlay = document.createElement('div')
       overlay.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,0.9);padding:12px 20px;border-radius:12px;font-size:13px;color:#6b7280;pointer-events:none;z-index:999;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.1)'
-      overlay.innerHTML = '<i class="fas fa-map-marker-slash" style="color:#9ca3af;margin-right:6px"></i>No clock-ins recorded today'
+      overlay.innerHTML = '<i class="fas fa-hard-hat" style="color:#9ca3af;margin-right:6px"></i>No workers currently onsite'
       document.getElementById('admin-map').appendChild(overlay)
       return
     }
     
     const bounds = []
     sessions.forEach(s => {
-      const color = s.status === 'active' ? '#22c55e' : '#6366f1'
+      // All markers are green — map only shows live workers
       const m = L.circleMarker([s.clock_in_lat, s.clock_in_lng], {
-        color, fillColor: color, fillOpacity: 0.8, radius: 10
+        color: '#16a34a', fillColor: '#22c55e', fillOpacity: 0.85, radius: 11, weight: 2
       }).addTo(adminMap)
-      m.bindPopup(`<b>${s.worker_name}</b><br>${s.worker_phone}<br>In: ${new Date(s.clock_in_time).toLocaleTimeString()}${s.clock_out_time ? '<br>Out: ' + new Date(s.clock_out_time).toLocaleTimeString() : '<br><b class="text-green-600">Currently Working</b>'}`)
+      const hoursWorked = ((Date.now() - new Date(s.clock_in_time).getTime()) / 3600000).toFixed(1)
+      m.bindPopup(`
+        <div style="font-family:system-ui;min-width:160px">
+          <div style="font-weight:700;font-size:13px;color:#111">${s.worker_name}</div>
+          <div style="color:#6b7280;font-size:11px;margin-bottom:4px">${s.worker_phone || ''}</div>
+          <div style="font-size:11px;color:#15803d;font-weight:600">🟢 Clocked in ${hoursWorked}h ago</div>
+          <div style="font-size:11px;color:#6b7280">In: ${new Date(s.clock_in_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>
+          ${s.job_location ? `<div style="font-size:11px;color:#6b7280;margin-top:2px">📍 ${s.job_location}</div>` : ''}
+        </div>
+      `)
       bounds.push([s.clock_in_lat, s.clock_in_lng])
     })
     
-    adminMap.fitBounds(bounds, { padding: [50, 50] })
+    if (bounds.length === 1) {
+      adminMap.setView(bounds[0], 15)
+    } else {
+      adminMap.fitBounds(bounds, { padding: [50, 50] })
+    }
   } catch(e) { console.error(e) }
 }
 
