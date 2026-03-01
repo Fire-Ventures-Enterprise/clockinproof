@@ -105,6 +105,18 @@ document.getElementById('admin-pin-input').addEventListener('keyup', e => {
   if (e.key === 'Enter') adminLogin()
 })
 
+// Set default worker sub-nav highlight on load
+document.addEventListener('DOMContentLoaded', () => {
+  // Highlight "All Workers" as default selected
+  const allBtn = document.getElementById('wv-all')
+  if (allBtn) {
+    allBtn.classList.add('bg-indigo-50','text-indigo-700','font-semibold')
+    allBtn.classList.remove('text-gray-600','font-medium')
+    const icon = allBtn.querySelector('span.w-6')
+    if (icon) { icon.classList.add('bg-indigo-600','text-white'); icon.classList.remove('bg-gray-100','text-gray-500') }
+  }
+})
+
 // ── Data Loading ──────────────────────────────────────────────────────────────
 async function refreshAll() {
   document.getElementById('admin-last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString()
@@ -1086,35 +1098,40 @@ async function loadLive() {
   } catch(e) { console.error(e) }
 }
 
-// ── Workers sidebar dropdown ──────────────────────────────────────────────────
-let _workersDropdownOpen = false
+// ── Workers sidebar sub-navigation ───────────────────────────────────────────
 let _currentWorkersView = 'all' // 'onsite' | 'active' | 'all'
-
-function toggleWorkersDropdown() {
-  _workersDropdownOpen = !_workersDropdownOpen
-  const dropdown = document.getElementById('workers-dropdown')
-  const chevron  = document.getElementById('workers-dropdown-chevron')
-  const btn      = document.getElementById('workers-dropdown-btn')
-  if (dropdown) dropdown.classList.toggle('hidden', !_workersDropdownOpen)
-  if (chevron)  chevron.style.transform = _workersDropdownOpen ? 'rotate(90deg)' : ''
-  if (btn)      btn.classList.toggle('bg-indigo-50', _workersDropdownOpen)
-  // Auto-navigate to workers tab when opening
-  if (_workersDropdownOpen) showTab('workers')
-}
 
 function showWorkersView(view) {
   _currentWorkersView = view
-  // Highlight selected sub-item
+
+  // First run showTab so it clears all tab-btn highlights...
+  showTab('workers')
+
+  // ...then re-apply the correct sub-button highlight manually
   ;['onsite','active','all'].forEach(v => {
     const el = document.getElementById('wv-' + v)
     if (!el) return
     if (v === view) {
-      el.classList.add('wv-selected')
+      // Active: use indigo highlight matching tab-active
+      el.classList.add('bg-indigo-50','text-indigo-700','font-semibold')
+      el.classList.remove('text-gray-600','font-medium')
+      const icon = el.querySelector('span.w-6')
+      if (icon) { icon.classList.add('bg-indigo-600','text-white'); icon.classList.remove('bg-green-100','text-green-600','bg-blue-100','text-blue-600','bg-gray-100','text-gray-500') }
     } else {
-      el.classList.remove('wv-selected')
+      el.classList.remove('bg-indigo-50','text-indigo-700','font-semibold')
+      el.classList.add('text-gray-600','font-medium')
+      // Restore original icon colours
+      const icon = el.querySelector('span.w-6')
+      if (icon) {
+        icon.classList.remove('bg-indigo-600','text-white')
+        if (v === 'onsite') { icon.classList.add('bg-green-100','text-green-600') }
+        else if (v === 'active') { icon.classList.add('bg-blue-100','text-blue-600') }
+        else { icon.classList.add('bg-gray-100','text-gray-500') }
+      }
     }
   })
-  // Update tab title + subtitle
+
+  // Update Workers tab title + subtitle
   const titles = {
     onsite: ['Onsite Now', 'Workers currently clocked in'],
     active: ['Active Workers', 'Currently employed'],
@@ -1126,14 +1143,11 @@ function showWorkersView(view) {
   if (titleEl) titleEl.textContent = title
   if (subEl)   subEl.textContent   = sub
 
-  // Show/hide filter bar — only visible in 'all' and 'active' views
+  // Show/hide status filter pills — hidden in 'onsite' view
   const filterBar = document.getElementById('workers-filter-bar')
   if (filterBar) filterBar.classList.toggle('hidden', view === 'onsite')
 
-  // Switch to workers tab
-  showTab('workers')
-
-  // Apply the correct rendering
+  // Render the correct content
   if (view === 'onsite') {
     renderOnsiteWorkers()
   } else if (view === 'active') {
@@ -1789,6 +1803,8 @@ function showTab(name) {
 
   document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'))
   document.querySelectorAll('.tab-btn').forEach(t => {
+    // Skip the worker sub-buttons — showWorkersView handles their highlighting
+    if (t.id && t.id.startsWith('wv-')) return
     t.classList.remove('tab-active')
     const icon = t.querySelector('span.w-8')
     if (icon) {
@@ -1797,7 +1813,8 @@ function showTab(name) {
   })
   const tabEl = document.getElementById('tab-' + name)
   if (tabEl) tabEl.classList.remove('hidden')
-  const btnEl = document.querySelector('[data-tab="' + name + '"]')
+  // Only highlight the direct tab button (not worker sub-buttons)
+  const btnEl = document.querySelector('[data-tab="' + name + '"]:not([id^="wv-"])')
   if (btnEl) btnEl.classList.add('tab-active')
   if (name === 'map') { loadMap(); setTimeout(() => { if (adminMap) adminMap.invalidateSize() }, 200) }
   if (name === 'calendar') loadCalendar()
