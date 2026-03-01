@@ -4,6 +4,9 @@ import { serveStatic } from 'hono/cloudflare-workers'
 
 type Bindings = {
   DB: D1Database
+  STRIPE_SECRET_KEY?: string
+  STRIPE_WEBHOOK_SECRET?: string
+  STRIPE_PUBLISHABLE_KEY?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -14,10 +17,94 @@ app.use('/api/*', cors())
 // ─── Static files ─────────────────────────────────────────────────────────────
 app.use('/static/*', serveStatic({ root: './' }))
 
+// ─── Tenant Helper ────────────────────────────────────────────────────────────
+// Read subdomain from Host header → return tenant slug
+// e.g. "acme.clockinproof.com" → "acme"
+// "admin.clockinproof.com" or "app.clockinproof.com" → null (platform URLs)
+function getTenantSlug(req: Request): string | null {
+  const host = req.headers.get('host') || ''
+  const hostname = host.split(':')[0]
+  const parts = hostname.split('.')
+  // Must be subdomain.clockinproof.com (3 parts)
+  if (parts.length < 3) return null
+  const sub = parts[0]
+  // Platform reserved subdomains
+  const reserved = ['admin', 'app', 'www', 'superadmin', 'api', 'mail', 'staging']
+  if (reserved.includes(sub)) return null
+  return sub
+}
+
+// Load tenant by slug — returns null if not found
+async function getTenantBySlug(db: D1Database, slug: string) {
+  return await db.prepare(`SELECT * FROM tenants WHERE slug = ? AND status != 'deleted'`).bind(slug).first()
+}
+
+// Load tenant settings (merged: platform defaults → tenant overrides)
+async function getTenantSettings(db: D1Database, tenantId: number): Promise<Record<string, string>> {
+  const rows = await db.prepare(`SELECT key, value FROM tenant_settings WHERE tenant_id = ?`).bind(tenantId).all()
+  const s: Record<string, string> = {}
+  ;(rows.results as any[]).forEach((r: any) => { s[r.key] = r.value })
+  return s
+}
+
+
 // ─── DB Helper ────────────────────────────────────────────────────────────────
 async function ensureSchema(db: D1Database) {
   // Run each statement individually (D1 exec doesn't support multi-statement)
   const statements = [
+    // ── TENANTS (multi-tenant SaaS foundation) ────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS tenants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT UNIQUE NOT NULL,
+      company_name TEXT NOT NULL,
+      company_address TEXT,
+      admin_email TEXT,
+      admin_pin TEXT DEFAULT '1234',
+      logo_url TEXT,
+      primary_color TEXT DEFAULT '#4F46E5',
+      plan TEXT DEFAULT 'pro',
+      status TEXT DEFAULT 'active',
+      stripe_customer_id TEXT,
+      stripe_subscription_id TEXT,
+      stripe_price_id TEXT,
+      trial_ends_at DATETIME,
+      max_workers INTEGER DEFAULT 999,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    // Insert Tenant #1 — 911 Restoration of Ottawa (your company)
+    `INSERT OR IGNORE INTO tenants
+      (id, slug, company_name, company_address, admin_email, plan, status, max_workers)
+     VALUES
+      (1, '911restoration-ottawa', '911 Restoration of Ottawa',
+       '11 Trustan Court #4, Ottawa, Ontario K2E 8B9',
+       'Nasser.o@911restoration.com', 'pro', 'active', 999)`,
+    // ── TENANT SETTINGS (per-tenant key/value, mirrors global settings) ───────
+    `CREATE TABLE IF NOT EXISTS tenant_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(tenant_id, key),
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+    )`,
+    // ── STRIPE PLANS reference table ──────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS stripe_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      stripe_price_id TEXT,
+      price_monthly INTEGER NOT NULL,
+      max_workers INTEGER NOT NULL,
+      features TEXT,
+      active INTEGER DEFAULT 1
+    )`,
+    `INSERT OR IGNORE INTO stripe_plans (id, name, stripe_price_id, price_monthly, max_workers, features) VALUES
+      (1, 'Starter', '', 2900, 10, 'GPS tracking,Payroll export,Email reports')`,
+    `INSERT OR IGNORE INTO stripe_plans (id, name, stripe_price_id, price_monthly, max_workers, features) VALUES
+      (2, 'Growth', '', 5900, 25, 'GPS tracking,Payroll export,Email reports,QuickBooks sync')`,
+    `INSERT OR IGNORE INTO stripe_plans (id, name, stripe_price_id, price_monthly, max_workers, features) VALUES
+      (3, 'Pro', '', 9900, 999, 'GPS tracking,Payroll export,Email reports,QuickBooks sync,Unlimited workers')`,
     `CREATE TABLE IF NOT EXISTS workers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -224,13 +311,39 @@ async function ensureSchema(db: D1Database) {
     // Lets workers flag they are legitimately off-site (pickup, emergency call-out).
     // Geofence check is skipped for these types; admin sees a colored badge.
     `ALTER TABLE sessions ADD COLUMN session_type TEXT DEFAULT 'regular'`,
+    // ── Multi-tenant migrations ───────────────────────────────────────────────
+    // Add tenant_id to all tables. Safe to run repeatedly — errors caught below.
+    `ALTER TABLE workers ADD COLUMN tenant_id INTEGER DEFAULT 1`,
+    `ALTER TABLE sessions ADD COLUMN tenant_id INTEGER DEFAULT 1`,
+    `ALTER TABLE location_pings ADD COLUMN tenant_id INTEGER DEFAULT 1`,
+    `ALTER TABLE clock_in_requests ADD COLUMN tenant_id INTEGER DEFAULT 1`,
+    `ALTER TABLE job_sites ADD COLUMN tenant_id INTEGER DEFAULT 1`,
+    `ALTER TABLE session_disputes ADD COLUMN tenant_id INTEGER DEFAULT 1`,
+    `ALTER TABLE session_edits ADD COLUMN tenant_id INTEGER DEFAULT 1`,
+    `ALTER TABLE qb_employee_map ADD COLUMN tenant_id INTEGER DEFAULT 1`,
+    `ALTER TABLE qb_sync_log ADD COLUMN tenant_id INTEGER DEFAULT 1`,
+    // Migrate all existing data to tenant_id = 1 (911 Restoration of Ottawa)
+    `UPDATE workers SET tenant_id = 1 WHERE tenant_id IS NULL`,
+    `UPDATE sessions SET tenant_id = 1 WHERE tenant_id IS NULL`,
+    `UPDATE location_pings SET tenant_id = 1 WHERE tenant_id IS NULL`,
+    `UPDATE clock_in_requests SET tenant_id = 1 WHERE tenant_id IS NULL`,
+    `UPDATE job_sites SET tenant_id = 1 WHERE tenant_id IS NULL`,
+    `UPDATE session_disputes SET tenant_id = 1 WHERE tenant_id IS NULL`,
+    `UPDATE session_edits SET tenant_id = 1 WHERE tenant_id IS NULL`,
+    `UPDATE qb_employee_map SET tenant_id = 1 WHERE tenant_id IS NULL`,
+    `UPDATE qb_sync_log SET tenant_id = 1 WHERE tenant_id IS NULL`,
+    // Indexes for tenant queries
+    `CREATE INDEX IF NOT EXISTS idx_workers_tenant ON workers(tenant_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON sessions(tenant_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_job_sites_tenant ON job_sites(tenant_id)`,
   ]
   for (const sql of statements) {
     try {
       await db.prepare(sql).run()
     } catch(e: any) {
       // Ignore "duplicate column" errors from ALTER TABLE on re-runs
-      if (!e?.message?.includes('duplicate column')) throw e
+      if (!e?.message?.includes('duplicate column') &&
+          !e?.message?.includes('already exists')) throw e
     }
   }
 }
@@ -1894,6 +2007,142 @@ app.put('/api/settings', async (c) => {
   }
 
   return c.json({ success: true })
+})
+
+// ─── TENANT API ───────────────────────────────────────────────────────────────
+// These endpoints power the signup flow + future super admin panel
+
+// GET /api/tenant/current — returns tenant info based on Host header
+app.get('/api/tenant/current', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const slug = getTenantSlug(c.req.raw)
+  if (!slug) {
+    // Platform URL (admin.clockinproof.com / app.clockinproof.com)
+    // Return tenant 1 (911 Restoration) as default for existing URLs
+    const tenant = await db.prepare(`SELECT id, slug, company_name, logo_url, primary_color, plan, status, max_workers FROM tenants WHERE id = 1`).first()
+    return c.json({ tenant, is_platform_url: true })
+  }
+  const tenant = await getTenantBySlug(db, slug)
+  if (!tenant) return c.json({ error: 'Company not found' }, 404)
+  return c.json({ tenant, is_platform_url: false })
+})
+
+// GET /api/plans — public pricing plans
+app.get('/api/plans', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const plans = await db.prepare(`SELECT * FROM stripe_plans WHERE active = 1 ORDER BY price_monthly`).all()
+  return c.json({ plans: plans.results })
+})
+
+// GET /api/tenants — list all tenants (for future super admin)
+app.get('/api/tenants/check-slug', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const slug = (c.req.query('slug') || '').toLowerCase().replace(/[^a-z0-9-]/g, '-')
+  if (!slug || slug.length < 2) return c.json({ available: false, error: 'Too short' })
+  const reserved = ['admin', 'app', 'www', 'superadmin', 'api', 'mail', 'staging', 'clockinproof', 'support']
+  if (reserved.includes(slug)) return c.json({ available: false, error: 'Reserved name' })
+  const existing = await db.prepare(`SELECT id FROM tenants WHERE slug = ?`).bind(slug).first()
+  return c.json({ available: !existing, slug })
+})
+
+app.get('/api/tenants', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenants = await db.prepare(
+    `SELECT t.*, 
+       (SELECT COUNT(*) FROM workers w WHERE w.tenant_id = t.id AND w.active = 1) as worker_count,
+       (SELECT COUNT(*) FROM sessions s WHERE s.tenant_id = t.id) as session_count
+     FROM tenants t ORDER BY t.created_at DESC`
+  ).all()
+  return c.json({ tenants: tenants.results })
+})
+
+// POST /api/tenants — create new tenant (called by Stripe webhook or manual signup)
+app.post('/api/tenants', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const body = await c.req.json()
+  const { slug, company_name, company_address, admin_email, admin_pin, plan, stripe_customer_id, stripe_subscription_id } = body
+
+  if (!slug || !company_name || !admin_email) {
+    return c.json({ error: 'slug, company_name and admin_email are required' }, 400)
+  }
+
+  // Validate slug (lowercase, alphanumeric + hyphens only)
+  const cleanSlug = slug.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-')
+
+  // Check uniqueness
+  const existing = await db.prepare(`SELECT id FROM tenants WHERE slug = ?`).bind(cleanSlug).first()
+  if (existing) return c.json({ error: `Subdomain "${cleanSlug}" is already taken` }, 409)
+
+  const planLimits: Record<string, number> = { starter: 10, growth: 25, pro: 999 }
+  const maxWorkers = planLimits[plan || 'starter'] || 10
+
+  const result = await db.prepare(
+    `INSERT INTO tenants (slug, company_name, company_address, admin_email, admin_pin, plan, status, max_workers, stripe_customer_id, stripe_subscription_id)
+     VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
+  ).bind(cleanSlug, company_name, company_address || '', admin_email, admin_pin || '1234',
+    plan || 'starter', maxWorkers, stripe_customer_id || null, stripe_subscription_id || null).run()
+
+  const tenantId = (result.meta as any).last_row_id
+
+  // Seed default settings for new tenant
+  const defaults = [
+    ['app_name', company_name], ['country_code', 'CA'], ['province_code', 'ON'],
+    ['timezone', 'America/Toronto'], ['work_start', '08:00'], ['work_end', '16:00'],
+    ['break_morning_min', '15'], ['break_lunch_min', '30'], ['break_afternoon_min', '15'],
+    ['paid_hours_per_day', '7.5'], ['work_days', '1,2,3,4,5'], ['stat_pay_multiplier', '1.5'],
+    ['pay_frequency', 'biweekly'], ['pay_period_anchor', '2026-03-06'],
+    ['show_pay_to_workers', '1'], ['geofence_radius_meters', '300'],
+    ['gps_fraud_check', '1'], ['auto_clockout_enabled', '1'],
+    ['max_shift_hours', '10'], ['away_warning_min', '30'],
+    ['company_name', company_name], ['admin_email', admin_email]
+  ]
+  for (const [key, value] of defaults) {
+    await db.prepare(
+      `INSERT OR IGNORE INTO tenant_settings (tenant_id, key, value) VALUES (?, ?, ?)`
+    ).bind(tenantId, key, value).run()
+  }
+
+  return c.json({
+    success: true,
+    tenant_id: tenantId,
+    slug: cleanSlug,
+    url: `https://${cleanSlug}.clockinproof.com`
+  })
+})
+
+// PUT /api/tenants/:id — update tenant (branding, plan, status)
+app.put('/api/tenants/:id', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const body = await c.req.json()
+  const allowed = ['company_name', 'company_address', 'admin_email', 'admin_pin',
+    'logo_url', 'primary_color', 'plan', 'status', 'max_workers']
+  for (const key of allowed) {
+    if (body[key] !== undefined) {
+      await db.prepare(`UPDATE tenants SET ${key} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .bind(body[key], id).run()
+    }
+  }
+  return c.json({ success: true })
+})
+
+// GET /api/tenants/:id/stats — usage stats for one tenant
+app.get('/api/tenants/:id/stats', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const [workers, sessions, tenant] = await Promise.all([
+    db.prepare(`SELECT COUNT(*) as count FROM workers WHERE tenant_id = ? AND active = 1`).bind(id).first(),
+    db.prepare(`SELECT COUNT(*) as count FROM sessions WHERE tenant_id = ?`).bind(id).first(),
+    db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(id).first()
+  ])
+  return c.json({ tenant, worker_count: (workers as any)?.count || 0, session_count: (sessions as any)?.count || 0 })
 })
 
 // ─── STAT PAY RULES (province/state minimums) ─────────────────────────────────
@@ -3608,11 +3857,14 @@ function getSubdomain(c: any): string {
   const host = c.req.header('host') || ''
   const parts = host.split('.')
   // Only treat as subdomain if it's a real domain (ends in .com/.io/.ai etc)
-  // and the first part is a known subdomain keyword
   // e.g. app.clockinproof.com → ['app','clockinproof','com'] → 'app'
   // e.g. 3000-xxxxx.sandbox.novita.ai → NOT a real subdomain → return ''
-  const knownSubs = ['app', 'admin', 'www']
+  const knownSubs = ['app', 'admin', 'www', 'superadmin']
   if (parts.length >= 3 && knownSubs.includes(parts[0].toLowerCase())) {
+    return parts[0].toLowerCase()
+  }
+  // Tenant subdomain (e.g. acme.clockinproof.com)
+  if (parts.length >= 3 && parts[1] === 'clockinproof') {
     return parts[0].toLowerCase()
   }
   return ''
@@ -3621,11 +3873,26 @@ function getSubdomain(c: any): string {
 // ─── MAIN PAGES ───────────────────────────────────────────────────────────────
 
 // Root route — subdomain-aware for production, landing page for sandbox/direct
-app.get('/', (c) => {
+app.get('/', async (c) => {
   const sub = getSubdomain(c)
   if (sub === 'admin') return c.html(getAdminHTML())
   if (sub === 'app')   return c.html(getWorkerHTML())
-  // www.clockinproof.com or clockinproof.com → landing page
+  // Tenant subdomain — e.g. acme.clockinproof.com → worker app for that tenant
+  const reserved = ['admin', 'app', 'www', 'superadmin', 'api', 'mail', '']
+  if (sub && !reserved.includes(sub)) {
+    const db = c.env.DB
+    await ensureSchema(db)
+    const tenant = await getTenantBySlug(db, sub) as any
+    if (tenant && tenant.status === 'active') {
+      return c.html(getWorkerHTML(tenant))
+    }
+    return c.html(`<html><body style="font-family:sans-serif;text-align:center;padding:60px">
+      <h2>Company not found</h2>
+      <p>The company <strong>${sub}</strong> does not exist or is inactive.</p>
+      <a href="https://clockinproof.com">← Back to ClockInProof</a>
+    </body></html>`, 404)
+  }
+  // www.clockinproof.com or clockinproof.com → marketing/pricing page
   return c.html(getLandingHTML())
 })
 
@@ -3644,7 +3911,206 @@ app.get('/landing', (c) => {
   return c.html(getLandingHTML())
 })
 
+// Signup page — /signup?plan=starter|growth|pro
+app.get('/signup', (c) => {
+  const plan = c.req.query('plan') || 'growth'
+  return c.html(getSignupHTML(plan))
+})
+
 // ─── HTML Templates ───────────────────────────────────────────────────────────
+
+// ─── SIGNUP PAGE ──────────────────────────────────────────────────────────────
+function getSignupHTML(plan: string): string {
+  const plans: Record<string, { name: string; price: string; workers: string; color: string }> = {
+    starter: { name: 'Starter', price: '$29/mo', workers: 'Up to 10 workers', color: 'indigo' },
+    growth:  { name: 'Growth',  price: '$59/mo', workers: 'Up to 25 workers', color: 'blue' },
+    pro:     { name: 'Pro',     price: '$99/mo', workers: 'Unlimited workers', color: 'purple' },
+  }
+  const p = plans[plan] || plans.growth
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Start Your Free Trial — ClockInProof</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+</head>
+<body class="bg-gray-950 text-white min-h-screen flex items-center justify-center px-4 py-12">
+  <div class="w-full max-w-lg">
+    <!-- Logo -->
+    <div class="text-center mb-8">
+      <a href="/" class="inline-flex items-center gap-2 text-white font-black text-xl">
+        <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-sm font-black">C</div>
+        ClockInProof
+      </a>
+    </div>
+
+    <!-- Selected Plan Badge -->
+    <div class="bg-blue-600/20 border border-blue-500/30 rounded-2xl p-4 mb-6 flex items-center justify-between">
+      <div>
+        <p class="font-bold text-blue-300">${p.name} Plan</p>
+        <p class="text-sm text-gray-400">${p.workers}</p>
+      </div>
+      <div class="text-right">
+        <p class="text-2xl font-black text-white">${p.price}</p>
+        <p class="text-xs text-gray-500">14-day free trial</p>
+      </div>
+    </div>
+
+    <!-- Signup Form -->
+    <div class="bg-gray-900 border border-white/10 rounded-2xl p-8">
+      <h1 class="text-2xl font-black mb-2">Create your account</h1>
+      <p class="text-gray-400 text-sm mb-6">Your subdomain will be ready in seconds.</p>
+
+      <div id="signup-error" class="hidden bg-red-900/50 border border-red-500/50 text-red-300 rounded-xl p-3 text-sm mb-4"></div>
+      <div id="signup-success" class="hidden bg-green-900/50 border border-green-500/50 text-green-300 rounded-xl p-4 text-sm mb-4"></div>
+
+      <form id="signup-form" class="space-y-4">
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">Company Name *</label>
+            <input id="f-company" type="text" placeholder="Acme Cleaning Co." required
+              class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">Your Subdomain *</label>
+            <div class="relative">
+              <input id="f-slug" type="text" placeholder="acme" required
+                class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 pr-32"/>
+              <span class="absolute right-3 top-3 text-xs text-gray-500">.clockinproof.com</span>
+            </div>
+            <p id="slug-status" class="text-xs mt-1 text-gray-500"></p>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">Admin Email *</label>
+          <input id="f-email" type="email" placeholder="you@company.com" required
+            class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">Admin PIN (4–6 digits) *</label>
+          <input id="f-pin" type="number" placeholder="1234" required minlength="4" maxlength="6"
+            class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+          <p class="text-xs text-gray-600 mt-1">Used to log into your admin panel</p>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">Company Address</label>
+          <input id="f-address" type="text" placeholder="123 Main St, Ottawa, ON"
+            class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+        </div>
+
+        <button type="submit" id="signup-btn"
+          class="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition text-base flex items-center justify-center gap-2">
+          <i class="fas fa-rocket"></i>
+          Start 14-Day Free Trial
+        </button>
+      </form>
+
+      <p class="text-center text-xs text-gray-600 mt-4">
+        By signing up you agree to our
+        <a href="/terms" class="text-blue-500 underline">Terms of Service</a> and
+        <a href="/privacy" class="text-blue-500 underline">Privacy Policy</a>.
+        <br>No credit card required for trial.
+      </p>
+    </div>
+
+    <p class="text-center text-gray-600 text-sm mt-6">
+      Already have an account? <a href="/admin" class="text-blue-400 underline">Sign in</a>
+    </p>
+  </div>
+
+<script>
+// Auto-generate slug from company name
+document.getElementById('f-company').addEventListener('input', function() {
+  const slug = this.value.toLowerCase()
+    .replace(/[^a-z0-9\\s-]/g, '')
+    .replace(/\\s+/g, '-')
+    .replace(/-+/g, '-')
+    .substring(0, 30)
+  document.getElementById('f-slug').value = slug
+  checkSlug(slug)
+})
+
+document.getElementById('f-slug').addEventListener('input', function() {
+  checkSlug(this.value)
+})
+
+let slugTimer = null
+function checkSlug(slug) {
+  const el = document.getElementById('slug-status')
+  if (!slug || slug.length < 2) { el.textContent = ''; return }
+  el.textContent = 'Checking…'
+  el.className = 'text-xs mt-1 text-gray-500'
+  clearTimeout(slugTimer)
+  slugTimer = setTimeout(async () => {
+    try {
+      const res = await fetch('/api/tenants/check-slug?slug=' + encodeURIComponent(slug))
+      const data = await res.json()
+      if (data.available) {
+        el.textContent = '✅ ' + slug + '.clockinproof.com is available!'
+        el.className = 'text-xs mt-1 text-green-400'
+      } else {
+        el.textContent = '❌ That subdomain is taken'
+        el.className = 'text-xs mt-1 text-red-400'
+      }
+    } catch { el.textContent = '' }
+  }, 500)
+}
+
+document.getElementById('signup-form').addEventListener('submit', async function(e) {
+  e.preventDefault()
+  const btn = document.getElementById('signup-btn')
+  const errEl = document.getElementById('signup-error')
+  const okEl = document.getElementById('signup-success')
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating your account…'
+  errEl.classList.add('hidden')
+  okEl.classList.add('hidden')
+
+  try {
+    const res = await fetch('/api/tenants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        slug: document.getElementById('f-slug').value.trim(),
+        company_name: document.getElementById('f-company').value.trim(),
+        company_address: document.getElementById('f-address').value.trim(),
+        admin_email: document.getElementById('f-email').value.trim(),
+        admin_pin: document.getElementById('f-pin').value.trim(),
+        plan: '${plan}'
+      })
+    })
+    const data = await res.json()
+    if (res.ok && data.success) {
+      okEl.innerHTML = \`
+        <p class="font-bold text-green-300 text-base mb-1">🎉 Your account is ready!</p>
+        <p class="mb-2">Your ClockInProof is live at:</p>
+        <a href="\${data.url}/admin" target="_blank"
+          class="block bg-green-800 rounded-lg px-3 py-2 font-mono text-green-200 hover:text-white">
+          \${data.url}/admin
+        </a>
+        <p class="mt-2 text-gray-400 text-xs">Bookmark this link — it's your admin panel.</p>
+      \`
+      okEl.classList.remove('hidden')
+      document.getElementById('signup-form').classList.add('hidden')
+    } else {
+      errEl.textContent = data.error || 'Signup failed. Please try again.'
+      errEl.classList.remove('hidden')
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-rocket"></i> Start 14-Day Free Trial'
+    }
+  } catch(e) {
+    errEl.textContent = 'Network error. Please try again.'
+    errEl.classList.remove('hidden')
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-rocket"></i> Start 14-Day Free Trial'
+  }
+})
+</script>
+</body>
+</html>`
+}
 
 // ─── LANDING PAGE ─────────────────────────────────────────────────────────────
 function getLandingHTML(): string {
@@ -3884,50 +4350,50 @@ function getLandingHTML(): string {
       <div class="bg-gray-900 border border-white/10 rounded-2xl p-8">
         <h3 class="font-bold text-xl mb-2">Starter</h3>
         <div class="text-4xl font-black mb-1">$29<span class="text-lg font-normal text-gray-400">/mo</span></div>
-        <p class="text-gray-500 text-sm mb-6">Up to 5 workers</p>
+        <p class="text-gray-500 text-sm mb-6">Up to 10 workers</p>
         <ul class="space-y-3 text-sm text-gray-300 mb-8">
           <li><i class="fas fa-check text-green-400 mr-2"></i>GPS clock-in proof</li>
           <li><i class="fas fa-check text-green-400 mr-2"></i>Geofence detection</li>
           <li><i class="fas fa-check text-green-400 mr-2"></i>Payroll reports (CSV)</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Email alerts</li>
-          <li><i class="fas fa-times text-gray-600 mr-2"></i>SMS alerts</li>
-          <li><i class="fas fa-times text-gray-600 mr-2"></i>Live GPS map</li>
+          <li><i class="fas fa-check text-green-400 mr-2"></i>Email reports</li>
+          <li><i class="fas fa-check text-green-400 mr-2"></i>Your own subdomain</li>
+          <li><i class="fas fa-times text-gray-600 mr-2"></i>QuickBooks sync</li>
         </ul>
-        <a href="/admin" class="block text-center border border-white/20 hover:border-blue-500 text-white font-semibold py-3 rounded-xl transition">Get Started</a>
+        <a href="/signup?plan=starter" class="block text-center border border-white/20 hover:border-blue-500 text-white font-semibold py-3 rounded-xl transition">Start Free Trial</a>
       </div>
 
       <div class="bg-gray-900 pricing-popular rounded-2xl p-8">
-        <h3 class="font-bold text-xl mb-2">Pro</h3>
-        <div class="text-4xl font-black mb-1 text-blue-400">$79<span class="text-lg font-normal text-gray-400">/mo</span></div>
+        <h3 class="font-bold text-xl mb-2">Growth</h3>
+        <div class="text-4xl font-black mb-1 text-blue-400">$59<span class="text-lg font-normal text-gray-400">/mo</span></div>
         <p class="text-gray-500 text-sm mb-6">Up to 25 workers</p>
         <ul class="space-y-3 text-sm text-gray-300 mb-8">
           <li><i class="fas fa-check text-green-400 mr-2"></i>Everything in Starter</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>SMS alerts (Twilio)</li>
+          <li><i class="fas fa-check text-green-400 mr-2"></i>SMS worker invites</li>
           <li><i class="fas fa-check text-green-400 mr-2"></i>Live GPS map</li>
+          <li><i class="fas fa-check text-green-400 mr-2"></i>QuickBooks sync</li>
           <li><i class="fas fa-check text-green-400 mr-2"></i>Job sites manager</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Session time editing</li>
           <li><i class="fas fa-check text-green-400 mr-2"></i>Worker dispute reports</li>
         </ul>
-        <a href="/admin" class="block text-center bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-xl transition">Get Started</a>
+        <a href="/signup?plan=growth" class="block text-center bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-xl transition">Start Free Trial</a>
       </div>
 
       <div class="bg-gray-900 border border-white/10 rounded-2xl p-8">
-        <h3 class="font-bold text-xl mb-2">Business</h3>
-        <div class="text-4xl font-black mb-1">$149<span class="text-lg font-normal text-gray-400">/mo</span></div>
+        <h3 class="font-bold text-xl mb-2">Pro</h3>
+        <div class="text-4xl font-black mb-1">$99<span class="text-lg font-normal text-gray-400">/mo</span></div>
         <p class="text-gray-500 text-sm mb-6">Unlimited workers</p>
         <ul class="space-y-3 text-sm text-gray-300 mb-8">
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Everything in Pro</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Custom domain</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>White label branding</li>
+          <li><i class="fas fa-check text-green-400 mr-2"></i>Everything in Growth</li>
+          <li><i class="fas fa-check text-green-400 mr-2"></i>White-label branding</li>
+          <li><i class="fas fa-check text-green-400 mr-2"></i>Custom logo + colors</li>
           <li><i class="fas fa-check text-green-400 mr-2"></i>Priority support</li>
           <li><i class="fas fa-check text-green-400 mr-2"></i>Accountant portal</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>API access</li>
+          <li><i class="fas fa-check text-green-400 mr-2"></i>Unlimited workers</li>
         </ul>
-        <a href="/admin" class="block text-center border border-white/20 hover:border-blue-500 text-white font-semibold py-3 rounded-xl transition">Get Started</a>
+        <a href="/signup?plan=pro" class="block text-center border border-white/20 hover:border-blue-500 text-white font-semibold py-3 rounded-xl transition">Start Free Trial</a>
       </div>
 
     </div>
-    <p class="text-center text-gray-500 text-sm mt-8">All plans include a 14-day free trial. No credit card required to start.</p>
+    <p class="text-center text-gray-500 text-sm mt-8">All plans include a 14-day free trial · No credit card required to start · Cancel anytime</p>
   </div>
 </section>
 
@@ -4037,8 +4503,8 @@ function getLandingHTML(): string {
       <div>
         <h4 class="font-semibold mb-4 text-sm uppercase tracking-wider text-gray-400">Legal</h4>
         <ul class="space-y-2 text-sm text-gray-500">
-          <li><a href="#" class="hover:text-white transition">Privacy Policy</a></li>
-          <li><a href="#" class="hover:text-white transition">Terms of Service</a></li>
+          <li><a href="/privacy" class="hover:text-white transition">Privacy Policy</a></li>
+          <li><a href="/terms" class="hover:text-white transition">Terms of Service</a></li>
         </ul>
       </div>
     </div>
@@ -4069,18 +4535,21 @@ function toggleFaq(btn) {
 }
 
 // ─── WORKER APP ───────────────────────────────────────────────────────────────
-function getWorkerHTML(): string {
+function getWorkerHTML(tenant?: any): string {
+  const companyName = tenant?.company_name || 'ClockInProof'
+  const primaryColor = tenant?.primary_color || '#4F46E5'
+  const logoUrl = tenant?.logo_url || ''
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
-  <meta name="theme-color" content="#1e40af"/>
+  <meta name="theme-color" content="${primaryColor}"/>
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
-  <meta name="apple-mobile-web-app-title" content="ClockInProof"/>
-  <title>ClockInProof — Clock In/Out</title>
+  <meta name="apple-mobile-web-app-title" content="${companyName}"/>
+  <title>${companyName} — Clock In/Out</title>
   <link rel="manifest" href="/static/manifest.json"/>
   <link rel="apple-touch-icon" href="/static/icon-180.png"/>
   <link rel="apple-touch-icon" sizes="192x192" href="/static/icon-192.png"/>
@@ -4090,6 +4559,7 @@ function getWorkerHTML(): string {
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
+    :root { --primary: ${primaryColor}; }
     body { font-family: 'Segoe UI', system-ui, sans-serif; }
     .clock-btn { transition: all 0.2s ease; }
     .clock-btn:active { transform: scale(0.97); }
@@ -4103,6 +4573,7 @@ function getWorkerHTML(): string {
     .modal-bg { backdrop-filter: blur(4px); }
     .day-group { border-left: 3px solid #3b82f6; }
   </style>
+  <script>window.__TENANT__ = ${JSON.stringify({ company_name: companyName, primary_color: primaryColor, logo_url: logoUrl })};</script>
 </head>
 <body class="bg-gray-50 min-h-screen">
 
