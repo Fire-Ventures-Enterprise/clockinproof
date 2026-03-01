@@ -5144,7 +5144,7 @@ function getWorkerHTML(tenant?: any): string {
           <p id="banner-drift-msg" class="text-xs text-orange-600 mt-0.5"></p>
           <p class="text-xs text-orange-500 mt-1">Your admin has been notified. Please return or clock out.</p>
         </div>
-        <button onclick="clockOut()" class="bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold px-3 py-2 rounded-xl flex-shrink-0">
+        <button onclick="openClockoutConfirm()" class="bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold px-3 py-2 rounded-xl flex-shrink-0">
           Clock Out
         </button>
       </div>
@@ -5163,7 +5163,7 @@ function getWorkerHTML(tenant?: any): string {
             <button onclick="confirmStillWorking()" class="bg-yellow-500 hover:bg-yellow-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg">
               Yes, still here
             </button>
-            <button onclick="clockOut()" class="bg-white border border-yellow-400 text-yellow-700 text-xs font-medium px-3 py-1.5 rounded-lg">
+            <button onclick="openClockoutConfirm()" class="bg-white border border-yellow-400 text-yellow-700 text-xs font-medium px-3 py-1.5 rounded-lg">
               Clock Out
             </button>
           </div>
@@ -5182,7 +5182,7 @@ function getWorkerHTML(tenant?: any): string {
           <p id="banner-maxshift-msg" class="text-xs text-red-600 mt-0.5"></p>
           <p class="text-xs text-red-400 mt-1">You will be automatically clocked out when the limit is reached.</p>
         </div>
-        <button onclick="clockOut()" class="bg-red-500 hover:bg-red-600 text-white text-xs font-bold px-3 py-2 rounded-xl flex-shrink-0">
+        <button onclick="openClockoutConfirm()" class="bg-red-500 hover:bg-red-600 text-white text-xs font-bold px-3 py-2 rounded-xl flex-shrink-0">
           Clock Out Now
         </button>
       </div>
@@ -5386,6 +5386,39 @@ function getWorkerHTML(tenant?: any): string {
 </div>
 
 <!-- ── Clock In Job Details Modal ─────────────────────────────────────────── -->
+<!-- ── Worker Clock-Out Confirmation Modal ────────────────────────────────── -->
+<div id="clockout-confirm-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 modal-bg flex items-end justify-center z-50" onclick="if(event.target===this)cancelClockoutConfirm()">
+  <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl slide-up overflow-hidden">
+    <!-- Red header bar -->
+    <div class="bg-gradient-to-r from-red-500 to-rose-600 px-6 pt-5 pb-6 text-center relative">
+      <div class="w-10 h-1 bg-white bg-opacity-30 rounded-full mx-auto mb-4"></div>
+      <div class="w-14 h-14 bg-white bg-opacity-20 rounded-full flex items-center justify-center mx-auto mb-3">
+        <i class="fas fa-stop-circle text-white text-2xl"></i>
+      </div>
+      <h2 class="text-white text-xl font-bold">Clock Out?</h2>
+      <p class="text-red-100 text-sm mt-1">This will end your current shift</p>
+    </div>
+    <!-- Session summary -->
+    <div class="px-6 py-5 space-y-4">
+      <div id="co-confirm-info" class="bg-gray-50 rounded-2xl p-4 space-y-2.5">
+        <!-- filled by JS -->
+      </div>
+      <!-- Action buttons -->
+      <div class="flex gap-3">
+        <button type="button" onclick="cancelClockoutConfirm()"
+          class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-4 rounded-2xl text-base transition-colors">
+          <i class="fas fa-arrow-left mr-2"></i>Cancel
+        </button>
+        <button type="button" id="co-confirm-btn" onclick="doConfirmClockout()"
+          class="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-4 rounded-2xl text-base transition-colors shadow-lg shadow-red-200">
+          <i class="fas fa-stop-circle mr-2"></i>Yes, Clock Out
+        </button>
+      </div>
+      <p class="text-center text-xs text-gray-400 pb-1">Tap Cancel if you pressed this by accident</p>
+    </div>
+  </div>
+</div>
+
 <div id="job-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 modal-bg flex items-end justify-center z-50">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up" style="max-height:90vh;overflow-y:auto">
     <div class="w-10 h-1 bg-gray-300 rounded-full mx-auto mb-5"></div>
@@ -7980,10 +8013,20 @@ function getAdminHTML(): string {
         <button onclick="closeAdminClockoutModal()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 rounded-xl transition-colors">
           Cancel
         </button>
-        <button id="aco-confirm-btn" onclick="confirmAdminClockout()" class="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-red-200">
-          <i class="fas fa-stop-circle mr-1.5"></i>Clock Out Now
-        </button>
+        <!-- Hold-to-confirm button: press & hold 2s to fire -->
+        <div class="flex-1 relative overflow-hidden rounded-xl">
+          <button id="aco-confirm-btn"
+            onmousedown="startAcoHold(event)" ontouchstart="startAcoHold(event)"
+            onmouseup="cancelAcoHold()" onmouseleave="cancelAcoHold()"
+            ontouchend="cancelAcoHold()" ontouchcancel="cancelAcoHold()"
+            class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-red-200 relative z-10 select-none">
+            <i class="fas fa-stop-circle mr-1.5"></i><span id="aco-btn-label">Hold to Clock Out</span>
+          </button>
+          <!-- Fill bar -->
+          <div id="aco-hold-bar" class="absolute bottom-0 left-0 h-full bg-red-800 bg-opacity-40 rounded-xl z-0 transition-none" style="width:0%"></div>
+        </div>
       </div>
+      <p class="text-center text-xs text-gray-400 pt-1 pb-1">Hold the button for 2 seconds to confirm</p>
     </div>
   </div>
 </div>

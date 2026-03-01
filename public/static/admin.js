@@ -828,6 +828,7 @@ function closeAdminClockoutModal() {
   document.getElementById('admin-clockout-modal').classList.add('hidden')
   document.body.style.overflow = ''
   pendingClockoutSessionId = null
+  cancelAcoHold()   // always reset hold bar on close
   // Reset validation state
   const noteEl = document.getElementById('aco-note')
   const errEl  = document.getElementById('aco-note-error')
@@ -843,6 +844,56 @@ function pickAcoReason(text) {
   if (errEl)  errEl.classList.add('hidden')
 }
 
+// ── Admin Clock-Out Hold-to-Confirm ───────────────────────────────────────────
+let _acoHoldTimer = null
+let _acoHoldFrame = null
+let _acoHoldStart = null
+const ACO_HOLD_MS  = 2000   // 2 seconds to confirm
+
+function startAcoHold(e) {
+  if (e) e.preventDefault()
+  // Validate note FIRST — don't start hold if empty
+  const noteEl = document.getElementById('aco-note')
+  const errEl  = document.getElementById('aco-note-error')
+  const note   = noteEl ? noteEl.value.trim() : ''
+  if (!note) {
+    if (noteEl) { noteEl.classList.add('border-red-400'); noteEl.focus() }
+    if (errEl)  errEl.classList.remove('hidden')
+    return
+  }
+  if (errEl) errEl.classList.add('hidden')
+  if (noteEl) noteEl.classList.remove('border-red-400')
+
+  _acoHoldStart = Date.now()
+  const bar  = document.getElementById('aco-hold-bar')
+  const lbl  = document.getElementById('aco-btn-label')
+
+  function tick() {
+    const elapsed = Date.now() - _acoHoldStart
+    const pct     = Math.min(100, (elapsed / ACO_HOLD_MS) * 100)
+    if (bar) bar.style.width = pct + '%'
+    if (pct < 100) {
+      _acoHoldFrame = requestAnimationFrame(tick)
+    } else {
+      // Held long enough — fire!
+      cancelAcoHold()
+      confirmAdminClockout()
+    }
+  }
+  _acoHoldFrame = requestAnimationFrame(tick)
+  if (lbl) lbl.textContent = 'Hold...'
+}
+
+function cancelAcoHold() {
+  if (_acoHoldFrame) { cancelAnimationFrame(_acoHoldFrame); _acoHoldFrame = null }
+  if (_acoHoldTimer) { clearTimeout(_acoHoldTimer); _acoHoldTimer = null }
+  _acoHoldStart = null
+  const bar = document.getElementById('aco-hold-bar')
+  const lbl = document.getElementById('aco-btn-label')
+  if (bar) bar.style.width = '0%'
+  if (lbl) lbl.textContent = 'Hold to Clock Out'
+}
+
 async function confirmAdminClockout() {
   if (!pendingClockoutSessionId) return
   const btn    = document.getElementById('aco-confirm-btn')
@@ -850,7 +901,7 @@ async function confirmAdminClockout() {
   const errEl  = document.getElementById('aco-note-error')
   const note   = noteEl ? noteEl.value.trim() : ''
 
-  // Validate — reason is required
+  // Final validation check
   if (!note) {
     if (noteEl) noteEl.classList.add('border-red-400')
     if (errEl)  errEl.classList.remove('hidden')
@@ -859,8 +910,7 @@ async function confirmAdminClockout() {
   }
   if (errEl) errEl.classList.add('hidden')
 
-  btn.disabled = true
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1.5"></i>Stopping...'
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1.5"></i>Stopping...' }
 
   try {
     const res = await fetch('/api/sessions/' + pendingClockoutSessionId + '/admin-clockout', {
@@ -880,13 +930,11 @@ async function confirmAdminClockout() {
       await Promise.all([loadSessions(), loadStats()])
     } else {
       showAdminToast(data.error || 'Clock-out failed', 'error')
-      btn.disabled = false
-      btn.innerHTML = '<i class="fas fa-stop-circle mr-1.5"></i>Clock Out Now'
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-stop-circle mr-1.5"></i>Hold to Clock Out' }
     }
   } catch(e) {
     showAdminToast('Connection error', 'error')
-    btn.disabled = false
-    btn.innerHTML = '<i class="fas fa-stop-circle mr-1.5"></i>Clock Out Now'
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-stop-circle mr-1.5"></i>Hold to Clock Out' }
   }
 }
 

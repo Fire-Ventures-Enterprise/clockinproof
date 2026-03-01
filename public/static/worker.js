@@ -176,10 +176,65 @@ function setClockedInUI(isClockedIn) {
 // ── Clock Button Handler ───────────────────────────────────────────────────────
 function handleClockBtn() {
   if (!activeSession) {
-    openJobModal()  // Show job details form before clocking in
+    openJobModal()           // Show job details form before clocking in
   } else {
-    clockOut()      // Clock out directly
+    openClockoutConfirm()    // Show confirmation before clocking out
   }
+}
+
+// ── Clock-Out Confirmation Modal ──────────────────────────────────────────────
+function openClockoutConfirm() {
+  const modal = document.getElementById('clockout-confirm-modal')
+  if (!modal) { _doClockOut(); return }   // fallback if modal missing
+
+  // Build summary panel
+  const infoEl = document.getElementById('co-confirm-info')
+  if (infoEl && activeSession) {
+    const clockInMs  = new Date(activeSession.clock_in_time).getTime()
+    const hoursWorked = ((Date.now() - clockInMs) / 3600000)
+    const earned      = (hoursWorked * (currentWorker?.hourly_rate || 0)).toFixed(2)
+    const hrsText     = `${Math.floor(hoursWorked)}h ${Math.round((hoursWorked % 1) * 60)}m`
+    const clockInStr  = new Date(activeSession.clock_in_time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+    infoEl.innerHTML = `
+      <div class="flex justify-between text-sm">
+        <span class="text-gray-500"><i class="fas fa-sign-in-alt text-green-500 mr-1.5"></i>Clocked In</span>
+        <span class="font-semibold text-gray-800">${clockInStr}</span>
+      </div>
+      <div class="flex justify-between text-sm">
+        <span class="text-gray-500"><i class="fas fa-clock text-yellow-500 mr-1.5"></i>Time Worked</span>
+        <span class="font-bold text-yellow-700">${hrsText}</span>
+      </div>
+      <div class="flex justify-between text-sm">
+        <span class="text-gray-500"><i class="fas fa-dollar-sign text-green-500 mr-1.5"></i>Est. Earnings</span>
+        <span class="font-bold text-green-700">$${earned}</span>
+      </div>
+      ${activeSession.job_location ? `
+      <div class="flex justify-between text-sm">
+        <span class="text-gray-500"><i class="fas fa-map-marker-alt text-red-400 mr-1.5"></i>Job Site</span>
+        <span class="font-medium text-gray-700 text-right max-w-[55%] truncate">${activeSession.job_location}</span>
+      </div>` : ''}
+    `
+  }
+
+  // Reset confirm button state
+  const btn = document.getElementById('co-confirm-btn')
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-stop-circle mr-2"></i>Yes, Clock Out' }
+
+  modal.classList.remove('hidden')
+  document.body.style.overflow = 'hidden'
+}
+
+function cancelClockoutConfirm() {
+  const modal = document.getElementById('clockout-confirm-modal')
+  if (modal) modal.classList.add('hidden')
+  document.body.style.overflow = ''
+}
+
+async function doConfirmClockout() {
+  const btn = document.getElementById('co-confirm-btn')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Clocking Out...' }
+  cancelClockoutConfirm()
+  await _doClockOut()
 }
 
 // ── Job Details Modal ─────────────────────────────────────────────────────────
@@ -581,10 +636,10 @@ async function pollOverrideStatus() {
   }
 }
 
-// ── Clock Out ─────────────────────────────────────────────────────────────────
-async function clockOut() {
+// ── Clock Out (internal — always call openClockoutConfirm() from UI) ──────────
+async function _doClockOut() {
   const btn = document.getElementById('clock-btn')
-  btn.disabled = true
+  if (btn) btn.disabled = true
   try {
     const res = await fetch('/api/sessions/clock-out', {
       method: 'POST',
@@ -612,7 +667,7 @@ async function clockOut() {
       await loadWorkLog()
     } else { showToast(data.error || 'Failed to clock out', 'error') }
   } catch(e) { showToast('Connection error', 'error') }
-  btn.disabled = false
+  if (btn) btn.disabled = false
 }
 
 // ── Duration Timer ────────────────────────────────────────────────────────────
