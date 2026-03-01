@@ -2005,14 +2005,34 @@ app.get('/api/sessions/watchdog', async (c) => {
     }
 
     // ── 4. AWAY/IDLE FLAG ────────────────────────────────────────────────────
-    // Check when last ping was received — if too long ago, flag as away
+    // Check when last ping was received — if too long ago, flag as away.
+    // GRACE PERIOD: Never flag away within the first (awayWarningMin + 5) minutes
+    // of clock-in. The ping interval is 5 min, so the worker needs time to send
+    // the first ping before we start counting. Without this grace period, a worker
+    // who clocks in and the ping hasn't fired yet gets flagged as "GPS lost" after
+    // awayWarningMin minutes even though they're still at the site.
+    const minssinceClockIn = (nowMs - clockInMs) / (1000 * 60)
+    const awayGraceMin     = awayWarningMin + 6  // ping interval (5 min) + 1 min buffer
+
     const lastPing = await db.prepare(
       'SELECT timestamp FROM location_pings WHERE session_id=? ORDER BY timestamp DESC LIMIT 1'
     ).bind(s.id).first<any>()
 
+    // If no pings yet AND still within grace window → not away
+    if (!lastPing && minssinceClockIn < awayGraceMin) {
+      // Still in the initial grace period — skip away check entirely
+      item.hours_worked    = Math.round(hoursWorked * 10) / 10
+      item.max_shift_hours = maxShiftHours
+      item.away_flag       = 0
+      item.drift_flag      = s.drift_flag
+      item.auto_clockout   = s.auto_clockout
+      if (!item.action) results.push(item)
+      continue
+    }
+
     const lastPingMs = lastPing
       ? new Date(lastPing.timestamp).getTime()
-      : clockInMs   // no pings yet: use clock-in time
+      : clockInMs   // no pings at all even after grace: use clock-in time as baseline
 
     const minsSincePing = (nowMs - lastPingMs) / (1000 * 60)
 

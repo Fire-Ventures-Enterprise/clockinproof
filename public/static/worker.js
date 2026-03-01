@@ -769,6 +769,25 @@ function closeMap() {
 
 function startPingInterval() {
   clearInterval(pingInterval)
+  // Send one immediate ping right away (best-effort, lat may still be null — retried in interval)
+  // This ensures there is at least one ping in the DB shortly after clock-in,
+  // preventing the watchdog from falsely flagging the worker as "GPS lost"
+  // before the 5-minute interval fires for the first time.
+  setTimeout(async () => {
+    if (!activeSession) return
+    // Wait up to 8s for GPS to resolve before giving up on first ping
+    const waitForGps = (ms) => new Promise(res => setTimeout(res, ms))
+    let tries = 0
+    while (!currentLat && tries < 4) { await waitForGps(2000); tries++ }
+    if (!activeSession || !currentLat) return
+    try {
+      await fetch('/api/location/ping', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: activeSession.id, worker_id: currentWorker.id, latitude: currentLat, longitude: currentLng })
+      })
+    } catch(e) {}
+  }, 1000)  // start 1 second after clock-in
+
   pingInterval = setInterval(async () => {
     if (!activeSession || !currentLat) return
     try {
