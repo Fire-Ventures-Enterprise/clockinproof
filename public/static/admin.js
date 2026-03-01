@@ -43,37 +43,55 @@ function isSystemNote(notes) {
 // ── Admin Login ───────────────────────────────────────────────────────────────
 async function adminLogin() {
   const pin = document.getElementById('admin-pin-input').value.trim()
-  
+  const errEl = document.getElementById('admin-login-error')
+  const btn = document.querySelector('button[onclick="adminLogin()"]')
+
+  if (!pin) {
+    errEl.textContent = 'Please enter your PIN.'
+    errEl.classList.remove('hidden')
+    return
+  }
+
+  // Disable button to prevent double-click
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Checking...' }
+  errEl.classList.add('hidden')
+
+  let adminPin = '1965' // hard-coded fallback matching DB value
   try {
     const res = await fetch('/api/settings')
-    const data = await res.json()
-    const adminPin = data.settings?.admin_pin || '1234'
-    
-    if (pin === adminPin) {
-      document.getElementById('admin-login').classList.add('hidden')
-      document.getElementById('admin-dashboard').classList.remove('hidden')
-      await refreshAll()
-      setInterval(refreshAll, 60000) // Auto-refresh every minute
-      // Deep-link: if URL has #overrides (from notification tap), go straight there
-      const hash = window.location.hash.replace('#', '')
-      if (hash && ['live','workers','sessions','map','calendar','settings','export','overrides'].includes(hash)) {
-        showTab(hash)
-      }
-    } else {
-      document.getElementById('admin-login-error').textContent = 'Incorrect PIN. Try again.'
-      document.getElementById('admin-login-error').classList.remove('hidden')
+    if (res.ok) {
+      const data = await res.json()
+      adminPin = data.settings?.admin_pin || adminPin
     }
   } catch(e) {
-    // Fallback PIN check
-    if (pin === '1234') {
-      document.getElementById('admin-login').classList.add('hidden')
-      document.getElementById('admin-dashboard').classList.remove('hidden')
-      await refreshAll()
-      const hash = window.location.hash.replace('#', '')
-      if (hash && ['live','workers','sessions','map','calendar','settings','export','overrides'].includes(hash)) {
-        showTab(hash)
-      }
+    // Network error — use hardcoded fallback, still allow login
+    console.warn('Could not fetch settings, using fallback PIN check')
+  }
+
+  // Re-enable button
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-unlock mr-2"></i>Access Dashboard' }
+
+  if (pin === adminPin) {
+    // SUCCESS — show dashboard immediately
+    document.getElementById('admin-login').classList.add('hidden')
+    document.getElementById('admin-dashboard').classList.remove('hidden')
+    errEl.classList.add('hidden')
+    // Start auto-refresh interval
+    if (!window._adminRefreshInterval) {
+      window._adminRefreshInterval = setInterval(refreshAll, 60000)
     }
+    // Load data in background — don't await (don't block or risk hiding dashboard)
+    refreshAll().catch(() => {})
+    // Deep-link navigation
+    const hash = window.location.hash.replace('#', '')
+    if (hash && ['live','workers','sessions','map','calendar','settings','export','overrides'].includes(hash)) {
+      showTab(hash)
+    }
+  } else {
+    errEl.textContent = 'Incorrect PIN. Try again.'
+    errEl.classList.remove('hidden')
+    document.getElementById('admin-pin-input').focus()
+    document.getElementById('admin-pin-input').select()
   }
 }
 

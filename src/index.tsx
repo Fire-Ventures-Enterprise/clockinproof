@@ -5510,7 +5510,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js"></script>
+<script src="/static/worker.js?v=20260301"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -7924,7 +7924,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js"></script>
+<script src="/static/admin.js?v=20260301"></script>
 
 </body>
 </html>`
