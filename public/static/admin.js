@@ -2362,13 +2362,46 @@ let activeDays = [1,2,3,4,5]
 
 async function loadSettings() {
   try {
+    // ── Load tenant branding data first ──────────────────────────────────────
+    const tenantRes = await fetch('/api/tenant/current')
+    const tenantData = await tenantRes.json()
+    const tenant = tenantData.tenant || {}
+
+    // Populate settings header with tenant brand
+    const companyTitle = document.getElementById('settings-company-title')
+    const workerUrlEl  = document.getElementById('settings-worker-url')
+    const workerUrlTxt = document.getElementById('settings-worker-url-text')
+    const workerAppDisplay = document.getElementById('s-worker-app-url-display')
+    const logoImg      = document.getElementById('settings-logo-img')
+    const logoIcon     = document.getElementById('settings-logo-icon')
+    const logoUrlInput = document.getElementById('s-logo-url')
+
+    if (companyTitle) companyTitle.textContent = tenant.company_name || 'Your Company'
+    const workerAppUrl = tenant.slug
+      ? `https://app.${tenant.slug}.clockinproof.com`
+      : (window.location.origin.replace('admin.', 'app.') || 'https://app.clockinproof.com')
+    if (workerUrlEl)    { workerUrlEl.href = workerAppUrl }
+    if (workerUrlTxt)   { workerUrlTxt.textContent = workerAppUrl.replace('https://', '') }
+    if (workerAppDisplay) { workerAppDisplay.textContent = workerAppUrl }
+    if (logoUrlInput && tenant.logo_url) logoUrlInput.value = tenant.logo_url
+
+    // Show logo image if available
+    if (tenant.logo_url && logoImg && logoIcon) {
+      logoImg.src = tenant.logo_url
+      logoImg.classList.remove('hidden')
+      logoIcon.classList.add('hidden')
+      logoImg.onerror = () => { logoImg.classList.add('hidden'); logoIcon.classList.remove('hidden') }
+    }
+
+    // ── Load global settings ──────────────────────────────────────────────────
     const res = await fetch('/api/settings')
     const data = await res.json()
     currentSettings = data.settings || {}
 
-    document.getElementById('s-app-name').value = currentSettings.app_name || 'ClockInProof'
+    // Populate Company Name field from tenant data (authoritative) or settings fallback
+    document.getElementById('s-app-name').value = tenant.company_name || currentSettings.app_name || 'ClockInProof'
     document.getElementById('s-hourly-rate').value = currentSettings.default_hourly_rate || '15.00'
-    document.getElementById('s-admin-pin').value = currentSettings.admin_pin || '1234'
+    document.getElementById('s-admin-pin').value = currentSettings.admin_pin || '1965'
     document.getElementById('s-admin-email').value = currentSettings.admin_email || ''
     document.getElementById('s-reply-to-email').value = currentSettings.reply_to_email || ''
     document.getElementById('s-city').value = currentSettings.city || ''
@@ -2555,14 +2588,26 @@ async function saveSettings() {
   }
 
   try {
+    // Save global settings
     const res = await fetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     })
+
+    // Also save company_name + logo_url directly to the tenant record
+    const logoUrl = document.getElementById('s-logo-url')?.value?.trim() || ''
+    await fetch('/api/tenants/1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ company_name: payload.app_name, logo_url: logoUrl })
+    }).catch(() => {}) // non-blocking — settings save is primary
+
     if (res.ok) {
       showAdminToast('Settings saved! ✅', 'success')
       currentSettings = payload
+      // Refresh the branded header
+      loadSettings()
     } else {
       showAdminToast('Failed to save settings', 'error')
     }
@@ -2570,6 +2615,21 @@ async function saveSettings() {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Preview logo in the settings header when URL is entered
+function previewSettingsLogo(url) {
+  const logoImg  = document.getElementById('settings-logo-img')
+  const logoIcon = document.getElementById('settings-logo-icon')
+  if (!logoImg || !logoIcon) return
+  if (!url || !url.trim()) {
+    logoImg.classList.add('hidden')
+    logoIcon.classList.remove('hidden')
+    return
+  }
+  logoImg.src = url.trim()
+  logoImg.onload  = () => { logoImg.classList.remove('hidden'); logoIcon.classList.add('hidden') }
+  logoImg.onerror = () => { logoImg.classList.add('hidden'); logoIcon.classList.remove('hidden') }
+}
 
 // ── Export Tab ────────────────────────────────────────────────────────────────
 function getMonWeekStart(offsetWeeks = 0) {

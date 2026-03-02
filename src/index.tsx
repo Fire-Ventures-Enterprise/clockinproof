@@ -8011,17 +8011,65 @@ function getAdminHTML(): string {
 
     <!-- Tab: Settings -->
     <div id="tab-settings" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
-      <h3 class="font-bold text-gray-700 mb-5 flex items-center gap-2">
-        <i class="fas fa-cog text-indigo-500"></i> App Settings
-      </h3>
+
+      <!-- ── Tenant Brand Header ── -->
+      <div id="settings-tenant-header" class="flex items-center gap-4 mb-6 pb-5 border-b border-gray-100">
+        <!-- Logo -->
+        <div id="settings-logo-wrap" class="w-14 h-14 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center flex-shrink-0 overflow-hidden">
+          <img id="settings-logo-img" src="" alt="" class="w-full h-full object-contain hidden" />
+          <i id="settings-logo-icon" class="fas fa-building text-indigo-400 text-xl"></i>
+        </div>
+        <!-- Name + URL -->
+        <div class="flex-1 min-w-0">
+          <h3 id="settings-company-title" class="text-xl font-bold text-gray-900 leading-tight truncate">Loading…</h3>
+          <a id="settings-worker-url" href="#" target="_blank"
+             class="inline-flex items-center gap-1.5 text-xs text-indigo-500 hover:text-indigo-700 font-medium mt-0.5 hover:underline">
+            <i class="fas fa-mobile-alt"></i>
+            <span id="settings-worker-url-text">app.clockinproof.com</span>
+          </a>
+        </div>
+        <!-- Settings gear label -->
+        <div class="flex-shrink-0 text-right hidden sm:block">
+          <span class="inline-flex items-center gap-1.5 text-xs text-gray-400 bg-gray-50 border border-gray-200 rounded-full px-3 py-1.5">
+            <i class="fas fa-cog text-gray-400"></i> App Settings
+          </span>
+        </div>
+      </div>
+
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
 
         <!-- General -->
         <div class="space-y-4">
           <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2">General</h4>
           <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">App Name</label>
-            <input id="s-app-name" type="text" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Company Name</label>
+            <input id="s-app-name" type="text" placeholder="e.g. 911 Restoration of Ottawa" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+            <p class="text-xs text-gray-400 mt-1">Shown on the worker app and all outbound communications.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Company Logo URL</label>
+            <div class="flex gap-2">
+              <input id="s-logo-url" type="url" placeholder="https://example.com/logo.png"
+                class="flex-1 px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                oninput="previewSettingsLogo(this.value)" />
+              <button type="button" onclick="previewSettingsLogo(document.getElementById('s-logo-url').value)"
+                class="px-3 py-2.5 bg-indigo-50 border border-indigo-200 rounded-xl text-indigo-600 text-sm hover:bg-indigo-100">
+                <i class="fas fa-eye"></i>
+              </button>
+            </div>
+            <p class="text-xs text-gray-400 mt-1">PNG or SVG recommended. Displayed in the header above.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Worker App URL</label>
+            <div class="flex items-center gap-2 px-3 py-2.5 border border-gray-200 rounded-xl bg-gray-50">
+              <i class="fas fa-mobile-alt text-gray-400 text-sm"></i>
+              <span id="s-worker-app-url-display" class="text-sm text-gray-600 font-mono flex-1">—</span>
+              <button onclick="navigator.clipboard.writeText(document.getElementById('s-worker-app-url-display').textContent).then(()=>showAdminToast('URL copied!','success',2000))"
+                class="text-xs text-indigo-500 hover:text-indigo-700 font-medium">
+                <i class="fas fa-copy"></i>
+              </button>
+            </div>
+            <p class="text-xs text-gray-400 mt-1">Share this link with your workers to clock in.</p>
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Default Hourly Rate ($/hr)</label>
@@ -10298,7 +10346,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260302e"></script>
+<script src="/static/admin.js?v=20260302f"></script>
 
 </body>
 </html>`
