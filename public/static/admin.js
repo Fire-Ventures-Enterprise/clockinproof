@@ -2377,6 +2377,30 @@ async function loadSettings() {
     const logoUrlInput = document.getElementById('s-logo-url')
 
     if (companyTitle) companyTitle.textContent = tenant.company_name || 'Your Company'
+
+    // Address in header
+    const addrEl    = document.getElementById('settings-company-address')
+    const addrTxt   = document.getElementById('settings-company-address-text')
+    const phoneEl   = document.getElementById('settings-company-phone')
+    const phoneTxt  = document.getElementById('settings-company-phone-text')
+    if (addrEl && addrTxt) {
+      if (tenant.company_address) {
+        addrTxt.textContent = tenant.company_address
+        addrEl.classList.remove('hidden')
+      } else { addrEl.classList.add('hidden') }
+    }
+    if (phoneEl && phoneTxt) {
+      if (tenant.company_phone) {
+        phoneTxt.textContent = tenant.company_phone
+        phoneEl.classList.remove('hidden')
+      } else { phoneEl.classList.add('hidden') }
+    }
+
+    // Address + phone form fields
+    const companyAddrInput  = document.getElementById('s-company-address')
+    const companyPhoneInput = document.getElementById('s-company-phone')
+    if (companyAddrInput)  companyAddrInput.value  = tenant.company_address  || ''
+    if (companyPhoneInput) companyPhoneInput.value = tenant.company_phone || ''
     const workerAppUrl = tenant.slug
       ? `https://app.${tenant.slug}.clockinproof.com`
       : (window.location.origin.replace('admin.', 'app.') || 'https://app.clockinproof.com')
@@ -2595,12 +2619,19 @@ async function saveSettings() {
       body: JSON.stringify(payload)
     })
 
-    // Also save company_name + logo_url directly to the tenant record
-    const logoUrl = document.getElementById('s-logo-url')?.value?.trim() || ''
+    // Also save company_name + logo_url + address + phone directly to the tenant record
+    const logoUrl       = document.getElementById('s-logo-url')?.value?.trim() || ''
+    const companyAddr   = document.getElementById('s-company-address')?.value?.trim() || ''
+    const companyPhone  = document.getElementById('s-company-phone')?.value?.trim() || ''
     await fetch('/api/tenants/1', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ company_name: payload.app_name, logo_url: logoUrl })
+      body: JSON.stringify({
+        company_name: payload.app_name,
+        logo_url: logoUrl,
+        company_address: companyAddr,
+        company_phone: companyPhone
+      })
     }).catch(() => {}) // non-blocking — settings save is primary
 
     if (res.ok) {

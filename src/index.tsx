@@ -506,6 +506,9 @@ async function ensureSchema(db: D1Database) {
     `CREATE INDEX IF NOT EXISTS idx_dispatches_worker  ON job_dispatches(worker_id)`,
     `CREATE INDEX IF NOT EXISTS idx_dispatches_status  ON job_dispatches(status)`,
     `CREATE INDEX IF NOT EXISTS idx_dispatches_created ON job_dispatches(created_at)`,
+    // ── Tenant profile extras ──────────────────────────────────────────────────
+    `ALTER TABLE tenants ADD COLUMN company_phone TEXT`,
+    `ALTER TABLE tenants ADD COLUMN company_website TEXT`,
   ]
   for (const sql of statements) {
     try {
@@ -3338,7 +3341,7 @@ app.get('/api/tenant/current', async (c) => {
   if (!slug) {
     // Platform URL (admin.clockinproof.com / app.clockinproof.com)
     // Return tenant 1 (911 Restoration) as default for existing URLs
-    const tenant = await db.prepare(`SELECT id, slug, company_name, logo_url, primary_color, plan, status, max_workers FROM tenants WHERE id = 1`).first()
+    const tenant = await db.prepare(`SELECT id, slug, company_name, company_address, company_phone, company_website, logo_url, primary_color, plan, status, max_workers FROM tenants WHERE id = 1`).first()
     return c.json({ tenant, is_platform_url: true })
   }
   const tenant = await getTenantBySlug(db, slug)
@@ -3439,8 +3442,8 @@ app.put('/api/tenants/:id', async (c) => {
   await ensureSchema(db)
   const id = c.req.param('id')
   const body = await c.req.json()
-  const allowed = ['company_name', 'company_address', 'admin_email', 'admin_pin',
-    'logo_url', 'primary_color', 'plan', 'status', 'max_workers']
+  const allowed = ['company_name', 'company_address', 'company_phone', 'company_website',
+    'admin_email', 'admin_pin', 'logo_url', 'primary_color', 'plan', 'status', 'max_workers']
   for (const key of allowed) {
     if (body[key] !== undefined) {
       await db.prepare(`UPDATE tenants SET ${key} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
@@ -8019,11 +8022,22 @@ function getAdminHTML(): string {
           <img id="settings-logo-img" src="" alt="" class="w-full h-full object-contain hidden" />
           <i id="settings-logo-icon" class="fas fa-building text-indigo-400 text-xl"></i>
         </div>
-        <!-- Name + URL -->
+        <!-- Name + contact info -->
         <div class="flex-1 min-w-0">
           <h3 id="settings-company-title" class="text-xl font-bold text-gray-900 leading-tight truncate">Loading…</h3>
+          <!-- Address -->
+          <p id="settings-company-address" class="text-xs text-gray-500 mt-0.5 truncate hidden">
+            <i class="fas fa-map-marker-alt text-gray-400 mr-1"></i>
+            <span id="settings-company-address-text"></span>
+          </p>
+          <!-- Phone -->
+          <p id="settings-company-phone" class="text-xs text-gray-500 mt-0.5 hidden">
+            <i class="fas fa-phone text-gray-400 mr-1"></i>
+            <span id="settings-company-phone-text"></span>
+          </p>
+          <!-- Worker app URL -->
           <a id="settings-worker-url" href="#" target="_blank"
-             class="inline-flex items-center gap-1.5 text-xs text-indigo-500 hover:text-indigo-700 font-medium mt-0.5 hover:underline">
+             class="inline-flex items-center gap-1.5 text-xs text-indigo-500 hover:text-indigo-700 font-medium mt-1 hover:underline">
             <i class="fas fa-mobile-alt"></i>
             <span id="settings-worker-url-text">app.clockinproof.com</span>
           </a>
@@ -8070,6 +8084,18 @@ function getAdminHTML(): string {
               </button>
             </div>
             <p class="text-xs text-gray-400 mt-1">Share this link with your workers to clock in.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Company Address</label>
+            <input id="s-company-address" type="text" placeholder="e.g. 11 Trustan Court #4, Ottawa, Ontario K2E 8B9"
+              class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+            <p class="text-xs text-gray-400 mt-1">Appears on payroll exports, reports, and worker communications.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Company Phone</label>
+            <input id="s-company-phone" type="tel" placeholder="e.g. +1 613-218-9339"
+              class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+            <p class="text-xs text-gray-400 mt-1">Used for dispatched job SMS messages and worker-facing contacts.</p>
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Default Hourly Rate ($/hr)</label>
@@ -8530,27 +8556,28 @@ function getAdminHTML(): string {
           </div>
         </details>
 
-        <!-- Subdomain / URL Configuration -->
+        <!-- App URLs / Domain Configuration — Tenant Admin section -->
         <div class="bg-indigo-50 border border-indigo-100 rounded-xl p-4">
-          <h4 class="font-semibold text-indigo-800 mb-3 flex items-center gap-2">
+          <h4 class="font-semibold text-indigo-800 mb-1 flex items-center gap-2">
             <i class="fas fa-globe text-indigo-500"></i>
-            Domain & Subdomain Setup
+            Your App URLs
           </h4>
+          <p class="text-xs text-indigo-500 mb-3">These are your company's ClockInProof URLs. Edit only if you use a custom domain.</p>
           <div class="space-y-4">
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">
-                App URL <span class="text-gray-400 font-normal">(Worker clock-in app)</span>
+                Worker App URL <span class="text-gray-400 font-normal">(workers clock in here)</span>
               </label>
               <input id="s-app-host" type="url" placeholder="https://app.clockinproof.com"
                 class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-400 text-sm bg-white"/>
               <p class="text-xs text-gray-400 mt-1">
                 <i class="fas fa-info-circle mr-1"></i>
-                Send this URL to workers to clock in. In Cloudflare DNS, point <code class="bg-gray-100 px-1 rounded">app.clockinproof.com</code> → this Pages project.
+                Share this URL with your workers. In Cloudflare DNS, point <code class="bg-gray-100 px-1 rounded">app.clockinproof.com</code> → this Pages project.
               </p>
             </div>
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">
-                Admin URL <span class="text-gray-400 font-normal">(this portal)</span>
+                Admin Portal URL <span class="text-gray-400 font-normal">(this dashboard)</span>
               </label>
               <input id="s-admin-host" type="url" placeholder="https://admin.clockinproof.com"
                 class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-400 text-sm bg-white"/>
@@ -10346,7 +10373,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260302f"></script>
+<script src="/static/admin.js?v=20260302g"></script>
 
 </body>
 </html>`
