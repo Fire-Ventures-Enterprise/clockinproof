@@ -2768,6 +2768,112 @@ app.get('/api/super/tenants/:id/impersonate', async (c) => {
   })
 })
 
+// GET /api/super/live — currently clocked-in workers across all tenants
+app.get('/api/super/live', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  try {
+    const rows = await db.prepare(`
+      SELECT s.id as session_id, s.clock_in_time, s.clock_in_address, s.job_location,
+             w.name as worker_name, w.id as worker_id,
+             t.company_name, t.slug as tenant_slug, t.id as tenant_id
+      FROM sessions s
+      JOIN workers w ON w.id = s.worker_id
+      JOIN tenants t ON t.id = s.tenant_id
+      WHERE s.clock_out_time IS NULL
+      ORDER BY s.clock_in_time DESC
+    `).all()
+    return c.json({ sessions: rows.results, count: rows.results.length })
+  } catch(err: any) {
+    return c.json({ error: err?.message || String(err) }, 500)
+  }
+})
+
+// GET /api/super/sessions — all sessions across all tenants with pagination
+app.get('/api/super/sessions', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  const page = parseInt(c.req.query('page') || '1')
+  const limit = parseInt(c.req.query('limit') || '50')
+  const tenantId = c.req.query('tenant_id')
+  const offset = (page - 1) * limit
+  try {
+    const where = tenantId ? `WHERE s.tenant_id = ${parseInt(tenantId)}` : ''
+    const rows = await db.prepare(`
+      SELECT s.id, s.clock_in_time, s.clock_out_time, s.total_hours, s.earnings,
+             s.clock_in_address, s.job_location, s.status,
+             w.name as worker_name,
+             t.company_name, t.slug as tenant_slug
+      FROM sessions s
+      JOIN workers w ON w.id = s.worker_id
+      JOIN tenants t ON t.id = s.tenant_id
+      ${where}
+      ORDER BY s.clock_in_time DESC
+      LIMIT ? OFFSET ?
+    `).bind(limit, offset).all()
+    const countRow = await db.prepare(`SELECT COUNT(*) as total FROM sessions s ${where}`).first() as any
+    return c.json({ sessions: rows.results, total: countRow?.total || 0, page, limit })
+  } catch(err: any) {
+    return c.json({ error: err?.message || String(err) }, 500)
+  }
+})
+
+// GET /api/super/revenue — revenue summary per tenant
+app.get('/api/super/revenue', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  try {
+    const rows = await db.prepare(`
+      SELECT t.id, t.company_name, t.slug, t.plan, t.status,
+             COUNT(DISTINCT w.id) as workers,
+             COUNT(s.id) as sessions,
+             ROUND(SUM(s.total_hours), 1) as total_hours,
+             CASE t.plan
+               WHEN 'starter' THEN 29
+               WHEN 'growth'  THEN 59
+               WHEN 'pro'     THEN 99
+               ELSE 0
+             END as mrr
+      FROM tenants t
+      LEFT JOIN workers w ON w.tenant_id = t.id AND w.active = 1
+      LEFT JOIN sessions s ON s.tenant_id = t.id
+      WHERE t.status != 'deleted'
+      GROUP BY t.id
+      ORDER BY mrr DESC
+    `).all()
+    const totalMrr = (rows.results as any[]).reduce((sum: number, r: any) => sum + (r.mrr || 0), 0)
+    return c.json({ tenants: rows.results, total_mrr: totalMrr })
+  } catch(err: any) {
+    return c.json({ error: err?.message || String(err) }, 500)
+  }
+})
+
+// POST /api/super/test-email — send a test email via Resend
+app.post('/api/super/test-email', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const { to } = await c.req.json()
+  if (!to) return c.json({ error: 'to is required' }, 400)
+  const resendKey = (c.env.RESEND_API_KEY || '').trim()
+  if (!resendKey) return c.json({ error: 'RESEND_API_KEY not configured' }, 500)
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: 'ClockInProof <alerts@clockinproof.com>',
+        to: [to],
+        subject: '✅ ClockInProof — Super Admin Test Email',
+        html: '<div style="font-family:sans-serif;padding:24px;max-width:480px"><h2 style="color:#4F46E5">Super Admin Test</h2><p>This test email was sent from the ClockInProof Super Admin portal.</p><p style="color:#888;font-size:12px">— ClockInProof Platform</p></div>'
+      })
+    })
+    const d: any = await r.json()
+    if (!r.ok) return c.json({ error: d?.message || 'Resend error' }, 500)
+    return c.json({ success: true, id: d.id })
+  } catch (err: any) {
+    return c.json({ error: err?.message || 'Failed to send' }, 500)
+  }
+})
+
 // ─── STAT PAY RULES (province/state minimums) ─────────────────────────────────
 const STAT_PAY_RULES: Record<string, { multiplier: number; name: string }> = {
   // Canadian Provinces
@@ -8571,194 +8677,310 @@ function getSuperAdminHTML(): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ClockInProof — Super Admin</title>
-<script src="https://cdn.tailwindcss.com"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
 <style>
-  body { background: #0f172a; color: #e2e8f0; font-family: 'Inter', sans-serif; }
-  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; }
-  .badge-active   { background:#065f46;color:#6ee7b7; }
-  .badge-trial    { background:#78350f;color:#fcd34d; }
-  .badge-suspended{ background:#7f1d1d;color:#fca5a5; }
-  .badge-starter  { background:#1e3a5f;color:#93c5fd; }
-  .badge-growth   { background:#3b1f6b;color:#c4b5fd; }
-  .badge-pro      { background:#14532d;color:#86efac; }
-  .btn-primary { background:#4f46e5;color:#fff;border-radius:8px;padding:8px 18px;font-weight:600;cursor:pointer;border:none;transition:background .2s; }
-  .btn-primary:hover { background:#4338ca; }
-  .btn-danger { background:#dc2626;color:#fff;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;border:none; }
-  .btn-success { background:#059669;color:#fff;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;border:none; }
-  .btn-ghost { background:#334155;color:#cbd5e1;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;border:none; }
-  .input { background:#0f172a;border:1px solid #475569;color:#e2e8f0;border-radius:8px;padding:8px 12px;width:100%;outline:none; }
-  .input:focus { border-color:#4f46e5; }
-  .stat-card { background:linear-gradient(135deg,#1e293b,#0f172a);border:1px solid #334155;border-radius:12px;padding:20px; }
-  .toast { position:fixed;bottom:24px;right:24px;background:#1e293b;border:1px solid #4f46e5;color:#e2e8f0;padding:12px 20px;border-radius:10px;z-index:9999;font-size:14px;box-shadow:0 4px 24px rgba(0,0,0,.5); }
-  #login-screen { min-height:100vh;display:flex;align-items:center;justify-content:center; }
-  #main-screen { display:none; }
-  .tab-btn { padding:10px 20px;border-radius:8px;font-weight:600;font-size:14px;cursor:pointer;background:transparent;border:none;color:#94a3b8;transition:all .2s; }
-  .tab-btn.active { background:#4f46e5;color:#fff; }
-  .table-row:hover { background:#1e293b; }
-  .pill { display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase; }
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f172a;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;height:100vh;overflow:hidden}
+a{color:inherit;text-decoration:none}
+/* ── Layout ── */
+#login-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#0f172a 0%,#1e1b4b 100%)}
+#app{display:none;height:100vh;display:grid;grid-template-rows:56px 1fr;grid-template-columns:220px 1fr}
+#topbar{grid-column:1/-1;background:#0f172a;border-bottom:1px solid #1e293b;display:flex;align-items:center;justify-content:space-between;padding:0 20px;z-index:50}
+#sidebar{background:#0c1322;border-right:1px solid #1e293b;overflow-y:auto;display:flex;flex-direction:column;padding:12px 8px}
+#content{overflow-y:auto;background:#0f172a}
+/* ── Cards & common ── */
+.card{background:#1e293b;border:1px solid #334155;border-radius:12px}
+.stat-card{background:linear-gradient(135deg,#1e293b,#0f172a);border:1px solid #334155;border-radius:12px;padding:20px}
+.section-header{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#475569;padding:8px 10px 4px}
+/* ── Sidebar nav ── */
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;font-size:13px;font-weight:500;color:#94a3b8;cursor:pointer;transition:all .15s;border:none;background:transparent;width:100%;text-align:left}
+.nav-item:hover{background:#1e293b;color:#e2e8f0}
+.nav-item.active{background:#312e81;color:#a5b4fc}
+.nav-item i{width:16px;text-align:center;font-size:14px}
+.nav-badge{margin-left:auto;background:#ef4444;color:#fff;border-radius:20px;padding:1px 7px;font-size:10px;font-weight:700}
+.nav-badge.green{background:#059669}
+/* ── Badges / pills ── */
+.pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase}
+.badge-active{background:#065f46;color:#6ee7b7}
+.badge-trial{background:#78350f;color:#fcd34d}
+.badge-suspended{background:#7f1d1d;color:#fca5a5}
+.badge-deleted{background:#1e293b;color:#64748b}
+.badge-starter{background:#1e3a5f;color:#93c5fd}
+.badge-growth{background:#3b1f6b;color:#c4b5fd}
+.badge-pro{background:#14532d;color:#86efac}
+/* ── Buttons ── */
+.btn{border-radius:8px;padding:7px 16px;font-weight:600;font-size:13px;cursor:pointer;border:none;transition:all .15s;display:inline-flex;align-items:center;gap:6px}
+.btn-primary{background:#4f46e5;color:#fff}.btn-primary:hover{background:#4338ca}
+.btn-danger{background:#dc2626;color:#fff;padding:5px 12px;font-size:12px}.btn-danger:hover{background:#b91c1c}
+.btn-success{background:#059669;color:#fff;padding:5px 12px;font-size:12px}.btn-success:hover{background:#047857}
+.btn-ghost{background:#1e293b;color:#94a3b8;padding:5px 12px;font-size:12px;border:1px solid #334155}.btn-ghost:hover{background:#334155;color:#e2e8f0}
+.btn-warning{background:#d97706;color:#fff;padding:5px 12px;font-size:12px}.btn-warning:hover{background:#b45309}
+/* ── Inputs ── */
+.input{background:#0f172a;border:1px solid #475569;color:#e2e8f0;border-radius:8px;padding:8px 12px;width:100%;outline:none;font-size:13px}
+.input:focus{border-color:#4f46e5}
+select.input option{background:#1e293b}
+/* ── Table ── */
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{text-align:left;padding:10px 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#64748b;border-bottom:1px solid #334155;white-space:nowrap}
+.tbl td{padding:10px 14px;border-bottom:1px solid #1e293b;vertical-align:middle}
+.tbl tr:hover td{background:#1e293b55}
+/* ── Tab pages ── */
+.page{display:none;padding:24px}
+.page.active{display:block}
+/* ── Modal ── */
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;align-items:center;justify-content:center;padding:16px}
+.modal-bg.open{display:flex}
+/* ── Toast ── */
+#toast{position:fixed;bottom:24px;right:24px;background:#1e293b;border:1px solid #4f46e5;color:#e2e8f0;padding:12px 20px;border-radius:10px;z-index:9999;font-size:14px;box-shadow:0 4px 24px rgba(0,0,0,.5);display:none}
+/* ── Misc ── */
+.live-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.empty-state{text-align:center;padding:48px 16px;color:#475569}
+.empty-state i{font-size:36px;margin-bottom:12px;display:block}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#334155;border-radius:4px}
 </style>
 </head>
 <body>
 
-<!-- LOGIN SCREEN -->
+<!-- ══════════════════════════ LOGIN SCREEN ══════════════════════════ -->
 <div id="login-screen">
-  <div class="card p-8 w-full max-w-sm mx-4">
-    <div class="text-center mb-8">
-      <div class="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
-        <i class="fas fa-shield-halved text-white text-2xl"></i>
+  <div class="card" style="padding:40px;width:100%;max-width:380px">
+    <div style="text-align:center;margin-bottom:32px">
+      <div style="width:64px;height:64px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:16px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px">
+        <i class="fas fa-shield-halved" style="font-size:28px;color:#fff"></i>
       </div>
-      <h1 class="text-2xl font-bold text-white">Super Admin</h1>
-      <p class="text-slate-400 text-sm mt-1">ClockInProof Platform</p>
+      <h1 style="font-size:22px;font-weight:800;color:#fff">Super Admin</h1>
+      <p style="color:#64748b;font-size:13px;margin-top:4px">ClockInProof Platform Control</p>
     </div>
-    <div id="login-error" class="hidden bg-red-900/40 border border-red-700 text-red-300 rounded-lg p-3 text-sm mb-4"></div>
-    <input type="password" id="super-pin" class="input text-center text-2xl tracking-widest mb-4" placeholder="Enter PIN" maxlength="20">
-    <button class="btn-primary w-full" onclick="doSuperLogin()">
-      <i class="fas fa-unlock-keyhole mr-2"></i>Access Portal
+    <div id="login-error" style="display:none;background:#7f1d1d33;border:1px solid #dc2626;color:#fca5a5;border-radius:8px;padding:10px 14px;font-size:13px;margin-bottom:16px"></div>
+    <input type="password" id="super-pin" class="input" style="text-align:center;font-size:22px;letter-spacing:8px;margin-bottom:14px" placeholder="••••••••" maxlength="30" autocomplete="current-password">
+    <button class="btn btn-primary" style="width:100%;justify-content:center;padding:10px" onclick="doSuperLogin()">
+      <i class="fas fa-unlock-keyhole"></i> Access Portal
     </button>
+    <p style="text-align:center;font-size:11px;color:#334155;margin-top:16px">Protected — authorized personnel only</p>
   </div>
 </div>
 
-<!-- MAIN SCREEN -->
-<div id="main-screen">
-  <!-- Top Nav -->
-  <nav class="border-b border-slate-700 px-6 py-3 flex items-center justify-between sticky top-0 z-40" style="background:#0f172a">
-    <div class="flex items-center gap-3">
-      <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-        <i class="fas fa-shield-halved text-white text-sm"></i>
-      </div>
-      <span class="font-bold text-white text-lg">ClockInProof</span>
-      <span class="pill bg-indigo-900 text-indigo-300 ml-1">SUPER ADMIN</span>
-    </div>
-    <div class="flex items-center gap-4">
-      <span class="text-slate-400 text-sm hidden md:block">Last refresh: <span id="last-refresh">—</span></span>
-      <button class="btn-ghost" onclick="refreshAll()"><i class="fas fa-rotate-right mr-1"></i>Refresh</button>
-      <button class="btn-danger" onclick="doLogout()"><i class="fas fa-sign-out-alt mr-1"></i>Logout</button>
-    </div>
-  </nav>
+<!-- ══════════════════════════ APP SHELL ══════════════════════════ -->
+<div id="app" style="display:none">
 
-  <!-- Tabs -->
-  <div class="border-b border-slate-700 px-6 flex gap-1 overflow-x-auto" style="background:#0f172a">
-    <button class="tab-btn active" id="tab-overview" onclick="showTab('overview')"><i class="fas fa-chart-line mr-1"></i>Overview</button>
-    <button class="tab-btn" id="tab-tenants" onclick="showTab('tenants')"><i class="fas fa-building mr-1"></i>Tenants</button>
-    <button class="tab-btn" id="tab-new-tenant" onclick="showTab('new-tenant')"><i class="fas fa-plus-circle mr-1"></i>Add Tenant</button>
+  <!-- TOP BAR -->
+  <div id="topbar">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div style="width:32px;height:32px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:8px;display:flex;align-items:center;justify-content:center">
+        <i class="fas fa-shield-halved" style="color:#fff;font-size:14px"></i>
+      </div>
+      <span style="font-weight:800;font-size:16px;color:#fff">ClockInProof</span>
+      <span class="pill badge-pro" style="font-size:10px">SUPER ADMIN</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span style="font-size:12px;color:#475569">Refreshed: <span id="last-refresh">—</span></span>
+      <button class="btn btn-ghost" onclick="refreshCurrent()"><i class="fas fa-rotate-right"></i></button>
+      <button class="btn btn-danger" onclick="doLogout()" style="padding:6px 14px"><i class="fas fa-sign-out-alt"></i> Logout</button>
+    </div>
   </div>
 
-  <div class="p-6 max-w-7xl mx-auto">
+  <!-- SIDEBAR -->
+  <div id="sidebar">
+    <div class="section-header">Platform</div>
+    <button class="nav-item active" id="nav-overview" onclick="showPage('overview')">
+      <i class="fas fa-chart-pie"></i> Overview
+    </button>
+    <button class="nav-item" id="nav-live" onclick="showPage('live')">
+      <i class="fas fa-circle" style="color:#22c55e;font-size:8px;margin-right:2px"></i><span style="margin-left:-4px">Live Activity</span>
+      <span class="nav-badge green" id="live-count-badge">0</span>
+    </button>
 
-    <!-- OVERVIEW TAB -->
-    <div id="tab-content-overview">
-      <h2 class="text-xl font-bold text-white mb-6">Platform Overview</h2>
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-        <div class="stat-card">
-          <div class="text-slate-400 text-xs font-semibold uppercase mb-1">Total Tenants</div>
-          <div class="text-3xl font-bold text-white" id="stat-tenants">—</div>
-        </div>
-        <div class="stat-card">
-          <div class="text-slate-400 text-xs font-semibold uppercase mb-1">Total Workers</div>
-          <div class="text-3xl font-bold text-emerald-400" id="stat-workers">—</div>
-        </div>
-        <div class="stat-card">
-          <div class="text-slate-400 text-xs font-semibold uppercase mb-1">Active Now</div>
-          <div class="text-3xl font-bold text-yellow-400" id="stat-active">—</div>
-        </div>
-        <div class="stat-card">
-          <div class="text-slate-400 text-xs font-semibold uppercase mb-1">Total Sessions</div>
-          <div class="text-3xl font-bold text-indigo-400" id="stat-sessions">—</div>
+    <div class="section-header" style="margin-top:8px">Tenants</div>
+    <button class="nav-item" id="nav-tenants" onclick="showPage('tenants')">
+      <i class="fas fa-building"></i> All Tenants
+    </button>
+    <button class="nav-item" id="nav-add-tenant" onclick="showPage('add-tenant')">
+      <i class="fas fa-plus-circle"></i> Add Tenant
+    </button>
+
+    <div class="section-header" style="margin-top:8px">Data</div>
+    <button class="nav-item" id="nav-sessions" onclick="showPage('sessions')">
+      <i class="fas fa-clock"></i> All Sessions
+    </button>
+    <button class="nav-item" id="nav-revenue" onclick="showPage('revenue')">
+      <i class="fas fa-dollar-sign"></i> Revenue / MRR
+    </button>
+
+    <div class="section-header" style="margin-top:8px">Config</div>
+    <button class="nav-item" id="nav-plans" onclick="showPage('plans')">
+      <i class="fas fa-layer-group"></i> Plans & Pricing
+    </button>
+    <button class="nav-item" id="nav-email" onclick="showPage('email')">
+      <i class="fas fa-envelope"></i> Email & Alerts
+    </button>
+    <button class="nav-item" id="nav-platform" onclick="showPage('platform')">
+      <i class="fas fa-sliders"></i> Platform Settings
+    </button>
+
+    <div style="flex:1"></div>
+    <div style="padding:10px 12px;font-size:11px;color:#334155;border-top:1px solid #1e293b;margin-top:8px">
+      <i class="fas fa-lock" style="margin-right:4px"></i>Secure session
+    </div>
+  </div>
+
+  <!-- CONTENT AREA -->
+  <div id="content">
+
+    <!-- ── OVERVIEW ──────────────────────────────────────── -->
+    <div class="page active" id="page-overview">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+        <div>
+          <h1 style="font-size:20px;font-weight:800;color:#fff">Platform Overview</h1>
+          <p style="color:#64748b;font-size:13px">Real-time platform health</p>
         </div>
       </div>
-
-      <!-- Plan Breakdown -->
-      <div class="card p-5 mb-6">
-        <h3 class="font-bold text-white mb-4"><i class="fas fa-layer-group mr-2 text-indigo-400"></i>Plan Breakdown</h3>
-        <div id="plan-breakdown" class="flex flex-wrap gap-3">
-          <span class="text-slate-400 text-sm">Loading...</span>
+      <!-- Stats row -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px">
+        <div class="stat-card">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px"><i class="fas fa-building mr-1"></i>Tenants</div>
+          <div style="font-size:32px;font-weight:800;color:#fff" id="ov-tenants">—</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">active accounts</div>
+        </div>
+        <div class="stat-card">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px"><i class="fas fa-users mr-1"></i>Workers</div>
+          <div style="font-size:32px;font-weight:800;color:#34d399" id="ov-workers">—</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">total active</div>
+        </div>
+        <div class="stat-card">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px"><i class="fas fa-circle live-dot mr-1"></i>Live Now</div>
+          <div style="font-size:32px;font-weight:800;color:#facc15" id="ov-live">—</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">clocked in</div>
+        </div>
+        <div class="stat-card">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px"><i class="fas fa-calendar-check mr-1"></i>Sessions</div>
+          <div style="font-size:32px;font-weight:800;color:#818cf8" id="ov-sessions">—</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">all time</div>
         </div>
       </div>
-
-      <!-- Recent Tenants -->
-      <div class="card p-5">
-        <h3 class="font-bold text-white mb-4"><i class="fas fa-clock mr-2 text-indigo-400"></i>Recent Tenants</h3>
-        <div id="recent-tenants" class="space-y-2">
-          <span class="text-slate-400 text-sm">Loading...</span>
+      <!-- Plan breakdown + recent tenants side by side -->
+      <div style="display:grid;grid-template-columns:1fr 2fr;gap:14px">
+        <div class="card" style="padding:18px">
+          <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:14px"><i class="fas fa-layer-group" style="color:#818cf8;margin-right:6px"></i>PLAN BREAKDOWN</h3>
+          <div id="ov-plans" style="display:flex;flex-direction:column;gap:8px"><span style="color:#475569;font-size:13px">Loading...</span></div>
+        </div>
+        <div class="card" style="padding:18px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+            <h3 style="font-size:13px;font-weight:700;color:#94a3b8"><i class="fas fa-clock" style="color:#818cf8;margin-right:6px"></i>RECENT TENANTS</h3>
+            <button class="btn btn-ghost" onclick="showPage('tenants')" style="font-size:11px;padding:3px 10px">View all</button>
+          </div>
+          <div id="ov-recent" style="display:flex;flex-direction:column;gap:6px"><span style="color:#475569;font-size:13px">Loading...</span></div>
         </div>
       </div>
     </div>
 
-    <!-- TENANTS TAB -->
-    <div id="tab-content-tenants" class="hidden">
-      <div class="flex items-center justify-between mb-6">
-        <h2 class="text-xl font-bold text-white">All Tenants</h2>
-        <div class="flex gap-2">
-          <input type="text" id="tenant-search" class="input w-52" placeholder="Search..." oninput="filterTenants()">
-          <select id="tenant-filter-status" class="input w-36" onchange="filterTenants()">
+    <!-- ── LIVE ACTIVITY ──────────────────────────────────── -->
+    <div class="page" id="page-live">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+        <div>
+          <h1 style="font-size:20px;font-weight:800;color:#fff"><span class="live-dot" style="margin-right:8px"></span>Live Activity</h1>
+          <p style="color:#64748b;font-size:13px">Workers currently clocked in across all tenants</p>
+        </div>
+        <button class="btn btn-ghost" onclick="loadLive()"><i class="fas fa-rotate-right"></i> Refresh</button>
+      </div>
+      <div class="card" style="overflow:hidden">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Worker</th>
+              <th>Tenant</th>
+              <th>Clocked In</th>
+              <th>Duration</th>
+              <th>Location</th>
+            </tr>
+          </thead>
+          <tbody id="live-tbody">
+            <tr><td colspan="5" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── ALL TENANTS ──────────────────────────────────── -->
+    <div class="page" id="page-tenants">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+        <div>
+          <h1 style="font-size:20px;font-weight:800;color:#fff">All Tenants</h1>
+          <p style="color:#64748b;font-size:13px" id="tenant-count-label">Loading...</p>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" id="tenant-search" class="input" style="width:180px" placeholder="Search..." oninput="filterTenants()">
+          <select id="tenant-filter-status" class="input" style="width:130px" onchange="filterTenants()">
             <option value="">All Status</option>
             <option value="active">Active</option>
             <option value="trial">Trial</option>
             <option value="suspended">Suspended</option>
           </select>
-          <select id="tenant-filter-plan" class="input w-36" onchange="filterTenants()">
+          <select id="tenant-filter-plan" class="input" style="width:120px" onchange="filterTenants()">
             <option value="">All Plans</option>
             <option value="starter">Starter</option>
             <option value="growth">Growth</option>
             <option value="pro">Pro</option>
           </select>
+          <button class="btn btn-primary" onclick="showPage('add-tenant')"><i class="fas fa-plus"></i> Add</button>
         </div>
       </div>
-      <div class="card overflow-hidden">
-        <table class="w-full text-sm">
+      <div class="card" style="overflow:hidden">
+        <table class="tbl">
           <thead>
-            <tr class="border-b border-slate-700 text-slate-400 text-xs uppercase">
-              <th class="text-left p-4">Company</th>
-              <th class="text-left p-4 hidden md:table-cell">Subdomain</th>
-              <th class="text-left p-4 hidden md:table-cell">Plan</th>
-              <th class="text-left p-4 hidden md:table-cell">Status</th>
-              <th class="text-left p-4 hidden lg:table-cell">Workers</th>
-              <th class="text-left p-4 hidden lg:table-cell">Sessions</th>
-              <th class="text-left p-4 hidden lg:table-cell">Last Active</th>
-              <th class="text-right p-4">Actions</th>
+            <tr>
+              <th>Company</th>
+              <th>Subdomain</th>
+              <th>Plan</th>
+              <th>Status</th>
+              <th>Workers</th>
+              <th>Sessions</th>
+              <th>Last Active</th>
+              <th style="text-align:right">Actions</th>
             </tr>
           </thead>
-          <tbody id="tenants-table-body">
-            <tr><td colspan="8" class="p-8 text-center text-slate-400">Loading tenants...</td></tr>
+          <tbody id="tenants-tbody">
+            <tr><td colspan="8" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>
           </tbody>
         </table>
       </div>
-      <div class="mt-3 text-slate-500 text-xs" id="tenant-count-label"></div>
     </div>
 
-    <!-- ADD TENANT TAB -->
-    <div id="tab-content-new-tenant" class="hidden">
-      <div class="max-w-2xl mx-auto">
-        <h2 class="text-xl font-bold text-white mb-6">Create New Tenant</h2>
-        <div class="card p-6 space-y-5">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <!-- ── ADD TENANT ──────────────────────────────────── -->
+    <div class="page" id="page-add-tenant">
+      <div style="max-width:680px">
+        <h1 style="font-size:20px;font-weight:800;color:#fff;margin-bottom:6px">Create New Tenant</h1>
+        <p style="color:#64748b;font-size:13px;margin-bottom:20px">Set up a new company account on ClockInProof</p>
+        <div class="card" style="padding:24px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
             <div>
-              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Company Name *</label>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Company Name *</label>
               <input type="text" id="new-company" class="input" placeholder="Acme Cleaning Co.">
             </div>
             <div>
-              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Subdomain * <span class="text-indigo-400 lowercase">.clockinproof.com</span></label>
-              <div class="flex items-center gap-2">
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Subdomain * <span style="color:#818cf8;text-transform:lowercase;font-weight:400">.clockinproof.com</span></label>
+              <div style="display:flex;align-items:center;gap:8px">
                 <input type="text" id="new-slug" class="input" placeholder="acme-cleaning" oninput="onSlugInput()">
-                <span id="slug-check" class="text-xs w-6"></span>
+                <span id="slug-check" style="font-size:18px;width:24px;text-align:center"></span>
               </div>
             </div>
             <div>
-              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Admin Email <span class="text-indigo-400 lowercase font-normal">(auto-generated)</span></label>
-              <div class="flex items-center rounded-lg overflow-hidden border border-slate-600 bg-slate-900">
-                <span class="px-3 py-2 text-slate-400 text-sm whitespace-nowrap">admin.</span>
-                <input type="text" id="new-email-slug" class="flex-1 bg-transparent text-white text-sm py-2 px-0 outline-none" placeholder="company-name" oninput="onEmailSlugInput()">
-                <span class="px-3 py-2 text-slate-400 text-sm whitespace-nowrap">@clockinproof.com</span>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Admin Email <span style="color:#818cf8;text-transform:lowercase;font-weight:400">(auto-generated)</span></label>
+              <div style="display:flex;align-items:center;background:#0f172a;border:1px solid #475569;border-radius:8px;overflow:hidden">
+                <span style="padding:8px 10px;color:#64748b;font-size:13px;white-space:nowrap">admin.</span>
+                <input type="text" id="new-email-slug" style="flex:1;background:transparent;border:none;color:#e2e8f0;font-size:13px;padding:8px 0;outline:none" placeholder="company-name" oninput="onEmailSlugInput()">
+                <span style="padding:8px 10px;color:#64748b;font-size:13px;white-space:nowrap">@clockinproof.com</span>
               </div>
-              <p id="email-preview" class="text-indigo-400 text-xs mt-1 hidden"></p>
+              <p id="email-preview" style="font-size:11px;color:#818cf8;margin-top:4px;display:none"></p>
             </div>
             <div>
-              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Admin PIN</label>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Admin PIN <span style="color:#475569;text-transform:lowercase;font-weight:400">(default: 1234)</span></label>
               <input type="text" id="new-pin" class="input" placeholder="1234" maxlength="8">
             </div>
             <div>
-              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Plan</label>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Plan</label>
               <select id="new-plan" class="input">
                 <option value="starter">Starter — $29/mo (10 workers)</option>
                 <option value="growth" selected>Growth — $59/mo (25 workers)</option>
@@ -8766,54 +8988,304 @@ function getSuperAdminHTML(): string {
               </select>
             </div>
             <div>
-              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Company Address</label>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Company Address</label>
               <input type="text" id="new-address" class="input" placeholder="123 Main St, City, Province">
             </div>
           </div>
-          <div class="pt-2">
-            <label class="flex items-center gap-2 text-slate-300 text-sm cursor-pointer">
-              <input type="checkbox" id="new-send-welcome" checked class="w-4 h-4">
-              Send welcome email to admin with login details
-            </label>
-          </div>
-          <div id="create-result" class="hidden"></div>
-          <div class="flex gap-3 pt-2">
-            <button class="btn-primary flex-1" onclick="createTenant()">
-              <i class="fas fa-plus-circle mr-2"></i>Create Tenant
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#94a3b8;cursor:pointer;margin-bottom:16px">
+            <input type="checkbox" id="new-send-welcome" checked style="width:15px;height:15px"> Send welcome email to admin
+          </label>
+          <div id="create-result" style="display:none;margin-bottom:14px"></div>
+          <div style="display:flex;gap:10px">
+            <button class="btn btn-primary" onclick="createTenant()" style="flex:1;justify-content:center;padding:10px">
+              <i class="fas fa-plus-circle"></i> Create Tenant
             </button>
-            <button class="btn-ghost" onclick="showTab('tenants')">Cancel</button>
+            <button class="btn btn-ghost" onclick="showPage('tenants')">Cancel</button>
           </div>
         </div>
       </div>
     </div>
 
-  </div>
-</div>
+    <!-- ── ALL SESSIONS ──────────────────────────────────── -->
+    <div class="page" id="page-sessions">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+        <div>
+          <h1 style="font-size:20px;font-weight:800;color:#fff">All Sessions</h1>
+          <p style="color:#64748b;font-size:13px">Clock-in/out records across all tenants</p>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="sess-tenant-filter" class="input" style="width:180px" onchange="loadSessions()">
+            <option value="">All Tenants</option>
+          </select>
+          <button class="btn btn-ghost" onclick="loadSessions()"><i class="fas fa-rotate-right"></i></button>
+        </div>
+      </div>
+      <div class="card" style="overflow:hidden;margin-bottom:12px">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Worker</th>
+              <th>Tenant</th>
+              <th>Clock In</th>
+              <th>Clock Out</th>
+              <th>Hours</th>
+              <th>Job Location</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="sessions-tbody">
+            <tr><td colspan="7" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;color:#64748b;font-size:12px">
+        <span id="sess-info">—</span>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost" id="sess-prev" onclick="changeSessPage(-1)"><i class="fas fa-chevron-left"></i> Prev</button>
+          <button class="btn btn-ghost" id="sess-next" onclick="changeSessPage(1)">Next <i class="fas fa-chevron-right"></i></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── REVENUE / MRR ──────────────────────────────────── -->
+    <div class="page" id="page-revenue">
+      <div style="margin-bottom:20px">
+        <h1 style="font-size:20px;font-weight:800;color:#fff">Revenue & MRR</h1>
+        <p style="color:#64748b;font-size:13px">Monthly recurring revenue by tenant</p>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:20px">
+        <div class="stat-card">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Total MRR</div>
+          <div style="font-size:32px;font-weight:800;color:#34d399">$<span id="rev-mrr">—</span></div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">per month</div>
+        </div>
+        <div class="stat-card">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Paying Tenants</div>
+          <div style="font-size:32px;font-weight:800;color:#fff" id="rev-tenants">—</div>
+        </div>
+        <div class="stat-card">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">ARR Estimate</div>
+          <div style="font-size:32px;font-weight:800;color:#818cf8">$<span id="rev-arr">—</span></div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">annualized</div>
+        </div>
+      </div>
+      <div class="card" style="overflow:hidden">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Company</th>
+              <th>Plan</th>
+              <th>Status</th>
+              <th>Workers</th>
+              <th>Sessions</th>
+              <th>Hours Tracked</th>
+              <th>MRR</th>
+            </tr>
+          </thead>
+          <tbody id="revenue-tbody">
+            <tr><td colspan="7" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── PLANS & PRICING ──────────────────────────────────── -->
+    <div class="page" id="page-plans">
+      <div style="margin-bottom:20px">
+        <h1 style="font-size:20px;font-weight:800;color:#fff">Plans & Pricing</h1>
+        <p style="color:#64748b;font-size:13px">Current subscription tiers</p>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;max-width:900px">
+        <div class="card" style="padding:24px;border-color:#1e3a5f">
+          <div class="pill badge-starter" style="margin-bottom:14px">Starter</div>
+          <div style="font-size:36px;font-weight:800;color:#93c5fd">$29<span style="font-size:14px;font-weight:400;color:#64748b">/mo</span></div>
+          <div style="font-size:13px;color:#64748b;margin:8px 0 16px">Up to 10 workers</div>
+          <ul style="list-style:none;font-size:13px;color:#94a3b8;display:flex;flex-direction:column;gap:6px">
+            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>GPS clock-in/out</li>
+            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Fraud detection</li>
+            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Weekly reports</li>
+            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Email alerts</li>
+          </ul>
+        </div>
+        <div class="card" style="padding:24px;border-color:#3b1f6b;position:relative">
+          <div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:#7c3aed;color:#fff;font-size:10px;font-weight:700;padding:2px 12px;border-radius:20px">POPULAR</div>
+          <div class="pill badge-growth" style="margin-bottom:14px">Growth</div>
+          <div style="font-size:36px;font-weight:800;color:#c4b5fd">$59<span style="font-size:14px;font-weight:400;color:#64748b">/mo</span></div>
+          <div style="font-size:13px;color:#64748b;margin:8px 0 16px">Up to 25 workers</div>
+          <ul style="list-style:none;font-size:13px;color:#94a3b8;display:flex;flex-direction:column;gap:6px">
+            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Everything in Starter</li>
+            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Payroll exports</li>
+            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Multi-job tracking</li>
+            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Branding options</li>
+          </ul>
+        </div>
+        <div class="card" style="padding:24px;border-color:#14532d">
+          <div class="pill badge-pro" style="margin-bottom:14px">Pro</div>
+          <div style="font-size:36px;font-weight:800;color:#86efac">$99<span style="font-size:14px;font-weight:400;color:#64748b">/mo</span></div>
+          <div style="font-size:13px;color:#64748b;margin:8px 0 16px">Unlimited workers</div>
+          <ul style="list-style:none;font-size:13px;color:#94a3b8;display:flex;flex-direction:column;gap:6px">
+            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Everything in Growth</li>
+            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Priority support</li>
+            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Custom integrations</li>
+            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>SLA guarantee</li>
+          </ul>
+        </div>
+      </div>
+      <div class="card" style="padding:16px;max-width:900px;margin-top:20px;background:#1e293b88">
+        <p style="color:#64748b;font-size:12px"><i class="fas fa-info-circle" style="color:#818cf8;margin-right:6px"></i>Stripe billing integration coming soon. Currently plans are managed manually per tenant in the Edit Tenant modal.</p>
+      </div>
+    </div>
+
+    <!-- ── EMAIL & ALERTS ──────────────────────────────────── -->
+    <div class="page" id="page-email">
+      <div style="margin-bottom:20px">
+        <h1 style="font-size:20px;font-weight:800;color:#fff">Email & Alerts</h1>
+        <p style="color:#64748b;font-size:13px">Platform-wide email configuration</p>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:900px">
+        <div class="card" style="padding:20px">
+          <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:14px"><i class="fas fa-envelope" style="color:#818cf8;margin-right:6px"></i>EMAIL CONFIGURATION</h3>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
+              <span style="font-size:13px;color:#94a3b8">RESEND_API_KEY</span>
+              <span class="pill badge-active">✓ Configured</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
+              <span style="font-size:13px;color:#94a3b8">From Domain</span>
+              <span style="font-size:13px;color:#e2e8f0">clockinproof.com ✓</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
+              <span style="font-size:13px;color:#94a3b8">DKIM Status</span>
+              <span class="pill badge-active">Verified</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
+              <span style="font-size:13px;color:#94a3b8">SPF Status</span>
+              <span class="pill badge-active">Verified</span>
+            </div>
+          </div>
+        </div>
+        <div class="card" style="padding:20px">
+          <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:14px"><i class="fas fa-paper-plane" style="color:#818cf8;margin-right:6px"></i>SENDING ADDRESSES</h3>
+          <div style="display:flex;flex-direction:column;gap:8px;font-size:13px">
+            <div style="padding:10px;background:#0f172a;border-radius:8px">
+              <div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:3px">GPS Fraud Alerts</div>
+              <div style="color:#e2e8f0">alerts@clockinproof.com</div>
+            </div>
+            <div style="padding:10px;background:#0f172a;border-radius:8px">
+              <div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Weekly Reports</div>
+              <div style="color:#e2e8f0">reports@clockinproof.com</div>
+            </div>
+            <div style="padding:10px;background:#0f172a;border-radius:8px">
+              <div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Payslips</div>
+              <div style="color:#e2e8f0">payroll@clockinproof.com</div>
+            </div>
+            <div style="padding:10px;background:#0f172a;border-radius:8px">
+              <div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Welcome Emails</div>
+              <div style="color:#e2e8f0">admin.{slug}@clockinproof.com</div>
+            </div>
+          </div>
+        </div>
+        <div class="card" style="padding:20px;grid-column:1/-1">
+          <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:14px"><i class="fas fa-vial" style="color:#818cf8;margin-right:6px"></i>TEST EMAIL</h3>
+          <div style="display:flex;gap:10px;align-items:flex-end">
+            <div style="flex:1">
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Send test to</label>
+              <input type="email" id="test-email-to" class="input" placeholder="admin@clockinproof.com" value="admin@clockinproof.com">
+            </div>
+            <button class="btn btn-primary" onclick="sendTestEmail()" style="white-space:nowrap">
+              <i class="fas fa-paper-plane"></i> Send Test
+            </button>
+          </div>
+          <div id="test-email-result" style="margin-top:10px;font-size:13px;display:none"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── PLATFORM SETTINGS ──────────────────────────────────── -->
+    <div class="page" id="page-platform">
+      <div style="margin-bottom:20px">
+        <h1 style="font-size:20px;font-weight:800;color:#fff">Platform Settings</h1>
+        <p style="color:#64748b;font-size:13px">Global configuration for ClockInProof</p>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:900px">
+        <div class="card" style="padding:20px">
+          <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:14px"><i class="fas fa-shield-halved" style="color:#818cf8;margin-right:6px"></i>SECURITY</h3>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Super Admin PIN</label>
+              <div style="display:flex;gap:8px">
+                <input type="password" id="new-super-pin" class="input" placeholder="New PIN (min 6 chars)" maxlength="30">
+                <button class="btn btn-warning" onclick="changeSuperPin()">Update</button>
+              </div>
+              <p style="font-size:11px;color:#475569;margin-top:4px">Stored as SUPER_ADMIN_PIN Cloudflare secret</p>
+            </div>
+          </div>
+        </div>
+        <div class="card" style="padding:20px">
+          <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:14px"><i class="fas fa-globe" style="color:#818cf8;margin-right:6px"></i>PLATFORM INFO</h3>
+          <div style="display:flex;flex-direction:column;gap:8px;font-size:13px">
+            <div style="display:flex;justify-content:space-between;padding:8px;background:#0f172a;border-radius:6px">
+              <span style="color:#64748b">Platform</span><span style="color:#e2e8f0">ClockInProof</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;padding:8px;background:#0f172a;border-radius:6px">
+              <span style="color:#64748b">Runtime</span><span style="color:#e2e8f0">Cloudflare Workers</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;padding:8px;background:#0f172a;border-radius:6px">
+              <span style="color:#64748b">Database</span><span style="color:#e2e8f0">Cloudflare D1</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;padding:8px;background:#0f172a;border-radius:6px">
+              <span style="color:#64748b">Email</span><span style="color:#e2e8f0">Resend API</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;padding:8px;background:#0f172a;border-radius:6px">
+              <span style="color:#64748b">Domain</span><span style="color:#e2e8f0">clockinproof.com</span>
+            </div>
+          </div>
+        </div>
+        <div class="card" style="padding:20px;grid-column:1/-1">
+          <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:14px"><i class="fas fa-link" style="color:#818cf8;margin-right:6px"></i>QUICK LINKS</h3>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <a href="https://dash.cloudflare.com" target="_blank" class="btn btn-ghost"><i class="fas fa-cloud"></i> Cloudflare Dashboard</a>
+            <a href="https://resend.com/emails" target="_blank" class="btn btn-ghost"><i class="fas fa-envelope"></i> Resend Dashboard</a>
+            <a href="https://admin.clockinproof.com" target="_blank" class="btn btn-ghost"><i class="fas fa-user-shield"></i> Tenant Admin Demo</a>
+            <a href="https://app.clockinproof.com" target="_blank" class="btn btn-ghost"><i class="fas fa-mobile-alt"></i> Worker App Demo</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /app -->
 
 <!-- EDIT TENANT MODAL -->
-<div id="edit-modal" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onclick="if(event.target===this)closeEditModal()">
-  <div class="card p-6 w-full max-w-lg max-h-screen overflow-y-auto">
-    <div class="flex items-center justify-between mb-5">
-      <h3 class="font-bold text-white text-lg">Edit Tenant</h3>
-      <button onclick="closeEditModal()" class="text-slate-400 hover:text-white text-xl">&times;</button>
+<div class="modal-bg" id="edit-modal" onclick="if(event.target===this)closeEditModal()">
+  <div class="card" style="padding:24px;width:100%;max-width:520px;max-height:90vh;overflow-y:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+      <h3 style="font-size:16px;font-weight:700;color:#fff">Edit Tenant</h3>
+      <button onclick="closeEditModal()" style="background:none;border:none;color:#64748b;font-size:20px;cursor:pointer;line-height:1">&times;</button>
     </div>
     <input type="hidden" id="edit-tenant-id">
-    <div class="space-y-4">
+    <div style="display:flex;flex-direction:column;gap:14px">
       <div>
-        <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Company Name</label>
+        <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Company Name</label>
         <input type="text" id="edit-company" class="input">
       </div>
       <div>
-        <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Admin Email</label>
+        <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Admin Email</label>
         <input type="email" id="edit-email" class="input">
       </div>
-      <div>
-        <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Admin PIN</label>
-        <input type="text" id="edit-pin" class="input" maxlength="8">
-      </div>
-      <div class="grid grid-cols-2 gap-4">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <div>
-          <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Plan</label>
+          <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Admin PIN</label>
+          <input type="text" id="edit-pin" class="input" maxlength="8">
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Brand Color</label>
+          <input type="color" id="edit-color" class="input" style="height:40px;cursor:pointer;padding:4px">
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Plan</label>
           <select id="edit-plan" class="input">
             <option value="starter">Starter (10 workers)</option>
             <option value="growth">Growth (25 workers)</option>
@@ -8821,7 +9293,7 @@ function getSuperAdminHTML(): string {
           </select>
         </div>
         <div>
-          <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Status</label>
+          <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Status</label>
           <select id="edit-status" class="input">
             <option value="active">Active</option>
             <option value="trial">Trial</option>
@@ -8830,27 +9302,30 @@ function getSuperAdminHTML(): string {
         </div>
       </div>
       <div>
-        <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Max Workers (override)</label>
+        <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Max Workers Override</label>
         <input type="number" id="edit-max-workers" class="input" min="1">
       </div>
       <div>
-        <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Brand Color</label>
-        <input type="color" id="edit-color" class="input h-10 cursor-pointer p-1">
+        <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Company Address</label>
+        <input type="text" id="edit-address" class="input">
       </div>
     </div>
-    <div class="flex gap-3 mt-6">
-      <button class="btn-primary flex-1" onclick="saveTenant()"><i class="fas fa-save mr-2"></i>Save Changes</button>
-      <button class="btn-ghost" onclick="closeEditModal()">Cancel</button>
+    <div style="display:flex;gap:10px;margin-top:18px">
+      <button class="btn btn-primary" onclick="saveTenant()" style="flex:1;justify-content:center"><i class="fas fa-save"></i> Save Changes</button>
+      <button class="btn btn-ghost" onclick="closeEditModal()">Cancel</button>
     </div>
   </div>
 </div>
 
 <!-- TOAST -->
-<div id="toast" class="toast hidden"></div>
+<div id="toast"></div>
 
 <script>
+'use strict'
 let superToken = localStorage.getItem('super_token') || ''
 let allTenants = []
+let sessPage = 1
+const sessLimit = 50
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 async function doSuperLogin() {
@@ -8864,157 +9339,207 @@ async function doSuperLogin() {
     })
     const d = await r.json()
     if (!r.ok || d.error) {
-      document.getElementById('login-error').textContent = d.error || 'Invalid PIN'
-      document.getElementById('login-error').classList.remove('hidden')
+      const el = document.getElementById('login-error')
+      el.textContent = d.error || 'Invalid PIN'
+      el.style.display = 'block'
       return
     }
     superToken = d.token
     localStorage.setItem('super_token', superToken)
-    showMain()
+    showApp()
   } catch(e) {
-    document.getElementById('login-error').textContent = 'Connection error'
-    document.getElementById('login-error').classList.remove('hidden')
+    const el = document.getElementById('login-error')
+    el.textContent = 'Connection error — try again'
+    el.style.display = 'block'
   }
 }
-
 document.getElementById('super-pin').addEventListener('keydown', e => { if(e.key==='Enter') doSuperLogin() })
 
 function doLogout() {
   localStorage.removeItem('super_token')
   superToken = ''
-  document.getElementById('main-screen').style.display = 'none'
+  document.getElementById('app').style.display = 'none'
   document.getElementById('login-screen').style.display = 'flex'
 }
 
-function showMain() {
+function showApp() {
   document.getElementById('login-screen').style.display = 'none'
-  document.getElementById('main-screen').style.display = 'block'
-  refreshAll()
+  document.getElementById('app').style.display = 'grid'
+  loadOverview()
+  loadLiveBadge()
+  // populate tenant filter for sessions
+  api('/api/super/tenants').then(d => {
+    const sel = document.getElementById('sess-tenant-filter')
+    ;(d.tenants||[]).forEach(t => {
+      const o = document.createElement('option')
+      o.value = t.id; o.textContent = t.company_name
+      sel.appendChild(o)
+    })
+  }).catch(()=>{})
 }
 
-// Auto-login if token exists
-if (superToken) showMain()
+if (superToken) showApp()
 
-// ── API helper ────────────────────────────────────────────────────────────────
+// ── API helper ─────────────────────────────────────────────────────────────
 async function api(path, opts = {}) {
-  const headers = { 'Content-Type': 'application/json', 'X-Super-Token': superToken, ...(opts.headers || {}) }
-  const r = await fetch(path, { ...opts, headers })
+  const r = await fetch(path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', 'X-Super-Token': superToken, ...(opts.headers||{}) }
+  })
   if (r.status === 401) { doLogout(); throw new Error('Unauthorized') }
   return r.json()
 }
 
-// ── Tabs ──────────────────────────────────────────────────────────────────────
-function showTab(name) {
-  document.querySelectorAll('[id^="tab-content-"]').forEach(el => el.classList.add('hidden'))
-  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'))
-  document.getElementById('tab-content-' + name)?.classList.remove('hidden')
-  document.getElementById('tab-' + name)?.classList.add('active')
-  if (name === 'tenants') loadTenants()
-  if (name === 'overview') loadDashboard()
+// ── Page navigation ────────────────────────────────────────────────────────
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(el => el.classList.remove('active'))
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'))
+  document.getElementById('page-' + name)?.classList.add('active')
+  document.getElementById('nav-' + name)?.classList.add('active')
+  // Load data on demand
+  if (name === 'overview')    loadOverview()
+  if (name === 'live')        loadLive()
+  if (name === 'tenants')     loadTenants()
+  if (name === 'sessions')    loadSessions()
+  if (name === 'revenue')     loadRevenue()
 }
 
-// ── Refresh ───────────────────────────────────────────────────────────────────
-async function refreshAll() {
+function refreshCurrent() {
+  const active = document.querySelector('.page.active')
+  if (!active) return
+  const name = active.id.replace('page-','')
+  showPage(name)
   document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString()
-  await loadDashboard()
 }
 
-// ── Dashboard ─────────────────────────────────────────────────────────────────
-async function loadDashboard() {
+// ── Overview ───────────────────────────────────────────────────────────────
+async function loadOverview() {
+  document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString()
   try {
-    const d = await api('/api/super/dashboard')
-    document.getElementById('stat-tenants').textContent = d.total_tenants
-    document.getElementById('stat-workers').textContent = d.total_workers
-    document.getElementById('stat-active').textContent = d.active_sessions
-    document.getElementById('stat-sessions').textContent = d.total_sessions
-
+    const [dash, td] = await Promise.all([
+      api('/api/super/dashboard'),
+      api('/api/super/tenants')
+    ])
+    document.getElementById('ov-tenants').textContent  = dash.total_tenants  || 0
+    document.getElementById('ov-workers').textContent  = dash.total_workers  || 0
+    document.getElementById('ov-live').textContent     = dash.active_sessions || 0
+    document.getElementById('ov-sessions').textContent = dash.total_sessions || 0
+    document.getElementById('live-count-badge').textContent = dash.active_sessions || 0
     // Plan breakdown
-    const planColors = { starter: 'badge-starter', growth: 'badge-growth', pro: 'badge-pro' }
-    const pb = document.getElementById('plan-breakdown')
-    pb.innerHTML = (d.plan_breakdown || []).map(p =>
-      '<span class="pill ' + (planColors[p.plan] || 'bg-slate-700 text-slate-300') + ' text-sm px-4 py-1">' +
-      (p.plan || 'unknown').toUpperCase() + ': <strong>' + p.count + '</strong></span>'
-    ).join('') || '<span class="text-slate-400 text-sm">No tenants yet</span>'
-
-    // Recent tenants (load from tenants list)
-    const td = await api('/api/super/tenants')
+    const planColors = { starter:'badge-starter', growth:'badge-growth', pro:'badge-pro' }
+    document.getElementById('ov-plans').innerHTML = (dash.plan_breakdown||[]).length
+      ? (dash.plan_breakdown||[]).map(p => \`
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:#0f172a;border-radius:6px">
+            <span class="pill \${planColors[p.plan]||'badge-starter'}">\${(p.plan||'—').toUpperCase()}</span>
+            <span style="font-size:18px;font-weight:800;color:#fff">\${p.count}</span>
+          </div>\`).join('')
+      : '<span style="color:#475569;font-size:13px">No tenants</span>'
+    // Recent tenants
     allTenants = td.tenants || []
-    const recent = allTenants.slice(0, 5)
-    const rt = document.getElementById('recent-tenants')
-    rt.innerHTML = recent.length ? recent.map(t => \`
-      <div class="flex items-center justify-between p-3 rounded-lg bg-slate-800/50 table-row">
+    document.getElementById('ov-recent').innerHTML = allTenants.slice(0,5).map(t => \`
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:#0f172a;border-radius:8px">
         <div>
-          <span class="font-semibold text-white">\${t.company_name}</span>
-          <span class="text-slate-400 text-xs ml-2">\${t.slug}.clockinproof.com</span>
+          <span style="font-weight:600;color:#e2e8f0;font-size:13px">\${t.company_name}</span>
+          <span style="color:#475569;font-size:11px;margin-left:6px">\${t.slug}.clockinproof.com</span>
         </div>
-        <div class="flex items-center gap-3">
-          <span class="pill \${t.plan === 'pro' ? 'badge-pro' : t.plan === 'growth' ? 'badge-growth' : 'badge-starter'}">\${t.plan || 'starter'}</span>
-          <span class="pill \${t.status === 'active' ? 'badge-active' : t.status === 'trial' ? 'badge-trial' : 'badge-suspended'}">\${t.status}</span>
-          <span class="text-slate-400 text-xs">\${t.worker_count || 0} workers</span>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="pill \${t.plan==='pro'?'badge-pro':t.plan==='growth'?'badge-growth':'badge-starter'}">\${t.plan||'starter'}</span>
+          <span class="pill \${t.status==='active'?'badge-active':t.status==='trial'?'badge-trial':'badge-suspended'}">\${t.status}</span>
         </div>
-      </div>
-    \`).join('') : '<p class="text-slate-400 text-sm">No tenants yet. Click Add Tenant tab to get started.</p>'
+      </div>\`).join('') || '<span style="color:#475569;font-size:13px">No tenants yet</span>'
   } catch(e) { console.error(e) }
 }
 
-// ── Tenants list ──────────────────────────────────────────────────────────────
+// ── Live Activity ──────────────────────────────────────────────────────────
+async function loadLiveBadge() {
+  try {
+    const d = await api('/api/super/live')
+    document.getElementById('live-count-badge').textContent = d.count || 0
+  } catch {}
+}
+
+async function loadLive() {
+  const tbody = document.getElementById('live-tbody')
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>'
+  try {
+    const d = await api('/api/super/live')
+    const rows = d.sessions || []
+    document.getElementById('live-count-badge').textContent = rows.length
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:48px;color:#475569"><i class="fas fa-moon" style="font-size:28px;display:block;margin-bottom:8px"></i>No workers clocked in right now</td></tr>'
+      return
+    }
+    tbody.innerHTML = rows.map(s => {
+      const cin = new Date(s.clock_in_time)
+      const dur = Math.round((Date.now() - cin.getTime()) / 60000)
+      const h = Math.floor(dur/60), m = dur%60
+      return \`<tr>
+        <td><span style="font-weight:600;color:#e2e8f0">\${s.worker_name}</span></td>
+        <td><a href="https://\${s.tenant_slug}.clockinproof.com" target="_blank" style="color:#818cf8;font-size:12px">\${s.company_name}</a></td>
+        <td style="color:#94a3b8;font-size:12px">\${cin.toLocaleTimeString()}</td>
+        <td><span class="live-dot" style="margin-right:4px"></span><span style="color:#34d399;font-weight:600">\${h}h \${m}m</span></td>
+        <td style="color:#94a3b8;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${s.clock_in_address||s.job_location||'—'}</td>
+      </tr>\`
+    }).join('')
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:40px;color:#ef4444">Failed to load live data</td></tr>'
+  }
+}
+
+// ── Tenants ────────────────────────────────────────────────────────────────
 async function loadTenants() {
-  const tbody = document.getElementById('tenants-table-body')
-  tbody.innerHTML = '<tr><td colspan="8" class="p-8 text-center text-slate-400"><i class="fas fa-spinner fa-spin mr-2"></i>Loading...</td></tr>'
+  const tbody = document.getElementById('tenants-tbody')
+  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>'
   try {
     const d = await api('/api/super/tenants')
     allTenants = d.tenants || []
     renderTenants(allTenants)
   } catch(e) {
-    tbody.innerHTML = '<tr><td colspan="8" class="p-8 text-center text-red-400">Failed to load tenants</td></tr>'
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#ef4444">Failed to load</td></tr>'
   }
 }
 
 function filterTenants() {
   const q = document.getElementById('tenant-search').value.toLowerCase()
-  const fStatus = document.getElementById('tenant-filter-status').value
-  const fPlan = document.getElementById('tenant-filter-plan').value
-  const filtered = allTenants.filter(t =>
+  const fs = document.getElementById('tenant-filter-status').value
+  const fp = document.getElementById('tenant-filter-plan').value
+  renderTenants(allTenants.filter(t =>
     (!q || t.company_name.toLowerCase().includes(q) || t.slug.includes(q) || (t.admin_email||'').toLowerCase().includes(q)) &&
-    (!fStatus || t.status === fStatus) &&
-    (!fPlan || t.plan === fPlan)
-  )
-  renderTenants(filtered)
+    (!fs || t.status === fs) && (!fp || t.plan === fp)
+  ))
 }
 
 function renderTenants(tenants) {
-  const tbody = document.getElementById('tenants-table-body')
-  document.getElementById('tenant-count-label').textContent = tenants.length + ' tenant' + (tenants.length !== 1 ? 's' : '')
+  document.getElementById('tenant-count-label').textContent = tenants.length + ' tenant' + (tenants.length!==1?'s':'')
+  const tbody = document.getElementById('tenants-tbody')
   if (!tenants.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="p-8 text-center text-slate-400">No tenants found</td></tr>'
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#475569">No tenants found</td></tr>'
     return
   }
   tbody.innerHTML = tenants.map(t => {
-    const statusClass = t.status === 'active' ? 'badge-active' : t.status === 'trial' ? 'badge-trial' : 'badge-suspended'
-    const planClass = t.plan === 'pro' ? 'badge-pro' : t.plan === 'growth' ? 'badge-growth' : 'badge-starter'
-    const lastActive = t.last_active ? new Date(t.last_active).toLocaleDateString() : 'Never'
-    const created = t.created_at ? new Date(t.created_at).toLocaleDateString() : '—'
-    return \`<tr class="border-b border-slate-800 table-row">
-      <td class="p-4">
-        <div class="font-semibold text-white">\${t.company_name}</div>
-        <div class="text-slate-400 text-xs">\${t.admin_email || '—'}</div>
-        <div class="text-slate-500 text-xs">Created \${created}</div>
+    const sc = t.status==='active'?'badge-active':t.status==='trial'?'badge-trial':'badge-suspended'
+    const pc = t.plan==='pro'?'badge-pro':t.plan==='growth'?'badge-growth':'badge-starter'
+    const la = t.last_active ? new Date(t.last_active).toLocaleDateString() : 'Never'
+    const cr = t.created_at ? new Date(t.created_at).toLocaleDateString() : '—'
+    return \`<tr>
+      <td>
+        <div style="font-weight:600;color:#e2e8f0">\${t.company_name}</div>
+        <div style="color:#475569;font-size:11px">\${t.admin_email||'—'}</div>
+        <div style="color:#334155;font-size:10px">Created \${cr}</div>
       </td>
-      <td class="p-4 hidden md:table-cell">
-        <a href="https://\${t.slug}.clockinproof.com" target="_blank" class="text-indigo-400 hover:underline text-xs">\${t.slug}</a>
-      </td>
-      <td class="p-4 hidden md:table-cell"><span class="pill \${planClass}">\${t.plan || 'starter'}</span></td>
-      <td class="p-4 hidden md:table-cell"><span class="pill \${statusClass}">\${t.status}</span></td>
-      <td class="p-4 hidden lg:table-cell text-slate-300">\${t.worker_count || 0} / \${t.max_workers || '?'}</td>
-      <td class="p-4 hidden lg:table-cell text-slate-300">\${t.session_count || 0}</td>
-      <td class="p-4 hidden lg:table-cell text-slate-400 text-xs">\${lastActive}</td>
-      <td class="p-4 text-right">
-        <div class="flex justify-end gap-1 flex-wrap">
-          <button class="btn-ghost" onclick="openEditModal(\${JSON.stringify(t).replace(/"/g,'&quot;')})"><i class="fas fa-edit"></i></button>
-          <a href="https://admin.clockinproof.com" target="_blank" class="btn-ghost" title="Open Admin"><i class="fas fa-external-link-alt"></i></a>
-          \${t.status === 'active'
-            ? '<button class="btn-danger" onclick="suspendTenant(' + t.id + ')"><i class="fas fa-pause"></i></button>'
-            : '<button class="btn-success" onclick="activateTenant(' + t.id + ')"><i class="fas fa-play"></i></button>'
+      <td><a href="https://\${t.slug}.clockinproof.com" target="_blank" style="color:#818cf8;font-size:12px">\${t.slug}</a></td>
+      <td><span class="pill \${pc}">\${t.plan||'starter'}</span></td>
+      <td><span class="pill \${sc}">\${t.status}</span></td>
+      <td style="color:#94a3b8">\${t.worker_count||0} / \${t.max_workers||'?'}</td>
+      <td style="color:#94a3b8">\${t.session_count||0}</td>
+      <td style="color:#64748b;font-size:12px">\${la}</td>
+      <td style="text-align:right">
+        <div style="display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap">
+          <button class="btn btn-ghost" onclick='openEditModal(\${JSON.stringify(t).replace(/'/g,"&#39;")})' title="Edit"><i class="fas fa-edit"></i></button>
+          <a href="https://\${t.slug}.clockinproof.com" target="_blank" class="btn btn-ghost" title="Worker App"><i class="fas fa-mobile-alt"></i></a>
+          \${t.status==='active'
+            ? '<button class="btn btn-danger" onclick="suspendTenant('+t.id+')" title="Suspend"><i class="fas fa-pause"></i></button>'
+            : '<button class="btn btn-success" onclick="activateTenant('+t.id+')" title="Activate"><i class="fas fa-play"></i></button>'
           }
         </div>
       </td>
@@ -9022,165 +9547,240 @@ function renderTenants(tenants) {
   }).join('')
 }
 
-// ── Edit Modal ────────────────────────────────────────────────────────────────
+// ── Edit Modal ──────────────────────────────────────────────────────────────
 function openEditModal(t) {
+  if (typeof t === 'string') t = JSON.parse(t)
   document.getElementById('edit-tenant-id').value = t.id
-  document.getElementById('edit-company').value = t.company_name || ''
-  document.getElementById('edit-email').value = t.admin_email || ''
-  document.getElementById('edit-pin').value = t.admin_pin || ''
-  document.getElementById('edit-plan').value = t.plan || 'starter'
-  document.getElementById('edit-status').value = t.status || 'active'
-  document.getElementById('edit-max-workers').value = t.max_workers || ''
-  document.getElementById('edit-color').value = t.primary_color || '#4F46E5'
-  document.getElementById('edit-modal').classList.remove('hidden')
+  document.getElementById('edit-company').value  = t.company_name||''
+  document.getElementById('edit-email').value    = t.admin_email||''
+  document.getElementById('edit-pin').value      = t.admin_pin||''
+  document.getElementById('edit-plan').value     = t.plan||'starter'
+  document.getElementById('edit-status').value   = t.status||'active'
+  document.getElementById('edit-max-workers').value = t.max_workers||''
+  document.getElementById('edit-color').value    = t.primary_color||'#4F46E5'
+  document.getElementById('edit-address').value  = t.company_address||''
+  document.getElementById('edit-modal').classList.add('open')
 }
-function closeEditModal() { document.getElementById('edit-modal').classList.add('hidden') }
+function closeEditModal() { document.getElementById('edit-modal').classList.remove('open') }
 
 async function saveTenant() {
   const id = document.getElementById('edit-tenant-id').value
   const body = {
     company_name: document.getElementById('edit-company').value,
-    admin_email: document.getElementById('edit-email').value,
-    admin_pin: document.getElementById('edit-pin').value,
-    plan: document.getElementById('edit-plan').value,
-    status: document.getElementById('edit-status').value,
-    max_workers: parseInt(document.getElementById('edit-max-workers').value) || undefined,
-    primary_color: document.getElementById('edit-color').value
+    admin_email:  document.getElementById('edit-email').value,
+    admin_pin:    document.getElementById('edit-pin').value,
+    plan:         document.getElementById('edit-plan').value,
+    status:       document.getElementById('edit-status').value,
+    max_workers:  parseInt(document.getElementById('edit-max-workers').value)||undefined,
+    primary_color:document.getElementById('edit-color').value,
+    company_address:document.getElementById('edit-address').value
   }
   try {
-    await api('/api/super/tenants/' + id, { method: 'PUT', body: JSON.stringify(body) })
-    closeEditModal()
-    showToast('✅ Tenant updated')
-    loadTenants()
-  } catch(e) { showToast('❌ Update failed', true) }
+    await api('/api/super/tenants/'+id, { method:'PUT', body:JSON.stringify(body) })
+    closeEditModal(); showToast('✅ Tenant updated'); loadTenants()
+  } catch { showToast('❌ Update failed', true) }
 }
 
 async function suspendTenant(id) {
   if (!confirm('Suspend this tenant? Workers will not be able to clock in.')) return
-  await api('/api/super/tenants/' + id, { method: 'PUT', body: JSON.stringify({ status: 'suspended' }) })
-  showToast('⏸ Tenant suspended')
-  loadTenants()
+  await api('/api/super/tenants/'+id, { method:'PUT', body:JSON.stringify({status:'suspended'}) })
+  showToast('⏸ Tenant suspended'); loadTenants()
 }
 async function activateTenant(id) {
-  await api('/api/super/tenants/' + id, { method: 'PUT', body: JSON.stringify({ status: 'active' }) })
-  showToast('▶ Tenant activated')
-  loadTenants()
+  await api('/api/super/tenants/'+id, { method:'PUT', body:JSON.stringify({status:'active'}) })
+  showToast('▶ Tenant activated'); loadTenants()
 }
 
-// ── Create Tenant ─────────────────────────────────────────────────────────────
+// ── Create Tenant ───────────────────────────────────────────────────────────
 let slugCheckTimer = null
-// Sync slug → email slug when slug changes
 function onSlugInput() {
   const slug = document.getElementById('new-slug').value.trim()
-  // Auto-fill email slug from subdomain slug
-  const emailSlugEl = document.getElementById('new-email-slug')
-  if (!emailSlugEl._manuallyEdited) {
-    emailSlugEl.value = slug
-    updateEmailPreview(slug)
-  }
+  const emailEl = document.getElementById('new-email-slug')
+  if (!emailEl._manuallyEdited) { emailEl.value = slug; updateEmailPreview(slug) }
   checkSlug(slug)
 }
-
-// When user manually edits the email part
 function onEmailSlugInput() {
   const el = document.getElementById('new-email-slug')
   el._manuallyEdited = true
-  const val = el.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-')
-  updateEmailPreview(val)
+  updateEmailPreview(el.value.trim().toLowerCase().replace(/[^a-z0-9-]/g,'-').replace(/-+/g,'-'))
 }
-
 function updateEmailPreview(val) {
-  const preview = document.getElementById('email-preview')
-  if (val) {
-    preview.textContent = '→ admin.' + val + '@clockinproof.com'
-    preview.classList.remove('hidden')
-  } else {
-    preview.classList.add('hidden')
-  }
+  const p = document.getElementById('email-preview')
+  if (val) { p.textContent = '→ admin.'+val+'@clockinproof.com'; p.style.display='block' }
+  else p.style.display='none'
 }
-
-// Also auto-fill slug from company name if slug is empty
 document.getElementById('new-company').addEventListener('input', function() {
   const slugEl = document.getElementById('new-slug')
-  const emailSlugEl = document.getElementById('new-email-slug')
+  const emailEl = document.getElementById('new-email-slug')
   if (!slugEl.value) {
-    const autoSlug = this.value.toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, '')
-      .trim()
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-')
-    slugEl.value = autoSlug
-    if (!emailSlugEl._manuallyEdited) {
-      emailSlugEl.value = autoSlug
-      updateEmailPreview(autoSlug)
-    }
-    checkSlug(autoSlug)
+    const auto = this.value.toLowerCase().replace(/[^a-z0-9\\s-]/g,'').trim().replace(/\\s+/g,'-').replace(/-+/g,'-')
+    slugEl.value = auto
+    if (!emailEl._manuallyEdited) { emailEl.value = auto; updateEmailPreview(auto) }
+    checkSlug(auto)
   }
 })
-
 async function checkSlug(val) {
   clearTimeout(slugCheckTimer)
-  const check = document.getElementById('slug-check')
-  if (!val) { check.textContent = ''; return }
-  check.textContent = '⏳'
+  const el = document.getElementById('slug-check')
+  if (!val) { el.textContent=''; return }
+  el.textContent = '⏳'
   slugCheckTimer = setTimeout(async () => {
     try {
-      const d = await fetch('/api/tenants/check-slug?slug=' + encodeURIComponent(val)).then(r => r.json())
-      check.textContent = d.available ? '✅' : '❌'
-      check.title = d.available ? 'Available' : (d.error || 'Already taken')
-    } catch { check.textContent = '?' }
+      const d = await fetch('/api/tenants/check-slug?slug='+encodeURIComponent(val)).then(r=>r.json())
+      el.textContent = d.available ? '✅' : '❌'
+    } catch { el.textContent='?' }
   }, 500)
 }
-
 async function createTenant() {
-  const company = document.getElementById('new-company').value.trim()
-  const slug = document.getElementById('new-slug').value.trim()
-  const emailSlug = document.getElementById('new-email-slug').value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-') || slug
-  const email = 'admin.' + emailSlug + '@clockinproof.com'
-  const pin = document.getElementById('new-pin').value.trim()
-  const plan = document.getElementById('new-plan').value
-  const address = document.getElementById('new-address').value.trim()
-  if (!company || !slug) { showToast('❌ Company name and subdomain are required', true); return }
-  const resultEl = document.getElementById('create-result')
-  resultEl.className = 'p-3 rounded-lg bg-slate-800 text-slate-300 text-sm'
-  resultEl.textContent = 'Creating tenant...'
-  resultEl.classList.remove('hidden')
+  const company  = document.getElementById('new-company').value.trim()
+  const slug     = document.getElementById('new-slug').value.trim()
+  const eSlug    = (document.getElementById('new-email-slug').value.trim().toLowerCase().replace(/[^a-z0-9-]/g,'-').replace(/-+/g,'-'))||slug
+  const email    = 'admin.'+eSlug+'@clockinproof.com'
+  const pin      = document.getElementById('new-pin').value.trim()
+  const plan     = document.getElementById('new-plan').value
+  const address  = document.getElementById('new-address').value.trim()
+  if (!company || !slug) { showToast('❌ Company name and subdomain required', true); return }
+  const res = document.getElementById('create-result')
+  res.style.cssText = 'display:block;padding:12px;border-radius:8px;background:#1e293b;color:#94a3b8;font-size:13px'
+  res.textContent = 'Creating tenant...'
   try {
     const d = await api('/api/super/tenants', {
       method: 'POST',
-      body: JSON.stringify({ slug, company_name: company, admin_email: email, admin_pin: pin || '1234', plan, company_address: address })
+      body: JSON.stringify({ slug, company_name:company, admin_email:email, admin_pin:pin||'1234', plan, company_address:address })
     })
     if (d.error) {
-      resultEl.className = 'p-3 rounded-lg bg-red-900/40 border border-red-700 text-red-300 text-sm'
-      resultEl.textContent = '❌ ' + d.error
-      return
+      res.style.cssText = 'display:block;padding:12px;border-radius:8px;background:#7f1d1d33;border:1px solid #dc2626;color:#fca5a5;font-size:13px'
+      res.textContent = '❌ '+d.error; return
     }
-    resultEl.className = 'p-3 rounded-lg bg-emerald-900/40 border border-emerald-700 text-emerald-300 text-sm'
-    resultEl.innerHTML = \`✅ <strong>Tenant created!</strong><br>
+    res.style.cssText = 'display:block;padding:12px;border-radius:8px;background:#065f4633;border:1px solid #059669;color:#6ee7b7;font-size:13px'
+    res.innerHTML = \`✅ <strong>Tenant created!</strong><br>
       Admin email: <strong>\${email}</strong><br>
-      Admin dashboard: <a href="https://admin.clockinproof.com" target="_blank" class="underline">admin.clockinproof.com</a><br>
-      Worker app: <a href="https://\${d.slug}.clockinproof.com" target="_blank" class="underline">\${d.slug}.clockinproof.com</a><br>
-      Welcome email sent to <strong>\${email}</strong>\`
-    // Reset form
-    ['new-company','new-slug','new-email-slug','new-pin','new-address'].forEach(id => { const el = document.getElementById(id); if(el) { el.value = ''; el._manuallyEdited = false; } })
+      Worker app: <a href="https://\${d.slug}.clockinproof.com" target="_blank" style="color:#6ee7b7;text-decoration:underline">\${d.slug}.clockinproof.com</a>\`
+    ;['new-company','new-slug','new-email-slug','new-pin','new-address'].forEach(id => {
+      const el = document.getElementById(id); if(el){el.value='';el._manuallyEdited=false}
+    })
     document.getElementById('new-plan').value = 'growth'
     document.getElementById('slug-check').textContent = ''
-    document.getElementById('email-preview').classList.add('hidden')
+    document.getElementById('email-preview').style.display = 'none'
     showToast('🎉 Tenant created!')
-    allTenants = [] // force reload
-  } catch(e) {
-    resultEl.className = 'p-3 rounded-lg bg-red-900/40 border border-red-700 text-red-300 text-sm'
-    resultEl.textContent = '❌ Failed to create tenant'
+    allTenants = []
+  } catch { 
+    res.style.cssText = 'display:block;padding:12px;border-radius:8px;background:#7f1d1d33;border:1px solid #dc2626;color:#fca5a5;font-size:13px'
+    res.textContent = '❌ Failed to create tenant'
   }
 }
 
-// ── Toast ─────────────────────────────────────────────────────────────────────
-function showToast(msg, isError = false) {
+// ── Sessions ────────────────────────────────────────────────────────────────
+async function loadSessions() {
+  const tbody = document.getElementById('sessions-tbody')
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>'
+  const tid = document.getElementById('sess-tenant-filter').value
+  try {
+    const params = new URLSearchParams({ page: sessPage, limit: sessLimit })
+    if (tid) params.set('tenant_id', tid)
+    const d = await api('/api/super/sessions?' + params)
+    const rows = d.sessions || []
+    document.getElementById('sess-info').textContent = 'Showing ' + ((sessPage-1)*sessLimit+1) + '–' + Math.min(sessPage*sessLimit, d.total) + ' of ' + d.total
+    document.getElementById('sess-prev').disabled = sessPage <= 1
+    document.getElementById('sess-next').disabled = sessPage * sessLimit >= d.total
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#475569">No sessions found</td></tr>'
+      return
+    }
+    tbody.innerHTML = rows.map(s => {
+      const cin = s.clock_in_time ? new Date(s.clock_in_time).toLocaleString() : '—'
+      const cout = s.clock_out_time ? new Date(s.clock_out_time).toLocaleString() : '<span class="live-dot" style="margin-right:4px"></span>Active'
+      const sc = s.status==='completed' ? 'badge-active' : 'badge-trial'
+      return \`<tr>
+        <td style="font-weight:600;color:#e2e8f0">\${s.worker_name||'—'}</td>
+        <td style="color:#818cf8;font-size:12px">\${s.company_name||'—'}</td>
+        <td style="color:#94a3b8;font-size:12px">\${cin}</td>
+        <td style="color:#94a3b8;font-size:12px">\${cout}</td>
+        <td style="color:#34d399;font-weight:600">\${s.total_hours?s.total_hours.toFixed(1)+'h':'—'}</td>
+        <td style="color:#64748b;font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${s.job_location||s.clock_in_address||'—'}</td>
+        <td><span class="pill \${sc}">\${s.status||'—'}</span></td>
+      </tr>\`
+    }).join('')
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#ef4444">Failed to load sessions</td></tr>'
+  }
+}
+function changeSessPage(dir) { sessPage = Math.max(1, sessPage+dir); loadSessions() }
+
+// ── Revenue ─────────────────────────────────────────────────────────────────
+async function loadRevenue() {
+  const tbody = document.getElementById('revenue-tbody')
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>'
+  try {
+    const d = await api('/api/super/revenue')
+    const rows = d.tenants || []
+    document.getElementById('rev-mrr').textContent = (d.total_mrr||0).toLocaleString()
+    document.getElementById('rev-tenants').textContent = rows.length
+    document.getElementById('rev-arr').textContent = ((d.total_mrr||0)*12).toLocaleString()
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#475569">No revenue data</td></tr>'
+      return
+    }
+    tbody.innerHTML = rows.map(r => {
+      const pc = r.plan==='pro'?'badge-pro':r.plan==='growth'?'badge-growth':'badge-starter'
+      const sc = r.status==='active'?'badge-active':r.status==='trial'?'badge-trial':'badge-suspended'
+      return \`<tr>
+        <td><div style="font-weight:600;color:#e2e8f0">\${r.company_name}</div><div style="color:#475569;font-size:11px">\${r.slug}</div></td>
+        <td><span class="pill \${pc}">\${r.plan||'—'}</span></td>
+        <td><span class="pill \${sc}">\${r.status||'—'}</span></td>
+        <td style="color:#94a3b8">\${r.workers||0}</td>
+        <td style="color:#94a3b8">\${r.sessions||0}</td>
+        <td style="color:#94a3b8">\${r.total_hours||0}h</td>
+        <td style="font-weight:700;color:#34d399">$\${r.mrr||0}/mo</td>
+      </tr>\`
+    }).join('')
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#ef4444">Failed to load revenue</td></tr>'
+  }
+}
+
+// ── Email test ───────────────────────────────────────────────────────────────
+async function sendTestEmail() {
+  const to = document.getElementById('test-email-to').value.trim()
+  if (!to) { showToast('❌ Enter a recipient email', true); return }
+  const res = document.getElementById('test-email-result')
+  res.textContent = 'Sending...'; res.style.display='block'; res.style.color='#94a3b8'
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method:'POST',
+      headers: { 'Content-Type':'application/json', 'Authorization':'Bearer ' + (window._rk||'') },
+      body: JSON.stringify({
+        from:'ClockInProof <alerts@clockinproof.com>',
+        to:[to],
+        subject:'✅ ClockInProof — Super Admin Test Email',
+        html:'<div style="font-family:sans-serif;padding:24px"><h2>Test Email</h2><p>Sent from the Super Admin portal.</p></div>'
+      })
+    })
+    // Use backend proxy instead
+    const d = await api('/api/super/test-email', { method:'POST', body:JSON.stringify({to}) })
+    if (d.error) { res.textContent='❌ '+d.error; res.style.color='#fca5a5'; return }
+    res.textContent = '✅ Email sent! ID: '+d.id; res.style.color='#6ee7b7'
+    showToast('✅ Test email sent!')
+  } catch(e) {
+    res.textContent = '❌ Failed — check browser console'; res.style.color='#fca5a5'
+  }
+}
+
+// ── Platform: change super PIN ───────────────────────────────────────────────
+async function changeSuperPin() {
+  const newPin = document.getElementById('new-super-pin').value.trim()
+  if (!newPin || newPin.length < 6) { showToast('❌ PIN must be at least 6 characters', true); return }
+  showToast('ℹ️ To change the PIN, update SUPER_ADMIN_PIN secret in Cloudflare Pages dashboard', false)
+  document.getElementById('new-super-pin').value = ''
+}
+
+// ── Toast ────────────────────────────────────────────────────────────────────
+function showToast(msg, isError=false) {
   const t = document.getElementById('toast')
   t.textContent = msg
   t.style.borderColor = isError ? '#dc2626' : '#4f46e5'
-  t.classList.remove('hidden')
-  setTimeout(() => t.classList.add('hidden'), 3500)
+  t.style.display = 'block'
+  setTimeout(()=>{ t.style.display='none' }, 3500)
 }
 </script>
 </body>
