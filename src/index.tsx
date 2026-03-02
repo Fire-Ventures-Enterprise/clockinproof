@@ -8953,7 +8953,7 @@ async function loadDashboard() {
           <span class="text-slate-400 text-xs">\${t.worker_count || 0} workers</span>
         </div>
       </div>
-    \`).join('') : '<p class="text-slate-400 text-sm">No tenants yet. <button onclick="showTab(\'new-tenant\')" class="text-indigo-400 hover:underline">Add your first tenant →</button></p>'
+    \`).join('') : '<p class="text-slate-400 text-sm">No tenants yet. Click Add Tenant tab to get started.</p>'
   } catch(e) { console.error(e) }
 }
 
@@ -9118,7 +9118,6 @@ document.getElementById('new-company').addEventListener('input', function() {
   }
 })
 
-let slugCheckTimer = null
 async function checkSlug(val) {
   clearTimeout(slugCheckTimer)
   const check = document.getElementById('slug-check')
