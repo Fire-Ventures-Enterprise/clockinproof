@@ -8686,8 +8686,17 @@ a{color:inherit;text-decoration:none}
 #login-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#0f172a 0%,#1e1b4b 100%)}
 #app{display:none;height:100vh;display:grid;grid-template-rows:56px 1fr;grid-template-columns:220px 1fr}
 #topbar{grid-column:1/-1;background:#0f172a;border-bottom:1px solid #1e293b;display:flex;align-items:center;justify-content:space-between;padding:0 20px;z-index:50}
-#sidebar{background:#0c1322;border-right:1px solid #1e293b;overflow-y:auto;display:flex;flex-direction:column;padding:12px 8px}
+#sidebar{background:#0c1322;border-right:1px solid #1e293b;overflow-y:auto;display:flex;flex-direction:column;padding:12px 8px;transition:transform .25s ease}
 #content{overflow-y:auto;background:#0f172a}
+/* ── Mobile sidebar ── */
+#sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:90;backdrop-filter:blur(2px)}
+#hamburger{display:none;background:none;border:none;color:#e2e8f0;font-size:20px;cursor:pointer;padding:4px 8px;margin-right:4px}
+@media(max-width:768px){
+  #app{grid-template-columns:1fr}
+  #sidebar{position:fixed;top:56px;left:0;bottom:0;width:240px;z-index:100;transform:translateX(-100%)}
+  #sidebar.open{transform:translateX(0)}
+  #hamburger{display:flex;align-items:center;justify-content:center}
+}
 /* ── Cards & common ── */
 .card{background:#1e293b;border:1px solid #334155;border-radius:12px}
 .stat-card{background:linear-gradient(135deg,#1e293b,#0f172a);border:1px solid #334155;border-radius:12px;padding:20px}
@@ -8768,7 +8777,8 @@ select.input option{background:#1e293b}
 
   <!-- TOP BAR -->
   <div id="topbar">
-    <div style="display:flex;align-items:center;gap:12px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <button id="hamburger" onclick="toggleSidebar()" aria-label="Toggle menu"><i class="fas fa-bars"></i></button>
       <div style="width:32px;height:32px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:8px;display:flex;align-items:center;justify-content:center">
         <i class="fas fa-shield-halved" style="color:#fff;font-size:14px"></i>
       </div>
@@ -8825,6 +8835,8 @@ select.input option{background:#1e293b}
       <i class="fas fa-lock" style="margin-right:4px"></i>Secure session
     </div>
   </div>
+  <!-- Overlay (mobile) -->
+  <div id="sidebar-overlay" onclick="closeSidebar()"></div>
 
   <!-- CONTENT AREA -->
   <div id="content">
@@ -9396,12 +9408,35 @@ function showPage(name) {
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'))
   document.getElementById('page-' + name)?.classList.add('active')
   document.getElementById('nav-' + name)?.classList.add('active')
+  // Auto-close sidebar on mobile after selecting a tab
+  closeSidebar()
   // Load data on demand
   if (name === 'overview')    loadOverview()
   if (name === 'live')        loadLive()
   if (name === 'tenants')     loadTenants()
   if (name === 'sessions')    loadSessions()
   if (name === 'revenue')     loadRevenue()
+}
+
+function toggleSidebar() {
+  const sb = document.getElementById('sidebar')
+  const ov = document.getElementById('sidebar-overlay')
+  const isOpen = sb.classList.contains('open')
+  if (isOpen) {
+    sb.classList.remove('open')
+    ov.style.display = 'none'
+  } else {
+    sb.classList.add('open')
+    ov.style.display = 'block'
+  }
+}
+
+function closeSidebar() {
+  // Only close on mobile (sidebar is position:fixed when open)
+  if (window.innerWidth <= 768) {
+    document.getElementById('sidebar').classList.remove('open')
+    document.getElementById('sidebar-overlay').style.display = 'none'
+  }
 }
 
 function refreshCurrent() {
