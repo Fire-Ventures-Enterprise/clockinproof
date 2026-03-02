@@ -2652,10 +2652,12 @@ app.post('/api/super/tenants', async (c) => {
   await ensureSchema(db)
   const body = await c.req.json()
   const { slug, company_name, company_address, admin_email, admin_pin, plan } = body
-  if (!slug || !company_name || !admin_email) {
-    return c.json({ error: 'slug, company_name and admin_email are required' }, 400)
+  if (!slug || !company_name) {
+    return c.json({ error: 'slug and company_name are required' }, 400)
   }
   const cleanSlug = slug.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-')
+  // Auto-generate admin email from slug if not provided: admin.{slug}@clockinproof.com
+  const resolvedEmail = admin_email || ('admin.' + cleanSlug + '@clockinproof.com')
   const reserved = ['admin', 'app', 'www', 'superadmin', 'super', 'api', 'mail', 'staging', 'clockinproof', 'support']
   if (reserved.includes(cleanSlug)) return c.json({ error: 'Reserved subdomain' }, 400)
   const existing = await db.prepare(`SELECT id FROM tenants WHERE slug = ?`).bind(cleanSlug).first()
@@ -2665,7 +2667,7 @@ app.post('/api/super/tenants', async (c) => {
   const result = await db.prepare(
     `INSERT INTO tenants (slug, company_name, company_address, admin_email, admin_pin, plan, status, max_workers)
      VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`
-  ).bind(cleanSlug, company_name, company_address || '', admin_email, admin_pin || '1234', plan || 'starter', maxWorkers).run()
+  ).bind(cleanSlug, company_name, company_address || '', resolvedEmail, admin_pin || '1234', plan || 'starter', maxWorkers).run()
   const tenantId = (result.meta as any).last_row_id
   const defaults = [
     ['app_name', company_name], ['country_code', 'CA'], ['province_code', 'ON'],
@@ -2676,7 +2678,7 @@ app.post('/api/super/tenants', async (c) => {
     ['show_pay_to_workers', '1'], ['geofence_radius_meters', '300'],
     ['gps_fraud_check', '1'], ['auto_clockout_enabled', '1'],
     ['max_shift_hours', '10'], ['away_warning_min', '30'],
-    ['company_name', company_name], ['admin_email', admin_email]
+    ['company_name', company_name], ['admin_email', resolvedEmail]
   ]
   for (const [key, value] of defaults) {
     await db.prepare(`INSERT OR IGNORE INTO tenant_settings (tenant_id, key, value) VALUES (?, ?, ?)`)
@@ -2684,19 +2686,20 @@ app.post('/api/super/tenants', async (c) => {
   }
   // Send welcome email to new tenant admin
   const resendKey = (c.env.RESEND_API_KEY || '').trim()
-  if (resendKey && admin_email) {
+  if (resendKey) {
     await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         from: 'ClockInProof <alerts@clockinproof.com>',
-        to: [admin_email],
+        to: [resolvedEmail],
         subject: `Welcome to ClockInProof — Your account is ready`,
         html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto">
           <h2 style="color:#4F46E5">Welcome to ClockInProof! 🎉</h2>
           <p>Your company <strong>${company_name}</strong> has been set up successfully.</p>
           <p><strong>Your login details:</strong></p>
           <ul>
+            <li><strong>Admin email:</strong> ${resolvedEmail}</li>
             <li><strong>Admin dashboard:</strong> <a href="https://admin.clockinproof.com">admin.clockinproof.com</a></li>
             <li><strong>Worker app:</strong> <a href="https://${cleanSlug}.clockinproof.com">${cleanSlug}.clockinproof.com</a></li>
             <li><strong>Admin PIN:</strong> ${admin_pin || '1234'}</li>
@@ -2708,7 +2711,7 @@ app.post('/api/super/tenants', async (c) => {
       })
     })
   }
-  return c.json({ success: true, tenant_id: tenantId, slug: cleanSlug, url: `https://${cleanSlug}.clockinproof.com` })
+  return c.json({ success: true, tenant_id: tenantId, slug: cleanSlug, admin_email: resolvedEmail, url: `https://${cleanSlug}.clockinproof.com` })
 })
 
 // PUT /api/super/tenants/:id — update plan, status, limits
@@ -8722,13 +8725,18 @@ function getSuperAdminHTML(): string {
             <div>
               <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Subdomain * <span class="text-indigo-400 lowercase">.clockinproof.com</span></label>
               <div class="flex items-center gap-2">
-                <input type="text" id="new-slug" class="input" placeholder="acme-cleaning" oninput="checkSlug()">
+                <input type="text" id="new-slug" class="input" placeholder="acme-cleaning" oninput="onSlugInput()">
                 <span id="slug-check" class="text-xs w-6"></span>
               </div>
             </div>
             <div>
-              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Admin Email *</label>
-              <input type="email" id="new-email" class="input" placeholder="owner@company.com">
+              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Admin Email <span class="text-indigo-400 lowercase font-normal">(auto-generated)</span></label>
+              <div class="flex items-center rounded-lg overflow-hidden border border-slate-600 bg-slate-900">
+                <span class="px-3 py-2 text-slate-400 text-sm whitespace-nowrap">admin.</span>
+                <input type="text" id="new-email-slug" class="flex-1 bg-transparent text-white text-sm py-2 px-0 outline-none" placeholder="company-name" oninput="onEmailSlugInput()">
+                <span class="px-3 py-2 text-slate-400 text-sm whitespace-nowrap">@clockinproof.com</span>
+              </div>
+              <p id="email-preview" class="text-indigo-400 text-xs mt-1 hidden"></p>
             </div>
             <div>
               <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Admin PIN</label>
@@ -9046,11 +9054,59 @@ async function activateTenant(id) {
 
 // ── Create Tenant ─────────────────────────────────────────────────────────────
 let slugCheckTimer = null
-async function checkSlug() {
-  clearTimeout(slugCheckTimer)
+// Sync slug → email slug when slug changes
+function onSlugInput() {
+  const slug = document.getElementById('new-slug').value.trim()
+  // Auto-fill email slug from subdomain slug
+  const emailSlugEl = document.getElementById('new-email-slug')
+  if (!emailSlugEl._manuallyEdited) {
+    emailSlugEl.value = slug
+    updateEmailPreview(slug)
+  }
+  checkSlug(slug)
+}
+
+// When user manually edits the email part
+function onEmailSlugInput() {
+  const el = document.getElementById('new-email-slug')
+  el._manuallyEdited = true
+  const val = el.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-')
+  updateEmailPreview(val)
+}
+
+function updateEmailPreview(val) {
+  const preview = document.getElementById('email-preview')
+  if (val) {
+    preview.textContent = '→ admin.' + val + '@clockinproof.com'
+    preview.classList.remove('hidden')
+  } else {
+    preview.classList.add('hidden')
+  }
+}
+
+// Also auto-fill slug from company name if slug is empty
+document.getElementById('new-company').addEventListener('input', function() {
   const slugEl = document.getElementById('new-slug')
+  const emailSlugEl = document.getElementById('new-email-slug')
+  if (!slugEl.value) {
+    const autoSlug = this.value.toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .trim()
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+    slugEl.value = autoSlug
+    if (!emailSlugEl._manuallyEdited) {
+      emailSlugEl.value = autoSlug
+      updateEmailPreview(autoSlug)
+    }
+    checkSlug(autoSlug)
+  }
+})
+
+let slugCheckTimer = null
+async function checkSlug(val) {
+  clearTimeout(slugCheckTimer)
   const check = document.getElementById('slug-check')
-  const val = slugEl.value.trim()
   if (!val) { check.textContent = ''; return }
   check.textContent = '⏳'
   slugCheckTimer = setTimeout(async () => {
@@ -9065,11 +9121,12 @@ async function checkSlug() {
 async function createTenant() {
   const company = document.getElementById('new-company').value.trim()
   const slug = document.getElementById('new-slug').value.trim()
-  const email = document.getElementById('new-email').value.trim()
+  const emailSlug = document.getElementById('new-email-slug').value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-') || slug
+  const email = 'admin.' + emailSlug + '@clockinproof.com'
   const pin = document.getElementById('new-pin').value.trim()
   const plan = document.getElementById('new-plan').value
   const address = document.getElementById('new-address').value.trim()
-  if (!company || !slug || !email) { showToast('❌ Company, subdomain and email are required', true); return }
+  if (!company || !slug) { showToast('❌ Company name and subdomain are required', true); return }
   const resultEl = document.getElementById('create-result')
   resultEl.className = 'p-3 rounded-lg bg-slate-800 text-slate-300 text-sm'
   resultEl.textContent = 'Creating tenant...'
@@ -9086,13 +9143,15 @@ async function createTenant() {
     }
     resultEl.className = 'p-3 rounded-lg bg-emerald-900/40 border border-emerald-700 text-emerald-300 text-sm'
     resultEl.innerHTML = \`✅ <strong>Tenant created!</strong><br>
-      Admin: <a href="https://admin.clockinproof.com" target="_blank" class="underline">admin.clockinproof.com</a><br>
-      Workers: <a href="https://\${d.slug}.clockinproof.com" target="_blank" class="underline">\${d.slug}.clockinproof.com</a><br>
-      Welcome email sent to \${email}\`
+      Admin email: <strong>\${email}</strong><br>
+      Admin dashboard: <a href="https://admin.clockinproof.com" target="_blank" class="underline">admin.clockinproof.com</a><br>
+      Worker app: <a href="https://\${d.slug}.clockinproof.com" target="_blank" class="underline">\${d.slug}.clockinproof.com</a><br>
+      Welcome email sent to <strong>\${email}</strong>\`
     // Reset form
-    ['new-company','new-slug','new-email','new-pin','new-address'].forEach(id => document.getElementById(id).value = '')
+    ['new-company','new-slug','new-email-slug','new-pin','new-address'].forEach(id => { const el = document.getElementById(id); if(el) { el.value = ''; el._manuallyEdited = false; } })
     document.getElementById('new-plan').value = 'growth'
     document.getElementById('slug-check').textContent = ''
+    document.getElementById('email-preview').classList.add('hidden')
     showToast('🎉 Tenant created!')
     allTenants = [] // force reload
   } catch(e) {
