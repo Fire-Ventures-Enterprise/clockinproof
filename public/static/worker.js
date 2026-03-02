@@ -164,29 +164,116 @@ async function registerWorker() {
 // ── Login ─────────────────────────────────────────────────────────────────────
 async function loginWorker() {
   // Show consent screen first if not yet given on this device
-  // (returning workers logging in on a new/fresh browser also need to consent)
   if (!hasDeviceConsent()) { showConsentModal(loginWorker); return }
 
   const phone = document.getElementById('login-phone').value.trim()
+  const pin   = document.getElementById('login-pin').value.trim()
   if (!phone) { showToast('Enter your phone number', 'error'); return }
+  if (!pin)   { showToast('Enter your PIN', 'error'); return }
+
   const btn = document.getElementById('login-btn')
   btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch spinner mr-2"></i>Signing in...'
   try {
-    const url = '/api/workers/lookup/' + encodeURIComponent(phone) + '?device_id=' + encodeURIComponent(getDeviceId())
+    const url = '/api/workers/lookup/' + encodeURIComponent(phone)
+      + '?device_id=' + encodeURIComponent(getDeviceId())
+      + '&pin=' + encodeURIComponent(pin)
     const res = await fetch(url)
     const data = await res.json()
     if (data.worker) {
       currentWorker = data.worker
       localStorage.setItem('wt_worker', JSON.stringify(data.worker))
-      showToast('Welcome back, ' + data.worker.name + '!', 'success')
-      await initMain()
+      // If worker still has temp PIN → force them to set their own PIN now
+      if (data.worker.is_temp_pin) {
+        showChangePinScreen(data.worker, true)
+      } else {
+        showToast('Welcome back, ' + data.worker.name + '!', 'success')
+        await initMain()
+      }
     } else if (data.error === 'device_mismatch') {
       showDeviceMismatchScreen(phone)
+    } else if (data.error === 'wrong_pin') {
+      showToast('Incorrect PIN. Please try again.', 'error')
     } else {
       showToast(data.message || 'Worker not found. Please register first.', 'error')
     }
   } catch(e) { showToast('Connection error', 'error') }
   btn.disabled = false; btn.innerHTML = '<i class="fas fa-sign-in-alt mr-2"></i>Sign In'
+}
+
+// ── Change PIN screen (forced on first login with temp PIN) ───────────────────
+function showChangePinScreen(worker, isForced) {
+  let m = document.getElementById('change-pin-modal')
+  if (!m) {
+    m = document.createElement('div')
+    m.id = 'change-pin-modal'
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end;justify-content:center;z-index:9999;padding:16px'
+    m.innerHTML = `
+<div style="background:#fff;border-radius:20px 20px 12px 12px;max-width:420px;width:100%;padding:24px;box-shadow:0 -4px 32px rgba(0,0,0,.15)">
+  <div style="text-align:center;margin-bottom:18px">
+    <div style="width:48px;height:48px;background:#eff6ff;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:10px">
+      <i class="fas fa-lock" style="color:#2563eb;font-size:20px"></i>
+    </div>
+    <h3 style="font-size:17px;font-weight:700;color:#111;margin:0 0 6px">Create Your PIN</h3>
+    <p id="change-pin-subtitle" style="font-size:13px;color:#4b5563;margin:0">You were given a temporary PIN. Please create your own personal PIN now.</p>
+  </div>
+  <div style="margin-bottom:12px">
+    <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">New PIN (4–8 digits)</label>
+    <input id="new-pin-input" type="password" inputmode="numeric" maxlength="8" placeholder="Create your PIN"
+      style="width:100%;padding:12px;border:2px solid #e5e7eb;border-radius:10px;font-size:18px;text-align:center;letter-spacing:8px;box-sizing:border-box"/>
+  </div>
+  <div style="margin-bottom:18px">
+    <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Confirm PIN</label>
+    <input id="confirm-pin-input" type="password" inputmode="numeric" maxlength="8" placeholder="Repeat your PIN"
+      style="width:100%;padding:12px;border:2px solid #e5e7eb;border-radius:10px;font-size:18px;text-align:center;letter-spacing:8px;box-sizing:border-box"/>
+  </div>
+  <button id="save-pin-btn" onclick="saveNewPin()"
+    style="width:100%;background:#2563eb;color:#fff;border:none;border-radius:10px;padding:14px;font-size:15px;font-weight:700;cursor:pointer">
+    <i class="fas fa-check mr-2"></i>Save My PIN
+  </button>
+</div>`
+    document.body.appendChild(m)
+  }
+  if (!isForced) {
+    document.getElementById('change-pin-subtitle').textContent = 'Enter a new PIN to update your login.'
+  }
+  m.style.display = 'flex'
+  document.getElementById('new-pin-input').value = ''
+  document.getElementById('confirm-pin-input').value = ''
+}
+
+async function saveNewPin() {
+  const newPin     = document.getElementById('new-pin-input').value.trim()
+  const confirmPin = document.getElementById('confirm-pin-input').value.trim()
+  if (!newPin || newPin.length < 4 || newPin.length > 8 || !/^\d+$/.test(newPin)) {
+    showToast('PIN must be 4–8 numeric digits', 'error'); return
+  }
+  if (newPin !== confirmPin) { showToast('PINs do not match', 'error'); return }
+
+  const btn = document.getElementById('save-pin-btn')
+  btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Saving...'
+  try {
+    const worker = JSON.parse(localStorage.getItem('wt_worker') || '{}')
+    const res = await fetch('/api/workers/' + worker.id + '/change-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_pin: newPin })
+    })
+    const data = await res.json()
+    if (data.success) {
+      // Update local storage — mark pin as no longer temp
+      worker.is_temp_pin = 0
+      localStorage.setItem('wt_worker', JSON.stringify(worker))
+      currentWorker = worker
+      // Close modal
+      const m = document.getElementById('change-pin-modal')
+      if (m) m.style.display = 'none'
+      showToast('✅ PIN saved! Welcome, ' + worker.name + '!', 'success')
+      await initMain()
+    } else {
+      showToast(data.message || 'Could not save PIN', 'error')
+    }
+  } catch(e) { showToast('Connection error', 'error') }
+  btn.disabled = false; btn.innerHTML = '<i class="fas fa-check mr-2"></i>Save My PIN'
 }
 
 // ── Device Mismatch: new-phone request screen ─────────────────────────────────

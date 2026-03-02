@@ -392,6 +392,9 @@ async function ensureSchema(db: D1Database) {
     // Workers give explicit informed consent before it is saved (PIPEDA / CCPA).
     `ALTER TABLE workers ADD COLUMN device_consent_given INTEGER DEFAULT 0`,
     `ALTER TABLE workers ADD COLUMN device_consent_at DATETIME`,
+    // ── Feature: temp PIN flow ────────────────────────────────────────────────
+    // is_temp_pin = 1 means the PIN was set by admin and worker must change it on first login
+    `ALTER TABLE workers ADD COLUMN is_temp_pin INTEGER DEFAULT 1`,
     `CREATE TABLE IF NOT EXISTS device_reset_requests (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       tenant_id   INTEGER NOT NULL,
@@ -479,15 +482,21 @@ app.post('/api/workers/register', async (c) => {
     "SELECT value FROM settings WHERE key = 'default_hourly_rate'"
   ).first<{ value: string }>()
 
+  // is_temp_pin=1 when admin creates worker (no device_id sent), =0 when worker self-registers
+  const isTempPin = device_id ? 0 : 1
+
   const result = await db.prepare(
-    `INSERT INTO workers (name, phone, pin, device_id, device_consent_given, device_consent_at, hourly_rate)
-     VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP, ?)`
+    `INSERT INTO workers (name, phone, pin, device_id, device_consent_given, device_consent_at, hourly_rate, is_temp_pin)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
     name,
     phone,
     pin || '0000',
     device_id || null,
-    parseFloat(defaultRate?.value || '15')
+    device_id ? 1 : 0,
+    device_id ? new Date().toISOString() : null,
+    parseFloat(defaultRate?.value || '15'),
+    isTempPin
   ).run()
 
   const worker = await db.prepare(
@@ -529,11 +538,51 @@ app.get('/api/workers/lookup/:phone', async (c) => {
     ).bind(deviceId, worker.id).run()
   }
 
-  // Return safe subset of worker data
+  // ── PIN verification ────────────────────────────────────────────────────────
+  // PIN is required on login. Skip only if worker has never set one (legacy '0000' + no is_temp_pin col).
+  const pin = c.req.query('pin') || null
+  if (pin !== null) {
+    // PIN was provided — verify it
+    if (worker.pin && worker.pin !== pin) {
+      return c.json({ error: 'wrong_pin', message: 'Incorrect PIN. Please try again.' }, 401)
+    }
+  }
+
+  // Return safe subset of worker data + is_temp_pin flag so frontend knows to prompt for change
   return c.json({ worker: {
     id: worker.id, name: worker.name, phone: worker.phone,
-    hourly_rate: worker.hourly_rate, role: worker.role, active: worker.active
+    hourly_rate: worker.hourly_rate, role: worker.role, active: worker.active,
+    is_temp_pin: worker.is_temp_pin ?? 1
   }})
+})
+
+// POST /api/workers/:id/change-pin — worker changes their own PIN
+app.post('/api/workers/:id/change-pin', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const workerId = parseInt(c.req.param('id'))
+  const { current_pin, new_pin } = await c.req.json()
+
+  if (!new_pin || new_pin.length < 4 || new_pin.length > 8 || !/^\d+$/.test(new_pin)) {
+    return c.json({ error: 'invalid_pin', message: 'New PIN must be 4–8 numeric digits.' }, 400)
+  }
+
+  const worker = await db.prepare('SELECT * FROM workers WHERE id = ? AND active = 1').bind(workerId).first<any>()
+  if (!worker) return c.json({ error: 'Worker not found' }, 404)
+
+  // If it was a temp PIN, skip current_pin check (worker doesn't know the admin-set PIN yet)
+  if (!worker.is_temp_pin) {
+    if (current_pin !== worker.pin) {
+      return c.json({ error: 'wrong_pin', message: 'Current PIN is incorrect.' }, 401)
+    }
+  }
+
+  // Save new PIN and mark as no longer temporary
+  await db.prepare(
+    `UPDATE workers SET pin = ?, is_temp_pin = 0 WHERE id = ?`
+  ).bind(new_pin, workerId).run()
+
+  return c.json({ success: true, message: 'PIN updated successfully.' })
 })
 
 // Get all workers (admin)
@@ -793,7 +842,7 @@ app.post('/api/workers/:id/invite/send-sms', async (c) => {
   await ensureSchema(db)
   const id = parseInt(c.req.param('id'))
 
-  const worker = await db.prepare('SELECT id, name, phone FROM workers WHERE id = ?').bind(id).first() as any
+  const worker = await db.prepare('SELECT id, name, phone, pin, is_temp_pin FROM workers WHERE id = ?').bind(id).first() as any
   if (!worker) return c.json({ error: 'Worker not found' }, 404)
 
   // Get Twilio credentials
@@ -818,12 +867,18 @@ app.post('/api/workers/:id/invite/send-sms', async (c) => {
   const appHost  = cfg.app_host ? cfg.app_host.replace(/\/$/, '') : 'https://app.clockinproof.com'
   const joinLink = `${appHost}/join/${worker.id}`
 
+  // Include temp PIN in SMS if worker hasn't changed it yet
+  const pinLine = worker.is_temp_pin
+    ? `\nYour temporary PIN: ${worker.pin}\n(You will be asked to create your own PIN on first login.)\n`
+    : ''
+
   const smsBody =
     `Hi ${worker.name}! 👋\n` +
     `Your ClockInProof clock-in app is ready.\n` +
     `Tap this link to get started:\n` +
-    `${joinLink}\n\n` +
-    `Bookmark it or add to your Home Screen for quick access.`
+    `${joinLink}` +
+    pinLine +
+    `\nBookmark it or add to your Home Screen for quick access.`
 
   // Normalize phone to E.164
   const rawPhone    = worker.phone.replace(/[\s\-\(\)\.]/g, '')
@@ -6581,7 +6636,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260302b"></script>
+<script src="/static/worker.js?v=20260302c"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">

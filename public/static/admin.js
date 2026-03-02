@@ -1720,7 +1720,9 @@ async function addWorker() {
   const payType = document.getElementById('modal-pay-type')?.value || 'hourly'
   const rate    = payType === 'hourly' ? (parseFloat(document.getElementById('modal-rate').value) || 0) : 0
   const salary  = payType === 'salary' ? (parseFloat(document.getElementById('modal-salary').value) || 0) : 0
-  const pin     = document.getElementById('modal-pin').value.trim() || '0000'
+  // Generate a random 4-digit temp PIN if admin left the field blank
+  const adminPinInput = document.getElementById('modal-pin').value.trim()
+  const pin = adminPinInput.length >= 4 ? adminPinInput : String(Math.floor(1000 + Math.random() * 9000))
 
   const payload = {
     name, phone,
@@ -1771,9 +1773,42 @@ async function addWorker() {
     })
 
     closeModal()
-    showAdminToast('✅ ' + name + ' added successfully!', 'success')
+    // Show a clear modal with the temp PIN so admin can give it to the worker
+    showTempPinDialog(name, pin, data.worker?.id)
     await loadWorkers()
   } catch(e) { showAdminToast('Error adding worker', 'error'); console.error(e) }
+}
+
+// Show a prominent dialog with the worker's temp PIN after adding them
+function showTempPinDialog(name, pin, workerId) {
+  // Remove any existing dialog
+  const existing = document.getElementById('temp-pin-dialog')
+  if (existing) existing.remove()
+
+  const dialog = document.createElement('div')
+  dialog.id = 'temp-pin-dialog'
+  dialog.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px'
+  dialog.innerHTML = `
+<div style="background:#fff;border-radius:20px;max-width:380px;width:100%;padding:28px;box-shadow:0 8px 40px rgba(0,0,0,.2);text-align:center">
+  <div style="width:56px;height:56px;background:#f0fdf4;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:14px">
+    <i class="fas fa-key" style="color:#16a34a;font-size:22px"></i>
+  </div>
+  <h3 style="font-size:18px;font-weight:700;color:#111;margin:0 0 6px">${escHtml(name)} Added!</h3>
+  <p style="font-size:13px;color:#6b7280;margin:0 0 20px">Give this <strong>temporary PIN</strong> to the worker.<br>They will be prompted to create their own PIN on first login.</p>
+  <div style="background:#f8fafc;border:2px dashed #6366f1;border-radius:14px;padding:18px;margin-bottom:20px">
+    <p style="font-size:12px;color:#6b7280;margin:0 0 6px;text-transform:uppercase;letter-spacing:0.05em;font-weight:600">Temporary PIN</p>
+    <p style="font-size:40px;font-weight:800;color:#4f46e5;letter-spacing:12px;margin:0;font-family:monospace">${escHtml(pin)}</p>
+  </div>
+  <p style="font-size:11px;color:#9ca3af;margin:0 0 18px">
+    <i class="fas fa-info-circle mr-1"></i>
+    This PIN is included automatically when you send the SMS invite.
+  </p>
+  <button onclick="document.getElementById('temp-pin-dialog').remove()"
+    style="width:100%;background:#4f46e5;color:#fff;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:700;cursor:pointer">
+    <i class="fas fa-check mr-2"></i>Got it
+  </button>
+</div>`
+  document.body.appendChild(dialog)
 }
 
 async function editWorkerRate(id, name, currentRate) {
