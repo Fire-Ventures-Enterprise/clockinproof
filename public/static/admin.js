@@ -2056,6 +2056,7 @@ function showTab(name) {
   if (name === 'accountant') { initAcctTab(); initQbTab() }
   if (name === 'quickbooks') initQbTabFull()
   if (name === 'job-sites') loadJobSites()
+  if (name === 'encircle') loadEncircleStatus()
   if (name === 'disputes') loadDisputes()
   if (name === 'support-tickets') loadTenantTickets()
   if (name === 'workers') loadDeviceResetRequests()
@@ -3510,15 +3511,22 @@ async function loadJobSites() {
       return
     }
 
-    el.innerHTML = sites.map(s => `
+    el.innerHTML = sites.map(s => {
+      const isEncircle = !!s.encircle_job_id
+      const encBadge = isEncircle
+        ? '<span class="bg-sky-100 text-sky-600 text-[9px] font-bold px-1.5 py-0.5 rounded ml-1">ENC</span>'
+        : ''
+      const iconClass = isEncircle ? 'bg-sky-100' : 'bg-emerald-100'
+      const iconColor = isEncircle ? 'text-sky-600' : 'text-emerald-600'
+      return `
       <div class="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-2xl p-4 hover:border-emerald-300 transition-colors group">
         <div class="flex items-center gap-3 min-w-0">
-          <div class="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center flex-shrink-0">
-            <i class="fas fa-map-marker-alt text-emerald-600"></i>
+          <div class="w-10 h-10 ${iconClass} rounded-xl flex items-center justify-center flex-shrink-0">
+            <i class="fas fa-map-marker-alt ${iconColor}"></i>
           </div>
           <div class="min-w-0">
-            <p class="font-semibold text-gray-800 text-sm">${s.name}</p>
-            <p class="text-xs text-gray-500 truncate">${s.address}</p>
+            <p class="font-semibold text-gray-800 text-sm">${escHtml(s.name)}${encBadge}</p>
+            <p class="text-xs text-gray-500 truncate">${escHtml(s.address)}</p>
             ${s.lat ? `<a href="https://maps.google.com/?q=${s.lat},${s.lng}" target="_blank" class="text-xs text-blue-500 hover:underline"><i class="fas fa-external-link-alt mr-1"></i>View on map</a>` : ''}
           </div>
         </div>
@@ -3527,13 +3535,13 @@ async function loadJobSites() {
             class="text-xs bg-white border border-gray-200 hover:border-amber-400 text-gray-600 hover:text-amber-600 px-3 py-1.5 rounded-lg transition-colors">
             <i class="fas fa-edit mr-1"></i>Edit
           </button>
-          <button onclick="deleteSite(${s.id},'${s.name.replace(/'/g,'\\\'')}')"
+          ${!isEncircle ? `<button onclick="deleteSite(${s.id},'${s.name.replace(/'/g,"\\'")}') "
             class="text-xs bg-white border border-gray-200 hover:border-red-400 text-gray-600 hover:text-red-600 px-3 py-1.5 rounded-lg transition-colors">
             <i class="fas fa-trash-alt mr-1"></i>Remove
-          </button>
+          </button>` : ''}
         </div>
-      </div>
-    `).join('')
+      </div>`
+    }).join('')
   } catch(e) {
     showAdminToast('Failed to load job sites', 'error')
   }
@@ -4672,4 +4680,197 @@ function timeSince(date) {
   return Math.floor(secs/86400) + 'd ago'
 }
 
+
+
+// ─── ENCIRCLE INTEGRATION ─────────────────────────────────────────────────────
+
+async function loadEncircleStatus() {
+  try {
+    const res = await fetch('/api/encircle/status')
+    const data = await res.json()
+
+    const statusDot = document.getElementById('encircle-status-dot')
+    const statusTitle = document.getElementById('encircle-status-title')
+    const statusSub = document.getElementById('encircle-status-sub')
+    const connectedActions = document.getElementById('encircle-connected-actions')
+    const setupCard = document.getElementById('encircle-setup-card')
+    const jobsCard = document.getElementById('encircle-jobs-card')
+    const logCard = document.getElementById('encircle-log-card')
+    const lastSyncEl = document.getElementById('encircle-last-sync')
+    const jobCountBadge = document.getElementById('encircle-job-count-badge')
+    const activeCount = document.getElementById('encircle-active-count')
+
+    if (data.connected) {
+      statusDot.className = 'w-3 h-3 rounded-full bg-green-500 flex-shrink-0'
+      statusTitle.textContent = '✅ Connected to Encircle'
+      statusSub.textContent = '911 Restoration of Ottawa — syncing job sites automatically'
+      connectedActions.classList.remove('hidden')
+      connectedActions.classList.add('flex')
+      setupCard.classList.add('hidden')
+      jobsCard.classList.remove('hidden')
+      logCard.classList.remove('hidden')
+      if (data.active_job_count > 0) {
+        jobCountBadge.textContent = data.active_job_count + ' active'
+        jobCountBadge.classList.remove('hidden')
+      }
+      if (data.last_sync_at) {
+        lastSyncEl.classList.remove('hidden')
+        lastSyncEl.textContent = 'Last synced: ' + new Date(data.last_sync_at).toLocaleString()
+      }
+      if (activeCount) activeCount.textContent = data.active_job_count + ' active sites'
+      // Render synced jobs table
+      renderEncircleJobs(data.synced_jobs || [])
+      // Render sync log
+      renderEncircleLog(data.sync_logs || [])
+    } else {
+      statusDot.className = 'w-3 h-3 rounded-full bg-gray-300 flex-shrink-0'
+      statusTitle.textContent = 'Not Connected'
+      statusSub.textContent = 'Enter your bearer token below to connect'
+      connectedActions.classList.add('hidden')
+      setupCard.classList.remove('hidden')
+      jobsCard.classList.add('hidden')
+      logCard.classList.add('hidden')
+    }
+
+    // Update badge count on sidebar
+    const badge = document.getElementById('encircle-badge')
+    if (badge) {
+      if (data.active_job_count > 0 && data.connected) {
+        badge.textContent = data.active_job_count
+        badge.classList.remove('hidden')
+      } else {
+        badge.classList.add('hidden')
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load Encircle status', e)
+  }
+}
+
+function renderEncircleJobs(jobs) {
+  const tbody = document.getElementById('encircle-jobs-tbody')
+  const empty = document.getElementById('encircle-jobs-empty')
+  if (!tbody) return
+
+  const active = jobs.filter(j => j.active == 1)
+  if (active.length === 0) {
+    tbody.innerHTML = ''
+    if (empty) empty.classList.remove('hidden')
+    return
+  }
+  if (empty) empty.classList.add('hidden')
+
+  tbody.innerHTML = active.map(j => {
+    const typeOfLoss = j.encircle_status || 'active'
+    const statusBadge = j.active == 1
+      ? '<span class="bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold">Active</span>'
+      : '<span class="bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full text-[10px]">Closed</span>'
+    const syncedAt = j.encircle_synced_at ? new Date(j.encircle_synced_at).toLocaleString() : '—'
+    const hasCoords = j.lat && j.lng
+    const coordsBadge = hasCoords
+      ? '<span class="ml-1 text-green-500" title="GPS coordinates available"><i class="fas fa-map-marker-alt text-[10px]"></i></span>'
+      : '<span class="ml-1 text-amber-400" title="No GPS coordinates yet"><i class="fas fa-exclamation-triangle text-[10px]"></i></span>'
+    const nameDisplay = escHtml(j.name)
+    return `<tr class="hover:bg-gray-50">
+      <td class="py-2 px-2">
+        <div class="font-medium text-gray-800 flex items-center gap-1">
+          <span class="bg-sky-100 text-sky-600 text-[9px] font-bold px-1 py-0.5 rounded mr-1">ENC</span>
+          ${nameDisplay}
+        </div>
+      </td>
+      <td class="py-2 px-2 text-gray-600 max-w-[180px] truncate">${escHtml(j.address)}${coordsBadge}</td>
+      <td class="py-2 px-2 text-gray-500">${escHtml(typeOfLoss)}</td>
+      <td class="py-2 px-2">${statusBadge}</td>
+      <td class="py-2 px-2 text-gray-400 whitespace-nowrap">${syncedAt}</td>
+    </tr>`
+  }).join('')
+}
+
+function renderEncircleLog(logs) {
+  const tbody = document.getElementById('encircle-log-tbody')
+  const empty = document.getElementById('encircle-log-empty')
+  if (!tbody) return
+  if (!logs || logs.length === 0) {
+    tbody.innerHTML = ''
+    if (empty) empty.classList.remove('hidden')
+    return
+  }
+  if (empty) empty.classList.add('hidden')
+  tbody.innerHTML = logs.map(l => {
+    const statusBadge = l.status === 'success'
+      ? '<span class="bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold">✅ Success</span>'
+      : `<span class="bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold">❌ Error</span>`
+    const errMsg = l.error_message ? `<div class="text-red-500 text-[10px] mt-0.5 truncate max-w-xs">${escHtml(l.error_message)}</div>` : ''
+    return `<tr class="hover:bg-gray-50">
+      <td class="py-2 px-2 text-gray-600 whitespace-nowrap">${new Date(l.synced_at).toLocaleString()}</td>
+      <td class="py-2 px-2 text-center font-bold text-green-600">${l.jobs_added}</td>
+      <td class="py-2 px-2 text-center font-bold text-sky-600">${l.jobs_updated}</td>
+      <td class="py-2 px-2 text-center font-bold text-amber-600">${l.jobs_closed}</td>
+      <td class="py-2 px-2">${statusBadge}${errMsg}</td>
+    </tr>`
+  }).join('')
+}
+
+async function encircleConnect() {
+  const tokenInput = document.getElementById('encircle-token-input')
+  const syncEnabled = document.getElementById('encircle-sync-enabled')
+  const btn = document.getElementById('encircle-connect-btn')
+  const token = tokenInput ? tokenInput.value.trim() : ''
+  if (!token) { showAdminToast('Please enter a bearer token', 'error'); return }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Connecting...' }
+  try {
+    const res = await fetch('/api/encircle/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bearer_token: token, sync_enabled: syncEnabled?.checked !== false })
+    })
+    const data = await res.json()
+    if (!res.ok) {
+      showAdminToast(data.error || 'Connection failed', 'error')
+      return
+    }
+    showAdminToast('✅ Encircle connected! Running initial sync...', 'success')
+    // Auto-run first sync
+    await encircleSync(true)
+    await loadEncircleStatus()
+  } catch (e) {
+    showAdminToast('Connection error: ' + e.message, 'error')
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-link"></i> Connect to Encircle' }
+  }
+}
+
+async function encircleSync(silent = false) {
+  const btn = document.getElementById('encircle-sync-btn')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...' }
+  try {
+    const res = await fetch('/api/encircle/sync', { method: 'POST' })
+    const data = await res.json()
+    if (data.status === 'success') {
+      if (!silent) showAdminToast(`✅ Sync complete: ${data.jobs_added} added, ${data.jobs_updated} updated, ${data.jobs_closed} closed`, 'success', 6000)
+    } else {
+      showAdminToast('⚠️ Sync error: ' + (data.error_message || 'Unknown error'), 'error', 7000)
+    }
+    await loadEncircleStatus()
+    // Also refresh job-sites tab if loaded
+    if (typeof loadJobSites === 'function') loadJobSites()
+  } catch (e) {
+    showAdminToast('Sync failed: ' + e.message, 'error')
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sync-alt"></i> Sync Now' }
+  }
+}
+
+async function encircleDisconnect() {
+  if (!confirm('Disconnect Encircle? All synced job sites will be deactivated. Your manual job sites are not affected.')) return
+  try {
+    const res = await fetch('/api/encircle/settings', { method: 'DELETE' })
+    const data = await res.json()
+    showAdminToast(data.message || 'Encircle disconnected', 'info')
+    await loadEncircleStatus()
+    if (typeof loadJobSites === 'function') loadJobSites()
+  } catch (e) {
+    showAdminToast('Disconnect failed: ' + e.message, 'error')
+  }
+}
 
