@@ -2006,6 +2006,7 @@ function showTab(name) {
   if (name === 'quickbooks') initQbTabFull()
   if (name === 'job-sites') loadJobSites()
   if (name === 'disputes') loadDisputes()
+  if (name === 'support-tickets') loadTenantTickets()
   // Close sidebar on mobile after navigation
   const sidebar = document.getElementById('admin-sidebar')
   if (sidebar && window.innerWidth < 1024) {
@@ -4244,4 +4245,241 @@ window.addEventListener('DOMContentLoaded', () => {
     if (drawer && !drawer.classList.contains('hidden')) { closeWorkerDrawer(); return }
   })
 })
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── SUPPORT TICKETS (Tenant Side) ─────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+let currentTenantTicketId = null
+
+// Simple fetch helper for tenant-side ticket API calls
+async function tktFetch(url, opts) {
+  const res = await fetch(url, opts || {})
+  if (!res.ok) throw new Error('HTTP ' + res.status)
+  return res.json()
+}
+
+// ── Load & render tenant's own tickets ───────────────────────────────────────
+async function loadTenantTickets() {
+  const el = document.getElementById('tenant-tickets-list')
+  if (!el) return
+  el.innerHTML = `<div class="text-center py-10 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3 block"></i><p class="text-sm">Loading...</p></div>`
+  try {
+    const d = await tktFetch('/api/tickets')
+    const tickets = d.tickets || []
+    // Update sidebar badge
+    const badge = document.getElementById('tenant-tickets-badge')
+    const open = tickets.filter(t => t.status === 'open' || t.status === 'in_progress').length
+    if (badge) {
+      if (open > 0) { badge.textContent = open; badge.classList.remove('hidden') }
+      else badge.classList.add('hidden')
+    }
+    if (!tickets.length) {
+      el.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-ticket-alt text-4xl mb-3 block text-indigo-200"></i><p class="text-sm font-medium">No tickets yet</p><p class="text-xs mt-1">Use the form above to submit your first support request.</p></div>`
+      return
+    }
+    el.innerHTML = tickets.map(t => {
+      const statusColor = { open:'bg-amber-100 text-amber-700', in_progress:'bg-indigo-100 text-indigo-700', resolved:'bg-green-100 text-green-700', closed:'bg-gray-100 text-gray-500' }[t.status] || 'bg-gray-100 text-gray-500'
+      const prioColor = { urgent:'bg-red-100 text-red-700', high:'bg-orange-100 text-orange-700', normal:'bg-blue-100 text-blue-700', low:'bg-gray-100 text-gray-400' }[t.priority] || 'bg-gray-100 text-gray-400'
+      const statusLabel = { open:'Open', in_progress:'In Progress', resolved:'Resolved', closed:'Closed' }[t.status] || t.status
+      const ago = t.updated_at ? timeSince(new Date(t.updated_at + 'Z')) : '—'
+      const canReply = t.status !== 'closed'
+      return `
+<div class="border border-gray-100 rounded-xl p-4 hover:border-indigo-200 transition-colors cursor-pointer" onclick="openTenantTicketModal(${t.id})">
+  <div class="flex items-start justify-between gap-3">
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2 flex-wrap mb-1">
+        <span class="font-mono text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">${t.ticket_number}</span>
+        <span class="text-xs font-bold px-2 py-0.5 rounded-full ${statusColor} uppercase tracking-wide">${statusLabel}</span>
+        <span class="text-xs font-semibold px-2 py-0.5 rounded-full ${prioColor}">${t.priority}</span>
+      </div>
+      <p class="text-sm font-semibold text-gray-800 truncate">${escHtml(t.subject)}</p>
+      <p class="text-xs text-gray-400 mt-0.5">${escHtml(t.category || 'general')} · Updated ${ago}${t.message_count > 0 ? ` · <span class="text-indigo-500 font-semibold">${t.message_count} message${t.message_count > 1 ? 's' : ''}</span>` : ''}</p>
+    </div>
+    <button class="text-xs text-indigo-600 hover:text-indigo-800 font-semibold whitespace-nowrap flex-shrink-0">
+      ${canReply ? '<i class="fas fa-comment-dots mr-1"></i>View / Reply' : '<i class="fas fa-eye mr-1"></i>View'}
+    </button>
+  </div>
+</div>`
+    }).join('')
+  } catch (e) {
+    el.innerHTML = `<p class="text-red-500 text-sm text-center py-6">Failed to load tickets. Please try again.</p>`
+  }
+}
+
+// ── Submit new ticket ─────────────────────────────────────────────────────────
+async function submitTenantTicket() {
+  const subject     = (document.getElementById('tkt-subject')?.value || '').trim()
+  const description = (document.getElementById('tkt-description')?.value || '').trim()
+  const category    = document.getElementById('tkt-category')?.value || 'general'
+  const priority    = document.getElementById('tkt-priority')?.value || 'normal'
+  const submitter   = (document.getElementById('tkt-submitter')?.value || '').trim()
+  const msgEl       = document.getElementById('tkt-submit-msg')
+  const btn         = document.getElementById('tkt-submit-btn')
+  if (!subject) { if (msgEl) { msgEl.textContent = '⚠️ Subject is required.'; msgEl.className = 'text-sm text-red-500' }; return }
+  if (!description) { if (msgEl) { msgEl.textContent = '⚠️ Description is required.'; msgEl.className = 'text-sm text-red-500' }; return }
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...'
+  if (msgEl) { msgEl.textContent = ''; msgEl.className = 'text-sm' }
+  try {
+    const parts = submitter.split('/').map(s => s.trim())
+    const submitter_name  = parts[0] || ''
+    const submitter_email = parts[1] || ''
+    const d = await tktFetch('/api/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject, description, category, priority, submitter_name, submitter_email })
+    })
+    // Clear form
+    document.getElementById('tkt-subject').value = ''
+    document.getElementById('tkt-description').value = ''
+    document.getElementById('tkt-submitter').value = ''
+    if (msgEl) { msgEl.innerHTML = `<span class="text-green-600 font-semibold"><i class="fas fa-check-circle mr-1"></i>Ticket <strong>${d.ticket_number}</strong> submitted! You'll receive an email confirmation.</span>`; msgEl.className = 'text-sm' }
+    loadTenantTickets()
+  } catch (e) {
+    if (msgEl) { msgEl.textContent = '❌ Failed to submit. Please try again.'; msgEl.className = 'text-sm text-red-500' }
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Ticket'
+  }
+}
+
+// ── Ticket detail modal ───────────────────────────────────────────────────────
+function openTenantTicketModal(id) {
+  currentTenantTicketId = id
+  // Build modal if it doesn't exist
+  let modal = document.getElementById('tenant-ticket-modal')
+  if (!modal) {
+    modal = document.createElement('div')
+    modal.id = 'tenant-ticket-modal'
+    modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-end sm:items-center justify-center p-0 sm:p-4 z-50'
+    modal.onclick = e => { if (e.target === modal) closeTenantTicketModal() }
+    modal.innerHTML = `
+<div class="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full max-w-2xl max-h-[92vh] flex flex-col">
+  <div class="flex items-center justify-between px-5 py-4 border-b flex-shrink-0">
+    <div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <span id="ttm-number" class="font-mono text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">—</span>
+        <span id="ttm-status" class="text-xs font-bold px-2 py-0.5 rounded-full"></span>
+        <span id="ttm-priority" class="text-xs font-semibold px-2 py-0.5 rounded-full"></span>
+      </div>
+      <h3 id="ttm-subject" class="text-base font-bold text-gray-800 mt-1">—</h3>
+    </div>
+    <button onclick="closeTenantTicketModal()" class="text-gray-400 hover:text-gray-600 p-1 rounded-lg"><i class="fas fa-times text-lg"></i></button>
+  </div>
+  <div id="ttm-thread" class="flex-1 overflow-y-auto px-5 py-4 space-y-3 bg-gray-50"></div>
+  <div id="ttm-reply-area" class="px-5 py-4 border-t flex-shrink-0 bg-white">
+    <textarea id="ttm-reply-text" rows="3" placeholder="Type your reply here..."
+      class="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none mb-3"></textarea>
+    <div class="flex gap-3">
+      <button onclick="sendTenantReply()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-5 py-2.5 rounded-xl text-sm flex items-center gap-2">
+        <i class="fas fa-reply"></i> Send Reply
+      </button>
+      <button onclick="closeTenantTicketModal()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold px-5 py-2.5 rounded-xl text-sm">Close</button>
+    </div>
+  </div>
+</div>`
+    document.body.appendChild(modal)
+  }
+  modal.classList.remove('hidden')
+  loadTenantTicketThread(id)
+}
+
+function closeTenantTicketModal() {
+  const modal = document.getElementById('tenant-ticket-modal')
+  if (modal) modal.classList.add('hidden')
+  currentTenantTicketId = null
+}
+
+async function loadTenantTicketThread(id) {
+  const threadEl = document.getElementById('ttm-thread')
+  if (!threadEl) return
+  threadEl.innerHTML = `<div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin text-xl"></i></div>`
+  try {
+    const d = await tktFetch('/api/tickets/' + id)
+    const t = d.ticket
+    // Update header
+    document.getElementById('ttm-number').textContent = t.ticket_number
+    document.getElementById('ttm-subject').textContent = t.subject
+    const statusColor = { open:'bg-amber-100 text-amber-700', in_progress:'bg-indigo-100 text-indigo-700', resolved:'bg-green-100 text-green-700', closed:'bg-gray-100 text-gray-500' }[t.status] || 'bg-gray-100 text-gray-500'
+    const statusLabel = { open:'Open', in_progress:'In Progress', resolved:'Resolved', closed:'Closed' }[t.status] || t.status
+    document.getElementById('ttm-status').className = `text-xs font-bold px-2 py-0.5 rounded-full ${statusColor} uppercase tracking-wide`
+    document.getElementById('ttm-status').textContent = statusLabel
+    const prioColor = { urgent:'bg-red-100 text-red-700', high:'bg-orange-100 text-orange-700', normal:'bg-blue-100 text-blue-700', low:'bg-gray-100 text-gray-400' }[t.priority] || 'bg-gray-100 text-gray-400'
+    document.getElementById('ttm-priority').className = `text-xs font-semibold px-2 py-0.5 rounded-full ${prioColor}`
+    document.getElementById('ttm-priority').textContent = t.priority
+    // Show/hide reply area
+    const replyArea = document.getElementById('ttm-reply-area')
+    if (replyArea) replyArea.style.display = t.status === 'closed' ? 'none' : ''
+    // Render thread
+    const messages = d.messages || []
+    if (!messages.length) {
+      threadEl.innerHTML = `<p class="text-gray-400 text-sm text-center py-6">No messages yet.</p>`
+      return
+    }
+    threadEl.innerHTML = messages.map(m => {
+      const isAdmin = m.sender_type === 'admin' || m.sender_type === 'system'
+      const isSystem = m.sender_type === 'system'
+      const bg = isSystem ? 'bg-yellow-50 border-yellow-200' : isAdmin ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-gray-200'
+      const align = isAdmin ? 'flex-row-reverse' : ''
+      const bubbleBg = isSystem ? 'bg-yellow-100 text-yellow-800' : isAdmin ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-800'
+      const timeStr = m.created_at ? new Date(m.created_at + 'Z').toLocaleString() : '—'
+      return `
+<div class="flex gap-3 ${align}">
+  <div class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${isSystem ? 'bg-yellow-200' : isAdmin ? 'bg-indigo-600' : 'bg-gray-200'}">
+    <i class="fas ${isSystem ? 'fa-robot text-yellow-700' : isAdmin ? 'fa-headset text-white' : 'fa-user text-gray-600'} text-xs"></i>
+  </div>
+  <div class="flex-1 max-w-[80%]">
+    <div class="flex items-center gap-2 mb-1 ${isAdmin ? 'justify-end' : ''}">
+      <span class="text-xs font-semibold text-gray-600">${escHtml(m.sender_name || 'Support')}</span>
+      <span class="text-xs text-gray-400">${timeStr}</span>
+    </div>
+    <div class="text-sm px-3 py-2 rounded-xl ${bubbleBg} whitespace-pre-wrap">${escHtml(m.message)}</div>
+  </div>
+</div>`
+    }).join('')
+    // Scroll to bottom
+    threadEl.scrollTop = threadEl.scrollHeight
+  } catch (e) {
+    threadEl.innerHTML = `<p class="text-red-500 text-sm text-center py-6">Failed to load ticket.</p>`
+  }
+}
+
+async function sendTenantReply() {
+  const text = (document.getElementById('ttm-reply-text')?.value || '').trim()
+  if (!text) return
+  const btn = document.querySelector('#ttm-reply-area button')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...' }
+  try {
+    await tktFetch('/api/tickets/' + currentTenantTicketId + '/reply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text })
+    })
+    document.getElementById('ttm-reply-text').value = ''
+    loadTenantTicketThread(currentTenantTicketId)
+    loadTenantTickets()
+  } catch (e) {
+    showAdminToast('Failed to send reply. Please try again.', 'error')
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-reply"></i> Send Reply' }
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function escHtml(str) {
+  if (!str) return ''
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+}
+
+function timeSince(date) {
+  if (!date || isNaN(date)) return '—'
+  const secs = Math.floor((Date.now() - date.getTime()) / 1000)
+  if (secs < 60) return 'just now'
+  if (secs < 3600) return Math.floor(secs/60) + 'm ago'
+  if (secs < 86400) return Math.floor(secs/3600) + 'h ago'
+  return Math.floor(secs/86400) + 'd ago'
+}
+
 

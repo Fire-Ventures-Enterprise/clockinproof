@@ -354,6 +354,37 @@ async function ensureSchema(db: D1Database) {
     `CREATE INDEX IF NOT EXISTS idx_workers_tenant ON workers(tenant_id)`,
     `CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON sessions(tenant_id)`,
     `CREATE INDEX IF NOT EXISTS idx_job_sites_tenant ON job_sites(tenant_id)`,
+    // ── Support Ticket System ────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS support_tickets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL,
+      ticket_number TEXT NOT NULL UNIQUE,
+      subject TEXT NOT NULL,
+      description TEXT NOT NULL,
+      category TEXT DEFAULT 'general',
+      priority TEXT DEFAULT 'normal',
+      status TEXT DEFAULT 'open',
+      submitter_name TEXT,
+      submitter_email TEXT,
+      assigned_to TEXT DEFAULT 'support',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      resolved_at DATETIME,
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS ticket_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL,
+      sender_type TEXT NOT NULL,
+      sender_name TEXT NOT NULL,
+      message TEXT NOT NULL,
+      is_internal INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (ticket_id) REFERENCES support_tickets(id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_tickets_tenant ON support_tickets(tenant_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_tickets_status ON support_tickets(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_ticket_msgs ON ticket_messages(ticket_id)`,
   ]
   for (const sql of statements) {
     try {
@@ -2872,6 +2903,369 @@ app.post('/api/super/test-email', async (c) => {
   } catch (err: any) {
     return c.json({ error: err?.message || 'Failed to send' }, 500)
   }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── SUPPORT TICKET SYSTEM ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Helper: generate ticket number like CIP-2026-0042
+async function generateTicketNumber(db: D1Database): Promise<string> {
+  const year = new Date().getFullYear()
+  const row: any = await db.prepare(
+    `SELECT COUNT(*) as cnt FROM support_tickets WHERE ticket_number LIKE ?`
+  ).bind(`CIP-${year}-%`).first()
+  const seq = String((row?.cnt || 0) + 1).padStart(4, '0')
+  return `CIP-${year}-${seq}`
+}
+
+// Helper: send ticket email notification
+async function sendTicketEmail(env: any, opts: {
+  to: string, subject: string, html: string
+}) {
+  const key = (env.RESEND_API_KEY || '').trim()
+  if (!key || !opts.to) return
+  await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from: 'ClockInProof Support <alerts@clockinproof.com>',
+      reply_to: 'admin@clockinproof.com',
+      to: [opts.to],
+      subject: opts.subject,
+      html: opts.html
+    })
+  }).catch(() => {})
+}
+
+// POST /api/tickets — tenant submits a new support ticket
+app.post('/api/tickets', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenant = (c as any).tenant
+  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+  const body = await c.req.json()
+  const { subject, description, category, priority, submitter_name, submitter_email } = body
+  if (!subject || !description) return c.json({ error: 'subject and description are required' }, 400)
+  const ticketNumber = await generateTicketNumber(db)
+  const result = await db.prepare(`
+    INSERT INTO support_tickets
+      (tenant_id, ticket_number, subject, description, category, priority, submitter_name, submitter_email, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')
+  `).bind(
+    tenant.id, ticketNumber, subject, description,
+    category || 'general', priority || 'normal',
+    submitter_name || tenant.company_name,
+    submitter_email || tenant.admin_email
+  ).run()
+  const ticketId = (result.meta as any).last_row_id
+  // Auto-add first message as the description
+  await db.prepare(`
+    INSERT INTO ticket_messages (ticket_id, sender_type, sender_name, message)
+    VALUES (?, 'tenant', ?, ?)
+  `).bind(ticketId, submitter_name || tenant.company_name, description).run()
+  // Email confirmation to tenant
+  const tenantEmail = submitter_email || tenant.admin_email
+  if (tenantEmail) {
+    await sendTicketEmail(c.env, {
+      to: tenantEmail,
+      subject: `[${ticketNumber}] Support Ticket Received — ${subject}`,
+      html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px">
+        <div style="background:#4F46E5;padding:20px;border-radius:12px 12px 0 0;text-align:center">
+          <h2 style="color:#fff;margin:0;font-size:18px">🎫 Support Ticket Created</h2>
+        </div>
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:0 0 12px 12px;padding:24px">
+          <p style="color:#374151">Hi <strong>${submitter_name || tenant.company_name}</strong>,</p>
+          <p style="color:#374151">Your support ticket has been received and our team is on it.</p>
+          <div style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin:16px 0">
+            <p style="margin:0 0 8px 0"><strong style="color:#6366f1">Ticket #:</strong> <span style="font-family:monospace;background:#f1f5f9;padding:2px 8px;border-radius:4px">${ticketNumber}</span></p>
+            <p style="margin:0 0 8px 0"><strong style="color:#6366f1">Subject:</strong> ${subject}</p>
+            <p style="margin:0 0 8px 0"><strong style="color:#6366f1">Priority:</strong> ${(priority || 'normal').toUpperCase()}</p>
+            <p style="margin:0"><strong style="color:#6366f1">Status:</strong> <span style="color:#059669;font-weight:700">OPEN</span></p>
+          </div>
+          <p style="color:#374151">We typically respond within <strong>24 hours</strong>. You will receive email updates as we work on your ticket.</p>
+          <p style="color:#6b7280;font-size:12px;margin-top:24px">— ClockInProof Support Team<br>Reply to this email if you have additional information.</p>
+        </div>
+      </div>`
+    })
+  }
+  // Alert super admin
+  await sendTicketEmail(c.env, {
+    to: 'admin@clockinproof.com',
+    subject: `🎫 New Support Ticket [${ticketNumber}] from ${tenant.company_name}`,
+    html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="color:#4F46E5">New Support Ticket</h2>
+      <p><strong>Tenant:</strong> ${tenant.company_name} (${tenant.slug})</p>
+      <p><strong>Ticket #:</strong> ${ticketNumber}</p>
+      <p><strong>Subject:</strong> ${subject}</p>
+      <p><strong>Priority:</strong> ${(priority || 'normal').toUpperCase()}</p>
+      <p><strong>Category:</strong> ${category || 'general'}</p>
+      <p><strong>From:</strong> ${submitter_name || ''} &lt;${tenantEmail}&gt;</p>
+      <hr style="border:none;border-top:1px solid #e2e8f0;margin:16px 0">
+      <p><strong>Description:</strong></p>
+      <p style="background:#f8fafc;padding:12px;border-radius:8px;border-left:4px solid #4F46E5">${description}</p>
+      <p><a href="https://app.clockinproof.com/super" style="background:#4F46E5;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none">Open Super Admin</a></p>
+    </div>`
+  })
+  return c.json({ success: true, ticket_id: ticketId, ticket_number: ticketNumber })
+})
+
+// GET /api/tickets — tenant views their own tickets
+app.get('/api/tickets', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenant = (c as any).tenant
+  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+  const tickets = await db.prepare(`
+    SELECT t.*,
+      (SELECT COUNT(*) FROM ticket_messages m WHERE m.ticket_id = t.id AND m.is_internal = 0) as message_count,
+      (SELECT m.created_at FROM ticket_messages m WHERE m.ticket_id = t.id ORDER BY m.created_at DESC LIMIT 1) as last_reply_at
+    FROM support_tickets t
+    WHERE t.tenant_id = ?
+    ORDER BY t.updated_at DESC
+  `).bind(tenant.id).all()
+  return c.json({ tickets: tickets.results })
+})
+
+// GET /api/tickets/:id — tenant views a specific ticket thread
+app.get('/api/tickets/:id', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenant = (c as any).tenant
+  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+  const id = c.req.param('id')
+  const ticket: any = await db.prepare(
+    `SELECT * FROM support_tickets WHERE id = ? AND tenant_id = ?`
+  ).bind(id, tenant.id).first()
+  if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
+  const messages = await db.prepare(
+    `SELECT * FROM ticket_messages WHERE ticket_id = ? AND is_internal = 0 ORDER BY created_at ASC`
+  ).bind(id).all()
+  return c.json({ ticket, messages: messages.results })
+})
+
+// POST /api/tickets/:id/reply — tenant adds a reply to ticket
+app.post('/api/tickets/:id/reply', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenant = (c as any).tenant
+  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+  const id = c.req.param('id')
+  const ticket: any = await db.prepare(
+    `SELECT * FROM support_tickets WHERE id = ? AND tenant_id = ?`
+  ).bind(id, tenant.id).first()
+  if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
+  if (ticket.status === 'closed') return c.json({ error: 'Ticket is closed' }, 400)
+  const { message, sender_name } = await c.req.json()
+  if (!message) return c.json({ error: 'message is required' }, 400)
+  await db.prepare(
+    `INSERT INTO ticket_messages (ticket_id, sender_type, sender_name, message) VALUES (?, 'tenant', ?, ?)`
+  ).bind(id, sender_name || tenant.company_name, message).run()
+  await db.prepare(
+    `UPDATE support_tickets SET status = 'open', updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+  ).bind(id).run()
+  // Alert super admin of tenant reply
+  await sendTicketEmail(c.env, {
+    to: 'admin@clockinproof.com',
+    subject: `💬 Reply on [${ticket.ticket_number}] — ${ticket.subject}`,
+    html: `<div style="font-family:sans-serif;max-width:560px;padding:24px">
+      <h2 style="color:#4F46E5">Tenant Replied to Ticket</h2>
+      <p><strong>Ticket:</strong> ${ticket.ticket_number} — ${ticket.subject}</p>
+      <p><strong>From:</strong> ${tenant.company_name}</p>
+      <p style="background:#f8fafc;padding:12px;border-radius:8px;border-left:4px solid #4F46E5">${message}</p>
+      <p><a href="https://app.clockinproof.com/super" style="background:#4F46E5;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none">Reply in Super Admin</a></p>
+    </div>`
+  })
+  return c.json({ success: true })
+})
+
+// ── Super Admin ticket routes ────────────────────────────────────────────────
+
+// GET /api/super/tickets — all tickets across all tenants
+app.get('/api/super/tickets', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const status = c.req.query('status') || ''
+  const where = status ? `WHERE t.status = '${status}'` : `WHERE t.status != 'deleted'`
+  try {
+    const tickets = await db.prepare(`
+      SELECT t.*, ten.company_name, ten.slug as tenant_slug,
+        (SELECT COUNT(*) FROM ticket_messages m WHERE m.ticket_id = t.id) as message_count,
+        (SELECT m.created_at FROM ticket_messages m WHERE m.ticket_id = t.id ORDER BY m.created_at DESC LIMIT 1) as last_reply_at
+      FROM support_tickets t
+      JOIN tenants ten ON ten.id = t.tenant_id
+      ${where}
+      ORDER BY
+        CASE t.priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
+        t.updated_at DESC
+    `).all()
+    // Summary counts
+    const counts: any = await db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) as open_count,
+        SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) as in_progress_count,
+        SUM(CASE WHEN status='resolved' THEN 1 ELSE 0 END) as resolved_count,
+        SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) as closed_count,
+        SUM(CASE WHEN priority='urgent' AND status NOT IN ('closed','resolved') THEN 1 ELSE 0 END) as urgent_open
+      FROM support_tickets WHERE status != 'deleted'
+    `).first()
+    return c.json({ tickets: tickets.results, counts })
+  } catch(err: any) {
+    return c.json({ error: err?.message }, 500)
+  }
+})
+
+// GET /api/super/tickets/:id — full ticket thread
+app.get('/api/super/tickets/:id', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const ticket: any = await db.prepare(`
+    SELECT t.*, ten.company_name, ten.slug as tenant_slug, ten.admin_email as tenant_email
+    FROM support_tickets t
+    JOIN tenants ten ON ten.id = t.tenant_id
+    WHERE t.id = ?
+  `).bind(id).first()
+  if (!ticket) return c.json({ error: 'Not found' }, 404)
+  const messages = await db.prepare(
+    `SELECT * FROM ticket_messages WHERE ticket_id = ? ORDER BY created_at ASC`
+  ).bind(id).all()
+  return c.json({ ticket, messages: messages.results })
+})
+
+// POST /api/super/tickets/:id/reply — super admin replies
+app.post('/api/super/tickets/:id/reply', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const { message, is_internal } = await c.req.json()
+  if (!message) return c.json({ error: 'message is required' }, 400)
+  const ticket: any = await db.prepare(`
+    SELECT t.*, ten.admin_email as tenant_email, ten.company_name
+    FROM support_tickets t
+    JOIN tenants ten ON ten.id = t.tenant_id
+    WHERE t.id = ?
+  `).bind(id).first()
+  if (!ticket) return c.json({ error: 'Not found' }, 404)
+  const isInternal = is_internal ? 1 : 0
+  await db.prepare(
+    `INSERT INTO ticket_messages (ticket_id, sender_type, sender_name, message, is_internal) VALUES (?, 'admin', 'ClockInProof Support', ?, ?)`
+  ).bind(id, message, isInternal).run()
+  await db.prepare(
+    `UPDATE support_tickets SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+  ).bind(id).run()
+  // Email tenant (only if not an internal note)
+  if (!isInternal && ticket.tenant_email) {
+    await sendTicketEmail(c.env, {
+      to: ticket.tenant_email,
+      subject: `[${ticket.ticket_number}] Update on your support ticket — ${ticket.subject}`,
+      html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px">
+        <div style="background:#4F46E5;padding:20px;border-radius:12px 12px 0 0;text-align:center">
+          <h2 style="color:#fff;margin:0;font-size:18px">💬 Update on Your Ticket</h2>
+        </div>
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:0 0 12px 12px;padding:24px">
+          <p style="color:#374151">Hi <strong>${ticket.company_name}</strong>,</p>
+          <p style="color:#374151">Our support team has replied to your ticket <strong style="font-family:monospace">${ticket.ticket_number}</strong>:</p>
+          <div style="background:#fff;border:1px solid #e2e8f0;border-left:4px solid #4F46E5;border-radius:0 8px 8px 0;padding:16px;margin:16px 0">
+            <p style="margin:0;color:#1e293b">${message.replace(/\n/g, '<br>')}</p>
+          </div>
+          <p style="color:#374151"><strong>Ticket:</strong> ${ticket.subject}</p>
+          <p style="color:#374151"><strong>Status:</strong> <span style="color:#d97706;font-weight:700">IN PROGRESS</span></p>
+          <p style="color:#6b7280;font-size:12px;margin-top:24px">Reply to this email to add more information to your ticket.<br>— ClockInProof Support Team</p>
+        </div>
+      </div>`
+    })
+  }
+  return c.json({ success: true })
+})
+
+// PUT /api/super/tickets/:id/status — change ticket status (resolve/close/reopen)
+app.put('/api/super/tickets/:id/status', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const { status, resolution_note } = await c.req.json()
+  const validStatuses = ['open', 'in_progress', 'resolved', 'closed']
+  if (!validStatuses.includes(status)) return c.json({ error: 'Invalid status' }, 400)
+  const ticket: any = await db.prepare(`
+    SELECT t.*, ten.admin_email as tenant_email, ten.company_name
+    FROM support_tickets t JOIN tenants ten ON ten.id = t.tenant_id WHERE t.id = ?
+  `).bind(id).first()
+  if (!ticket) return c.json({ error: 'Not found' }, 404)
+  const resolvedAt = (status === 'resolved' || status === 'closed') ? 'CURRENT_TIMESTAMP' : 'NULL'
+  await db.prepare(
+    `UPDATE support_tickets SET status = ?, updated_at = CURRENT_TIMESTAMP, resolved_at = ${resolvedAt} WHERE id = ?`
+  ).bind(status, id).run()
+  // Add system message to thread
+  const statusLabels: Record<string, string> = {
+    open: '🔓 Ticket re-opened',
+    in_progress: '🔄 Ticket marked In Progress',
+    resolved: '✅ Ticket marked Resolved',
+    closed: '🔒 Ticket Closed'
+  }
+  const sysMsg = statusLabels[status] + (resolution_note ? `: ${resolution_note}` : '')
+  await db.prepare(
+    `INSERT INTO ticket_messages (ticket_id, sender_type, sender_name, message, is_internal) VALUES (?, 'system', 'ClockInProof Support', ?, 0)`
+  ).bind(id, sysMsg).run()
+  // Email tenant on resolve/close
+  if ((status === 'resolved' || status === 'closed') && ticket.tenant_email) {
+    const isClosed = status === 'closed'
+    await sendTicketEmail(c.env, {
+      to: ticket.tenant_email,
+      subject: `[${ticket.ticket_number}] ${isClosed ? 'Ticket Closed' : 'Issue Resolved'} — ${ticket.subject}`,
+      html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px">
+        <div style="background:${isClosed ? '#059669' : '#0891b2'};padding:20px;border-radius:12px 12px 0 0;text-align:center">
+          <h2 style="color:#fff;margin:0;font-size:18px">${isClosed ? '🔒 Ticket Closed' : '✅ Issue Resolved'}</h2>
+        </div>
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:0 0 12px 12px;padding:24px">
+          <p style="color:#374151">Hi <strong>${ticket.company_name}</strong>,</p>
+          <p style="color:#374151">Your support ticket <strong style="font-family:monospace">${ticket.ticket_number}</strong> has been <strong>${isClosed ? 'closed' : 'resolved'}</strong>.</p>
+          <div style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin:16px 0">
+            <p style="margin:0 0 8px"><strong>Subject:</strong> ${ticket.subject}</p>
+            ${resolution_note ? `<p style="margin:0 0 8px"><strong>Resolution:</strong> ${resolution_note}</p>` : ''}
+            <p style="margin:0"><strong>Status:</strong> <span style="color:${isClosed ? '#059669' : '#0891b2'};font-weight:700">${status.toUpperCase()}</span></p>
+          </div>
+          ${isClosed
+            ? `<p style="color:#374151">If this issue returns or you have a new question, please submit a new support ticket from your admin dashboard.</p>`
+            : `<p style="color:#374151">If the issue persists or you have further questions, reply to this email and we will continue to assist you.</p>`
+          }
+          <p style="color:#6b7280;font-size:12px;margin-top:24px">Thank you for using ClockInProof.<br>— ClockInProof Support Team</p>
+        </div>
+      </div>`
+    })
+  }
+  // Email tenant on reopen confirmation
+  if (status === 'open' && ticket.tenant_email) {
+    await sendTicketEmail(c.env, {
+      to: ticket.tenant_email,
+      subject: `[${ticket.ticket_number}] Ticket Re-opened — ${ticket.subject}`,
+      html: `<div style="font-family:sans-serif;max-width:560px;padding:24px">
+        <h2 style="color:#4F46E5">Ticket Re-opened</h2>
+        <p>Your ticket <strong>${ticket.ticket_number}</strong> has been re-opened and is back in our queue.</p>
+        <p>— ClockInProof Support Team</p>
+      </div>`
+    })
+  }
+  return c.json({ success: true })
+})
+
+// PUT /api/super/tickets/:id/priority — update priority
+app.put('/api/super/tickets/:id/priority', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const { priority } = await c.req.json()
+  if (!['low', 'normal', 'high', 'urgent'].includes(priority)) return c.json({ error: 'Invalid priority' }, 400)
+  await db.prepare(
+    `UPDATE support_tickets SET priority = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+  ).bind(priority, id).run()
+  return c.json({ success: true })
 })
 
 // ─── STAT PAY RULES (province/state minimums) ─────────────────────────────────
@@ -6321,6 +6715,15 @@ function getAdminHTML(): string {
           <span id="disputes-badge" class="hidden ml-auto bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center"></span>
         </button>
 
+        <button onclick="showTab('support-tickets')" data-tab="support-tickets"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-indigo-100 text-indigo-600 flex-shrink-0">
+            <i class="fas fa-life-ring text-sm"></i>
+          </span>
+          <span>Support</span>
+          <span id="tenant-tickets-badge" class="hidden ml-auto bg-indigo-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center"></span>
+        </button>
+
         <button onclick="showTab('settings')" data-tab="settings"
           class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
           <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-gray-100 text-gray-600 flex-shrink-0">
@@ -7643,6 +8046,84 @@ function getAdminHTML(): string {
       </div>
     </div>
 
+    <!-- ── Tab: Support Tickets ──────────────────────────────────────────── -->
+    <div id="tab-support-tickets" class="tab-content hidden">
+
+      <!-- Submit new ticket card -->
+      <div class="bg-white rounded-2xl shadow-sm p-5 mb-6">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center">
+            <i class="fas fa-life-ring text-indigo-600 text-lg"></i>
+          </div>
+          <div>
+            <h3 class="text-base font-bold text-gray-800">Submit a Support Request</h3>
+            <p class="text-xs text-gray-500">We typically respond within 24 hours. You'll receive email updates on your ticket.</p>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-semibold text-gray-600 mb-1">Subject *</label>
+            <input id="tkt-subject" type="text" placeholder="Brief description of your issue"
+              class="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"/>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-gray-600 mb-1">Category</label>
+            <select id="tkt-category" class="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+              <option value="general">General Question</option>
+              <option value="billing">Billing / Subscription</option>
+              <option value="technical">Technical Issue</option>
+              <option value="feature">Feature Request</option>
+              <option value="account">Account / Access</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-gray-600 mb-1">Priority</label>
+            <select id="tkt-priority" class="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+              <option value="normal">Normal</option>
+              <option value="high">High</option>
+              <option value="urgent">Urgent — system is down</option>
+              <option value="low">Low — no rush</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-gray-600 mb-1">Your Name / Email (optional)</label>
+            <input id="tkt-submitter" type="text" placeholder="e.g. Jane Smith / jane@company.com"
+              class="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"/>
+          </div>
+          <div class="md:col-span-2">
+            <label class="block text-xs font-semibold text-gray-600 mb-1">Description *</label>
+            <textarea id="tkt-description" rows="4" placeholder="Please describe your issue in detail — include steps to reproduce if applicable..."
+              class="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"></textarea>
+          </div>
+        </div>
+        <div class="mt-4 flex items-center gap-3">
+          <button onclick="submitTenantTicket()" id="tkt-submit-btn"
+            class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-6 py-2.5 rounded-xl text-sm transition-colors flex items-center gap-2">
+            <i class="fas fa-paper-plane"></i> Submit Ticket
+          </button>
+          <span id="tkt-submit-msg" class="text-sm"></span>
+        </div>
+      </div>
+
+      <!-- My tickets list -->
+      <div class="bg-white rounded-2xl shadow-sm p-5">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-base font-bold text-gray-800"><i class="fas fa-ticket-alt text-indigo-500 mr-2"></i>My Support Tickets</h3>
+          <button onclick="loadTenantTickets()" class="text-xs text-indigo-600 hover:text-indigo-800 font-semibold flex items-center gap-1">
+            <i class="fas fa-rotate-right text-xs"></i> Refresh
+          </button>
+        </div>
+        <div id="tenant-tickets-list">
+          <div class="text-center py-10 text-gray-400">
+            <i class="fas fa-spinner fa-spin text-2xl mb-3 block"></i>
+            <p class="text-sm">Loading tickets...</p>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /tab-support-tickets -->
+
     </main><!-- /main content -->
   </div><!-- /flex body -->
 </div><!-- /admin-dashboard -->
@@ -8431,7 +8912,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260301"></script>
+<script src="/static/admin.js?v=20260302"></script>
 
 </body>
 </html>`
@@ -8817,6 +9298,12 @@ select.input option{background:#1e293b}
     </button>
     <button class="nav-item" id="nav-revenue" onclick="showPage('revenue')">
       <i class="fas fa-dollar-sign"></i> Revenue / MRR
+    </button>
+
+    <div class="section-header" style="margin-top:8px">Support</div>
+    <button class="nav-item" id="nav-support" onclick="showPage('support')">
+      <i class="fas fa-life-ring"></i> Support Tickets
+      <span class="nav-badge" id="support-badge" style="display:none">0</span>
     </button>
 
     <div class="section-header" style="margin-top:8px">Config</div>
@@ -9265,8 +9752,132 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
+    <!-- ── SUPPORT TICKETS ──────────────────────────────────── -->
+    <div class="page" id="page-support">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+        <div>
+          <h1 style="font-size:20px;font-weight:800;color:#fff">Support Tickets</h1>
+          <p style="color:#64748b;font-size:13px">Manage all tenant support requests</p>
+        </div>
+        <button class="btn btn-ghost" onclick="loadTickets()"><i class="fas fa-rotate-right"></i> Refresh</button>
+      </div>
+      <!-- Stats bar -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">
+        <div class="stat-card" style="padding:14px">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Open</div>
+          <div style="font-size:28px;font-weight:800;color:#f59e0b" id="tkst-open">—</div>
+        </div>
+        <div class="stat-card" style="padding:14px">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">In Progress</div>
+          <div style="font-size:28px;font-weight:800;color:#818cf8" id="tkst-progress">—</div>
+        </div>
+        <div class="stat-card" style="padding:14px">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Resolved</div>
+          <div style="font-size:28px;font-weight:800;color:#34d399" id="tkst-resolved">—</div>
+        </div>
+        <div class="stat-card" style="padding:14px">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Urgent Open</div>
+          <div style="font-size:28px;font-weight:800;color:#ef4444" id="tkst-urgent">—</div>
+        </div>
+      </div>
+      <!-- Filter row -->
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
+        <select id="tkt-filter-status" class="input" style="width:150px" onchange="loadTickets()">
+          <option value="">All Tickets</option>
+          <option value="open">Open</option>
+          <option value="in_progress">In Progress</option>
+          <option value="resolved">Resolved</option>
+          <option value="closed">Closed</option>
+        </select>
+        <select id="tkt-filter-priority" class="input" style="width:140px" onchange="filterTickets()">
+          <option value="">All Priority</option>
+          <option value="urgent">Urgent</option>
+          <option value="high">High</option>
+          <option value="normal">Normal</option>
+          <option value="low">Low</option>
+        </select>
+        <input type="text" id="tkt-search" class="input" style="width:200px" placeholder="Search tickets..." oninput="filterTickets()">
+      </div>
+      <!-- Tickets table -->
+      <div class="card" style="overflow:hidden">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Ticket #</th>
+              <th>Subject</th>
+              <th>Tenant</th>
+              <th>Priority</th>
+              <th>Status</th>
+              <th>Messages</th>
+              <th>Updated</th>
+              <th style="text-align:right">Action</th>
+            </tr>
+          </thead>
+          <tbody id="tickets-tbody">
+            <tr><td colspan="8" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
   </div><!-- /content -->
 </div><!-- /app -->
+
+<!-- TICKET DETAIL MODAL -->
+<div class="modal-bg" id="ticket-modal" onclick="if(event.target===this)closeTicketModal()">
+  <div class="card" style="padding:0;width:100%;max-width:700px;max-height:92vh;display:flex;flex-direction:column">
+    <!-- Modal header -->
+    <div style="padding:18px 20px;border-bottom:1px solid #334155;display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+      <div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-family:monospace;background:#0f172a;color:#818cf8;padding:3px 10px;border-radius:6px;font-size:13px" id="tkt-modal-number">—</span>
+          <span id="tkt-modal-status-badge"></span>
+          <span id="tkt-modal-priority-badge"></span>
+        </div>
+        <h3 style="font-size:16px;font-weight:700;color:#fff;margin-top:6px" id="tkt-modal-subject">—</h3>
+        <p style="font-size:12px;color:#475569;margin-top:2px" id="tkt-modal-meta">—</p>
+      </div>
+      <button onclick="closeTicketModal()" style="background:none;border:none;color:#64748b;font-size:22px;cursor:pointer;flex-shrink:0;line-height:1">&times;</button>
+    </div>
+    <!-- Toolbar -->
+    <div style="padding:10px 20px;border-bottom:1px solid #1e293b;display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0;background:#0f172a">
+      <select id="tkt-status-select" class="input" style="width:160px;font-size:12px;padding:5px 10px">
+        <option value="open">Open</option>
+        <option value="in_progress">In Progress</option>
+        <option value="resolved">Resolved</option>
+        <option value="closed">Closed</option>
+      </select>
+      <select id="tkt-priority-select" class="input" style="width:130px;font-size:12px;padding:5px 10px">
+        <option value="low">Low</option>
+        <option value="normal">Normal</option>
+        <option value="high">High</option>
+        <option value="urgent">Urgent</option>
+      </select>
+      <button class="btn btn-ghost" onclick="updateTicketStatus()" style="font-size:12px"><i class="fas fa-save"></i> Update Status</button>
+      <button class="btn btn-success" onclick="resolveAndClose()" style="font-size:12px"><i class="fas fa-check"></i> Resolve &amp; Close</button>
+    </div>
+    <!-- Thread -->
+    <div id="tkt-thread" style="flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:10px">
+      <div style="text-align:center;color:#475569"><i class="fas fa-spinner fa-spin"></i></div>
+    </div>
+    <!-- Reply box -->
+    <div style="padding:14px 20px;border-top:1px solid #334155;flex-shrink:0">
+      <textarea id="tkt-reply-text" class="input" rows="3"
+        style="resize:vertical;margin-bottom:10px;font-family:inherit"
+        placeholder="Type your reply to the tenant..."></textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#64748b;cursor:pointer">
+          <input type="checkbox" id="tkt-internal-note" style="width:13px;height:13px">
+          Internal note (not emailed to tenant)
+        </label>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost" onclick="closeTicketModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="sendTicketReply()"><i class="fas fa-paper-plane"></i> Send Reply</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- EDIT TENANT MODAL -->
 <div class="modal-bg" id="edit-modal" onclick="if(event.target===this)closeEditModal()">
@@ -9416,6 +10027,7 @@ function showPage(name) {
   if (name === 'tenants')     loadTenants()
   if (name === 'sessions')    loadSessions()
   if (name === 'revenue')     loadRevenue()
+  if (name === 'support')     loadTickets()
 }
 
 function toggleSidebar() {
@@ -9807,6 +10419,178 @@ async function changeSuperPin() {
   if (!newPin || newPin.length < 6) { showToast('❌ PIN must be at least 6 characters', true); return }
   showToast('ℹ️ To change the PIN, update SUPER_ADMIN_PIN secret in Cloudflare Pages dashboard', false)
   document.getElementById('new-super-pin').value = ''
+}
+
+// ── Support Tickets ───────────────────────────────────────────────────────────
+let allTickets = []
+let currentTicketId = null
+
+async function loadTickets() {
+  const tbody = document.getElementById('tickets-tbody')
+  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>'
+  const statusFilter = document.getElementById('tkt-filter-status').value
+  try {
+    const d = await api('/api/super/tickets' + (statusFilter ? '?status=' + statusFilter : ''))
+    allTickets = d.tickets || []
+    const cnt = d.counts || {}
+    document.getElementById('tkst-open').textContent     = cnt.open_count || 0
+    document.getElementById('tkst-progress').textContent = cnt.in_progress_count || 0
+    document.getElementById('tkst-resolved').textContent = cnt.resolved_count || 0
+    document.getElementById('tkst-urgent').textContent   = cnt.urgent_open || 0
+    const openCount = (cnt.open_count||0) + (cnt.in_progress_count||0)
+    const badge = document.getElementById('support-badge')
+    badge.textContent = openCount
+    badge.style.display = openCount > 0 ? 'inline' : 'none'
+    renderTickets(allTickets)
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#ef4444">Failed to load tickets</td></tr>'
+  }
+}
+
+function filterTickets() {
+  const q  = document.getElementById('tkt-search').value.toLowerCase()
+  const fp = document.getElementById('tkt-filter-priority').value
+  renderTickets(allTickets.filter(t =>
+    (!q  || t.subject.toLowerCase().includes(q) || t.ticket_number.toLowerCase().includes(q) || (t.company_name||'').toLowerCase().includes(q)) &&
+    (!fp || t.priority === fp)
+  ))
+}
+
+const PRIORITY_STYLES = {
+  urgent: { bg:'#7f1d1d', color:'#fca5a5', label:'URGENT' },
+  high:   { bg:'#78350f', color:'#fcd34d', label:'HIGH' },
+  normal: { bg:'#1e3a5f', color:'#93c5fd', label:'NORMAL' },
+  low:    { bg:'#1e293b', color:'#64748b', label:'LOW' }
+}
+const STATUS_STYLES = {
+  open:        { bg:'#78350f', color:'#fcd34d', label:'OPEN' },
+  in_progress: { bg:'#312e81', color:'#a5b4fc', label:'IN PROGRESS' },
+  resolved:    { bg:'#065f46', color:'#6ee7b7', label:'RESOLVED' },
+  closed:      { bg:'#1e293b', color:'#64748b', label:'CLOSED' }
+}
+
+function renderTickets(tickets) {
+  const tbody = document.getElementById('tickets-tbody')
+  if (!tickets.length) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:48px;color:#475569"><i class="fas fa-ticket" style="font-size:28px;display:block;margin-bottom:10px"></i>No tickets found</td></tr>'
+    return
+  }
+  tbody.innerHTML = tickets.map(t => {
+    const ps = PRIORITY_STYLES[t.priority] || PRIORITY_STYLES.normal
+    const ss = STATUS_STYLES[t.status]     || STATUS_STYLES.open
+    const updated = t.updated_at ? new Date(t.updated_at).toLocaleDateString() : '—'
+    return \`<tr style="cursor:pointer" onclick="openTicket(\${t.id})">
+      <td style="font-family:monospace;font-size:12px;color:#818cf8">\${t.ticket_number}</td>
+      <td><div style="font-weight:600;color:#e2e8f0;font-size:13px">\${t.subject}</div>
+          <div style="color:#475569;font-size:11px">\${t.category||'general'}</div></td>
+      <td style="color:#94a3b8;font-size:12px">\${t.company_name||'—'}</td>
+      <td><span style="display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;background:\${ps.bg};color:\${ps.color}">\${ps.label}</span></td>
+      <td><span style="display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;background:\${ss.bg};color:\${ss.color}">\${ss.label}</span></td>
+      <td style="color:#64748b;font-size:12px">\${t.message_count||0}</td>
+      <td style="color:#64748b;font-size:12px">\${updated}</td>
+      <td style="text-align:right"><button class="btn btn-ghost" onclick="event.stopPropagation();openTicket(\${t.id})" style="font-size:11px"><i class="fas fa-eye"></i> Open</button></td>
+    </tr>\`
+  }).join('')
+}
+
+async function openTicket(id) {
+  currentTicketId = id
+  document.getElementById('tkt-thread').innerHTML = '<div style="text-align:center;color:#475569;padding:30px"><i class="fas fa-spinner fa-spin"></i></div>'
+  document.getElementById('ticket-modal').classList.add('open')
+  try {
+    const d = await api('/api/super/tickets/' + id)
+    const t = d.ticket
+    document.getElementById('tkt-modal-number').textContent  = t.ticket_number
+    document.getElementById('tkt-modal-subject').textContent = t.subject
+    document.getElementById('tkt-modal-meta').textContent    =
+      (t.company_name||'') + ' · ' + (t.submitter_email||'') + ' · ' + new Date(t.created_at).toLocaleString()
+    const ss = STATUS_STYLES[t.status]     || STATUS_STYLES.open
+    const ps = PRIORITY_STYLES[t.priority] || PRIORITY_STYLES.normal
+    document.getElementById('tkt-modal-status-badge').innerHTML =
+      \`<span style="display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;background:\${ss.bg};color:\${ss.color}">\${ss.label}</span>\`
+    document.getElementById('tkt-modal-priority-badge').innerHTML =
+      \`<span style="display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;background:\${ps.bg};color:\${ps.color}">\${ps.label}</span>\`
+    document.getElementById('tkt-status-select').value   = t.status
+    document.getElementById('tkt-priority-select').value = t.priority
+    const msgs = d.messages || []
+    document.getElementById('tkt-thread').innerHTML = msgs.length ? msgs.map(m => {
+      const isTenant   = m.sender_type === 'tenant'
+      const isSystem   = m.sender_type === 'system'
+      const isInternal = m.is_internal
+      let bg = isTenant ? '#0f172a' : (isSystem ? '#1a2234' : '#1e1b40')
+      let borderLeft = isTenant ? '#334155' : (isSystem ? '#334155' : '#4f46e5')
+      if (isInternal) { bg = '#1a1200'; borderLeft = '#d97706' }
+      return \`<div style="background:\${bg};border:1px solid #334155;border-left:3px solid \${borderLeft};border-radius:8px;padding:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-weight:700;font-size:13px;color:\${isTenant?'#93c5fd':isSystem?'#64748b':'#a5b4fc'}">\${m.sender_name}</span>
+            \${isTenant   ? '<span style="background:#1e3a5f;color:#93c5fd;font-size:10px;padding:1px 7px;border-radius:20px;font-weight:700">TENANT</span>' : ''}
+            \${isInternal ? '<span style="background:#1a1200;color:#d97706;font-size:10px;padding:1px 7px;border-radius:20px;border:1px solid #d97706;font-weight:700">INTERNAL NOTE</span>' : ''}
+            \${isSystem   ? '<span style="background:#1e293b;color:#475569;font-size:10px;padding:1px 7px;border-radius:20px;font-weight:700">SYSTEM</span>' : ''}
+          </div>
+          <span style="font-size:11px;color:#475569">\${new Date(m.created_at).toLocaleString()}</span>
+        </div>
+        <p style="color:#e2e8f0;font-size:13px;line-height:1.6;white-space:pre-wrap;margin:0">\${m.message}</p>
+      </div>\`
+    }).join('') : '<p style="text-align:center;color:#475569;padding:20px">No messages yet</p>'
+    const thread = document.getElementById('tkt-thread')
+    setTimeout(() => { thread.scrollTop = thread.scrollHeight }, 50)
+  } catch(e) {
+    document.getElementById('tkt-thread').innerHTML = '<p style="color:#ef4444;text-align:center;padding:20px">Failed to load ticket</p>'
+  }
+}
+
+function closeTicketModal() {
+  document.getElementById('ticket-modal').classList.remove('open')
+  document.getElementById('tkt-reply-text').value = ''
+  document.getElementById('tkt-internal-note').checked = false
+  currentTicketId = null
+}
+
+async function sendTicketReply() {
+  if (!currentTicketId) return
+  const message    = document.getElementById('tkt-reply-text').value.trim()
+  const isInternal = document.getElementById('tkt-internal-note').checked
+  if (!message) { showToast('❌ Type a reply first', true); return }
+  try {
+    await api('/api/super/tickets/' + currentTicketId + '/reply', {
+      method: 'POST', body: JSON.stringify({ message, is_internal: isInternal })
+    })
+    document.getElementById('tkt-reply-text').value = ''
+    document.getElementById('tkt-internal-note').checked = false
+    showToast(isInternal ? '📝 Internal note added' : '✅ Reply sent to tenant')
+    await openTicket(currentTicketId)
+    loadTickets()
+  } catch { showToast('❌ Failed to send reply', true) }
+}
+
+async function updateTicketStatus() {
+  if (!currentTicketId) return
+  const status   = document.getElementById('tkt-status-select').value
+  const priority = document.getElementById('tkt-priority-select').value
+  try {
+    await Promise.all([
+      api('/api/super/tickets/' + currentTicketId + '/status',   { method:'PUT', body:JSON.stringify({ status }) }),
+      api('/api/super/tickets/' + currentTicketId + '/priority', { method:'PUT', body:JSON.stringify({ priority }) })
+    ])
+    showToast('✅ Ticket updated')
+    await openTicket(currentTicketId)
+    loadTickets()
+  } catch { showToast('❌ Update failed', true) }
+}
+
+async function resolveAndClose() {
+  if (!currentTicketId) return
+  if (!confirm('Mark this ticket as Resolved and close it? The tenant will receive an email confirmation.')) return
+  const note = prompt('Optional resolution note for the tenant (leave blank to skip):')
+  try {
+    await api('/api/super/tickets/' + currentTicketId + '/status', {
+      method: 'PUT', body: JSON.stringify({ status: 'closed', resolution_note: note || '' })
+    })
+    showToast('🔒 Ticket closed — tenant notified by email')
+    closeTicketModal()
+    loadTickets()
+  } catch { showToast('❌ Failed to close ticket', true) }
 }
 
 // ── Toast ────────────────────────────────────────────────────────────────────
