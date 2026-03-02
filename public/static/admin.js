@@ -2466,10 +2466,6 @@ async function loadSettings() {
     if (twilioTokenEl) twilioTokenEl.value = currentSettings.twilio_auth_token || ''
     const twilioFromEl = document.getElementById('s-twilio-from')
     if (twilioFromEl) twilioFromEl.value = currentSettings.twilio_from_number || ''
-    const appHostEl = document.getElementById('s-app-host')
-    if (appHostEl) appHostEl.value = currentSettings.app_host || ''
-    const adminHostEl = document.getElementById('s-admin-host')
-    if (adminHostEl) adminHostEl.value = currentSettings.admin_host || ''
 
     // Country dropdown
     const country = currentSettings.country_code || 'CA'
@@ -2598,8 +2594,6 @@ async function saveSettings() {
     twilio_account_sid: document.getElementById('s-twilio-sid')?.value?.trim() || '',
     twilio_auth_token: document.getElementById('s-twilio-token')?.value?.trim() || '',
     twilio_from_number: document.getElementById('s-twilio-from')?.value?.trim() || '',
-    app_host: document.getElementById('s-app-host')?.value?.trim() || '',
-    admin_host: document.getElementById('s-admin-host')?.value?.trim() || '',
     pay_frequency: document.getElementById('s-pay-frequency')?.value || 'biweekly',
     pay_period_anchor: document.getElementById('s-pay-anchor')?.value || '2026-03-06',
     show_pay_to_workers: document.getElementById('s-show-pay-workers')?.checked ? '1' : '0',

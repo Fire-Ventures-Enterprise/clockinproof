@@ -7376,7 +7376,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260302k"></script>
+<script src="/static/worker.js?v=20260302l"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -8580,46 +8580,6 @@ function getAdminHTML(): string {
           </div>
         </details>
 
-        <!-- App URLs / Domain Configuration — Tenant Admin section -->
-        <div class="bg-indigo-50 border border-indigo-100 rounded-xl p-4">
-          <h4 class="font-semibold text-indigo-800 mb-1 flex items-center gap-2">
-            <i class="fas fa-globe text-indigo-500"></i>
-            Your App URLs
-          </h4>
-          <p class="text-xs text-indigo-500 mb-3">These are your company's ClockInProof URLs. Edit only if you use a custom domain.</p>
-          <div class="space-y-4">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">
-                Worker App URL <span class="text-gray-400 font-normal">(workers clock in here)</span>
-              </label>
-              <input id="s-app-host" type="url" placeholder="https://app.clockinproof.com"
-                class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-400 text-sm bg-white"/>
-              <p class="text-xs text-gray-400 mt-1">
-                <i class="fas fa-info-circle mr-1"></i>
-                Share this URL with your workers. In Cloudflare DNS, point <code class="bg-gray-100 px-1 rounded">app.clockinproof.com</code> → this Pages project.
-              </p>
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">
-                Admin Portal URL <span class="text-gray-400 font-normal">(this dashboard)</span>
-              </label>
-              <input id="s-admin-host" type="url" placeholder="https://admin.clockinproof.com"
-                class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-400 text-sm bg-white"/>
-              <p class="text-xs text-gray-400 mt-1">
-                <i class="fas fa-info-circle mr-1"></i>
-                In Cloudflare DNS, point <code class="bg-gray-100 px-1 rounded">admin.clockinproof.com</code> → this Pages project. Notification links will use this URL.
-              </p>
-            </div>
-            <div class="bg-white border border-indigo-100 rounded-lg p-3 text-xs text-gray-500 space-y-1">
-              <p class="font-semibold text-gray-700 mb-2"><i class="fas fa-lightbulb text-yellow-500 mr-1"></i>Cloudflare DNS Quick Setup</p>
-              <p>1. Go to <strong>Cloudflare Dashboard → clockinproof.com → DNS</strong></p>
-              <p>2. Add CNAME record: <code class="bg-gray-100 px-1 rounded">app</code> → your Pages URL</p>
-              <p>3. Add CNAME record: <code class="bg-gray-100 px-1 rounded">admin</code> → your Pages URL</p>
-              <p>4. Add CNAME record: <code class="bg-gray-100 px-1 rounded">www</code> → your Pages URL (landing page)</p>
-              <p>5. In Pages → Custom Domains → add all three subdomains</p>
-            </div>
-          </div>
-        </div>
       </div>
 
       <div class="mt-6 flex gap-3">
@@ -10397,7 +10357,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260302h"></script>
+<script src="/static/admin.js?v=20260302i"></script>
 
 </body>
 </html>`
@@ -11224,6 +11184,49 @@ select.input option{background:#1e293b}
             </div>
           </div>
         </div>
+        <!-- APP URLs / DOMAIN CONFIGURATION -->
+        <div class="card" style="padding:20px;grid-column:1/-1">
+          <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:14px">
+            <i class="fas fa-link" style="color:#818cf8;margin-right:6px"></i>APP URLs &amp; DOMAIN CONFIGURATION
+            <span style="font-size:10px;font-weight:500;color:#475569;margin-left:8px;text-transform:none">Platform infrastructure — not visible to tenant admins</span>
+          </h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">
+                Worker App URL <span style="text-transform:none;font-weight:400">(workers clock in here)</span>
+              </label>
+              <input type="url" id="sp-app-host" class="input" placeholder="https://app.clockinproof.com">
+              <p style="font-size:11px;color:#475569;margin-top:4px">
+                <i class="fas fa-info-circle" style="margin-right:4px"></i>
+                In Cloudflare DNS, point <code style="background:#0f172a;padding:1px 5px;border-radius:4px">app.clockinproof.com</code> → this Pages project.
+              </p>
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">
+                Admin Portal URL <span style="text-transform:none;font-weight:400">(this dashboard)</span>
+              </label>
+              <input type="url" id="sp-admin-host" class="input" placeholder="https://admin.clockinproof.com">
+              <p style="font-size:11px;color:#475569;margin-top:4px">
+                <i class="fas fa-info-circle" style="margin-right:4px"></i>
+                In Cloudflare DNS, point <code style="background:#0f172a;padding:1px 5px;border-radius:4px">admin.clockinproof.com</code> → this Pages project. Alert SMS links use this URL.
+              </p>
+            </div>
+          </div>
+          <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:12px;margin-top:14px;font-size:12px;color:#64748b">
+            <p style="font-weight:700;color:#94a3b8;margin-bottom:8px"><i class="fas fa-lightbulb" style="color:#f59e0b;margin-right:6px"></i>Cloudflare DNS Quick Setup</p>
+            <p>1. Cloudflare Dashboard → <strong style="color:#e2e8f0">clockinproof.com → DNS</strong></p>
+            <p style="margin-top:4px">2. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">app</code> → your Pages URL</p>
+            <p style="margin-top:4px">3. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">admin</code> → your Pages URL</p>
+            <p style="margin-top:4px">4. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">www</code> → your Pages URL (landing page)</p>
+            <p style="margin-top:4px">5. Pages → Custom Domains → add all three subdomains</p>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:10px">
+            <button class="btn btn-primary" onclick="savePlatformUrls()"><i class="fas fa-save"></i> Save URLs</button>
+            <button class="btn btn-ghost" onclick="loadPlatformUrls()"><i class="fas fa-rotate-right"></i> Reload</button>
+          </div>
+          <p id="sp-url-status" style="font-size:12px;color:#34d399;margin-top:8px;display:none"></p>
+        </div>
+
         <div class="card" style="padding:20px">
           <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:14px"><i class="fas fa-globe" style="color:#818cf8;margin-right:6px"></i>PLATFORM INFO</h3>
           <div style="display:flex;flex-direction:column;gap:8px;font-size:13px">
@@ -11532,6 +11535,7 @@ function showPage(name) {
   if (name === 'sessions')    loadSessions()
   if (name === 'revenue')     loadRevenue()
   if (name === 'support')     loadTickets()
+  if (name === 'platform')    loadPlatformUrls()
 }
 
 function toggleSidebar() {
@@ -11923,6 +11927,39 @@ async function changeSuperPin() {
   if (!newPin || newPin.length < 6) { showToast('❌ PIN must be at least 6 characters', true); return }
   showToast('ℹ️ To change the PIN, update SUPER_ADMIN_PIN secret in Cloudflare Pages dashboard', false)
   document.getElementById('new-super-pin').value = ''
+}
+
+// ── Platform URL Config ───────────────────────────────────────────────────────
+async function loadPlatformUrls() {
+  try {
+    const d = await api('/api/settings')
+    const s = d.settings || {}
+    const appEl   = document.getElementById('sp-app-host')
+    const adminEl = document.getElementById('sp-admin-host')
+    if (appEl)   appEl.value   = s.app_host   || ''
+    if (adminEl) adminEl.value = s.admin_host  || ''
+  } catch(e) { showToast('Failed to load URLs', true) }
+}
+
+async function savePlatformUrls() {
+  const appHost   = (document.getElementById('sp-app-host')?.value   || '').trim()
+  const adminHost = (document.getElementById('sp-admin-host')?.value || '').trim()
+  const statusEl  = document.getElementById('sp-url-status')
+  try {
+    // Read current settings first so we don't wipe other fields
+    const d = await api('/api/settings')
+    const current = d.settings || {}
+    const payload = { ...current, app_host: appHost, admin_host: adminHost }
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!res.ok) throw new Error('Save failed')
+    if (statusEl) { statusEl.textContent = '✓ URLs saved successfully'; statusEl.style.display = 'block' }
+    showToast('✅ Platform URLs saved')
+    setTimeout(() => { if (statusEl) statusEl.style.display = 'none' }, 4000)
+  } catch(e) { showToast('❌ Failed to save URLs', true) }
 }
 
 // ── Support Tickets ───────────────────────────────────────────────────────────
