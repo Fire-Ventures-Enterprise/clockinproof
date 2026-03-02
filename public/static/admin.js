@@ -579,6 +579,8 @@ function openEditWorkerModal(focusTab) {
   if (focusTab === 'license') {
     setTimeout(() => document.getElementById('ew-license-num')?.scrollIntoView({behavior:'smooth'}), 200)
   }
+  // Populate device security status
+  populateDeviceStatus(w)
 }
 
 function closeEditWorkerModal() {
@@ -2007,6 +2009,7 @@ function showTab(name) {
   if (name === 'job-sites') loadJobSites()
   if (name === 'disputes') loadDisputes()
   if (name === 'support-tickets') loadTenantTickets()
+  if (name === 'workers') loadDeviceResetRequests()
   // Close sidebar on mobile after navigation
   const sidebar = document.getElementById('admin-sidebar')
   if (sidebar && window.innerWidth < 1024) {
@@ -4248,7 +4251,127 @@ window.addEventListener('DOMContentLoaded', () => {
 
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ── SUPPORT TICKETS (Tenant Side) ─────────────────────────────────────────────
+// ── DEVICE SECURITY (Admin Side) ──────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+function populateDeviceStatus(worker) {
+  const labelEl  = document.getElementById('ew-device-label')
+  const subEl    = document.getElementById('ew-device-sub')
+  const iconBg   = document.getElementById('ew-device-icon-bg')
+  const iconEl   = document.getElementById('ew-device-icon')
+  const resetBtn = document.getElementById('ew-reset-device-btn')
+  if (!labelEl) return
+
+  if (worker.device_id && worker.device_consent_given) {
+    labelEl.textContent  = 'Device Locked ✓'
+    subEl.textContent    = `Consent given ${worker.device_consent_at ? new Date(worker.device_consent_at + 'Z').toLocaleDateString() : ''}. Clock-ins restricted to registered phone.`
+    iconBg.className     = 'w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 bg-green-100'
+    iconEl.className     = 'fas fa-mobile-alt text-sm text-green-600'
+    resetBtn.style.display = ''
+  } else if (worker.device_id && !worker.device_consent_given) {
+    labelEl.textContent  = 'Device Registered (No Consent)'
+    subEl.textContent    = 'Device token saved at registration but consent not explicitly recorded.'
+    iconBg.className     = 'w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 bg-amber-100'
+    iconEl.className     = 'fas fa-mobile-alt text-sm text-amber-600'
+    resetBtn.style.display = ''
+  } else {
+    labelEl.textContent  = 'No Device Locked'
+    subEl.textContent    = 'Worker will lock their device on next login. No restriction active yet.'
+    iconBg.className     = 'w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 bg-gray-100'
+    iconEl.className     = 'fas fa-mobile-alt text-sm text-gray-400'
+    resetBtn.style.display = 'none'
+  }
+}
+
+async function adminResetWorkerDevice() {
+  const id   = document.getElementById('ew-worker-id')?.value
+  const name = document.getElementById('ew-name')?.value || 'this worker'
+  if (!id) return
+  if (!confirm(`Reset device lock for ${name}?\n\nOnly do this if you have personally confirmed they have a new phone.\n\nThey will be asked to give consent again on their next login.`)) return
+
+  const btn = document.getElementById('ew-reset-device-btn')
+  btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Resetting...'
+  try {
+    const res  = await fetch('/api/workers/' + id + '/reset-device', { method: 'POST' })
+    const data = await res.json()
+    if (data.success) {
+      showAdminToast('✅ Device lock cleared. ' + name + ' can register their new phone.', 'success')
+      // Update local worker object so status refreshes
+      if (window._currentDrawerWorker) {
+        window._currentDrawerWorker.device_id = null
+        window._currentDrawerWorker.device_consent_given = 0
+        populateDeviceStatus(window._currentDrawerWorker)
+      }
+    } else {
+      showAdminToast('❌ ' + (data.error || 'Reset failed'), 'error')
+    }
+  } catch (e) {
+    showAdminToast('Connection error', 'error')
+  } finally {
+    btn.disabled = false; btn.innerHTML = '<i class="fas fa-rotate-right"></i> Reset Device Lock'
+  }
+}
+
+// ── Device Reset Requests panel (Workers tab notification badge) ──────────────
+async function loadDeviceResetRequests() {
+  try {
+    const d = await tktFetch('/api/device-reset-requests')
+    const pending = (d.requests || []).filter(r => r.status === 'pending')
+    const badge = document.getElementById('device-reset-badge')
+    if (badge) {
+      if (pending.length > 0) { badge.textContent = pending.length; badge.classList.remove('hidden') }
+      else badge.classList.add('hidden')
+    }
+    renderDeviceResetRequests(d.requests || [])
+  } catch (e) { /* silent */ }
+}
+
+function renderDeviceResetRequests(requests) {
+  const el = document.getElementById('device-reset-list')
+  if (!el) return
+  const pending = requests.filter(r => r.status === 'pending')
+  if (!pending.length) {
+    el.innerHTML = '<p class="text-xs text-gray-400 text-center py-4">No pending device reset requests.</p>'
+    return
+  }
+  el.innerHTML = pending.map(r => `
+<div class="flex items-center justify-between gap-3 bg-amber-50 border border-amber-200 rounded-xl p-3">
+  <div>
+    <p class="text-sm font-semibold text-gray-800"><i class="fas fa-mobile-alt text-amber-500 mr-1.5"></i>${escHtml(r.worker_name)}</p>
+    <p class="text-xs text-gray-500 mt-0.5">${escHtml(r.reason || 'New phone')} · Requested ${timeSince(new Date(r.requested_at + 'Z'))}</p>
+  </div>
+  <div class="flex gap-2 flex-shrink-0">
+    <button onclick="approveDeviceReset(${r.id}, '${escHtml(r.worker_name)}')"
+      class="bg-green-600 hover:bg-green-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1">
+      <i class="fas fa-check"></i> Approve
+    </button>
+    <button onclick="denyDeviceReset(${r.id})"
+      class="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold px-3 py-1.5 rounded-lg">
+      Deny
+    </button>
+  </div>
+</div>`).join('')
+}
+
+async function approveDeviceReset(id, name) {
+  if (!confirm(`Approve device reset for ${name}?\n\nVerify you have personally confirmed this with the worker.`)) return
+  try {
+    const d = await tktFetch('/api/device-reset-requests/' + id + '/approve', { method: 'POST' })
+    if (d.success) {
+      showAdminToast('✅ Device reset approved for ' + name, 'success')
+      loadDeviceResetRequests()
+    }
+  } catch (e) { showAdminToast('Failed to approve', 'error') }
+}
+
+async function denyDeviceReset(id) {
+  try {
+    await tktFetch('/api/device-reset-requests/' + id + '/deny', { method: 'POST' })
+    showAdminToast('Reset request denied', 'info')
+    loadDeviceResetRequests()
+  } catch (e) { showAdminToast('Failed to deny', 'error') }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 
 let currentTenantTicketId = null

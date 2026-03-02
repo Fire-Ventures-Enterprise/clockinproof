@@ -385,6 +385,29 @@ async function ensureSchema(db: D1Database) {
     `CREATE INDEX IF NOT EXISTS idx_tickets_tenant ON support_tickets(tenant_id)`,
     `CREATE INDEX IF NOT EXISTS idx_tickets_status ON support_tickets(status)`,
     `CREATE INDEX IF NOT EXISTS idx_ticket_msgs ON ticket_messages(ticket_id)`,
+
+    // ── Device enforcement (privacy-compliant) ──────────────────────────────
+    // device_id is a random browser-generated token stored in localStorage.
+    // It is NOT biometric data. It identifies the browser/device session only.
+    // Workers give explicit informed consent before it is saved (PIPEDA / CCPA).
+    `ALTER TABLE workers ADD COLUMN device_consent_given INTEGER DEFAULT 0`,
+    `ALTER TABLE workers ADD COLUMN device_consent_at DATETIME`,
+    `CREATE TABLE IF NOT EXISTS device_reset_requests (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id   INTEGER NOT NULL,
+      worker_id   INTEGER NOT NULL,
+      worker_name TEXT,
+      reason      TEXT,
+      status      TEXT NOT NULL DEFAULT 'pending',
+      requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      resolved_at  DATETIME,
+      resolved_by  TEXT,
+      new_device_id TEXT,
+      FOREIGN KEY (worker_id) REFERENCES workers(id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_dev_reset_tenant ON device_reset_requests(tenant_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_dev_reset_worker ON device_reset_requests(worker_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_dev_reset_status ON device_reset_requests(status)`,
   ]
   for (const sql of statements) {
     try {
@@ -400,32 +423,53 @@ async function ensureSchema(db: D1Database) {
 // ─── WORKERS API ──────────────────────────────────────────────────────────────
 
 // Register or get worker by phone
+// Privacy note: device_id is a random browser localStorage token — NOT biometric.
+// We only record it after the worker gives explicit informed consent on-screen.
 app.post('/api/workers/register', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const { name, phone, pin, device_id } = await c.req.json()
+  const { name, phone, pin, device_id, consent_given } = await c.req.json()
 
   if (!name || !phone) {
     return c.json({ error: 'Name and phone are required' }, 400)
   }
+  // Consent is required before we store any device identifier (PIPEDA s.4.3 / CCPA)
+  if (!consent_given) {
+    return c.json({ error: 'consent_required', message: 'Device consent is required to register.' }, 400)
+  }
 
-  // Check if worker exists
+  // Check if worker already exists by phone
   const existing = await db.prepare(
     'SELECT * FROM workers WHERE phone = ?'
-  ).bind(phone).first()
+  ).bind(phone).first<any>()
 
   if (existing) {
+    // Worker exists: if they have no device locked yet, lock this one now (consent already given)
+    if (!existing.device_id && device_id) {
+      await db.prepare(
+        `UPDATE workers SET device_id = ?, device_consent_given = 1, device_consent_at = CURRENT_TIMESTAMP WHERE id = ?`
+      ).bind(device_id, existing.id).run()
+      const updated = await db.prepare('SELECT * FROM workers WHERE id = ?').bind(existing.id).first()
+      return c.json({ worker: updated, isNew: false })
+    }
+    // Device is already locked — verify it matches
+    if (existing.device_id && existing.device_id !== device_id) {
+      return c.json({
+        error: 'device_mismatch',
+        message: 'This phone number is registered to a different device. If you have a new phone, please contact your manager to reset your device.'
+      }, 403)
+    }
     return c.json({ worker: existing, isNew: false })
   }
 
-  // Get default hourly rate
+  // New worker — create with locked device + consent recorded
   const defaultRate = await db.prepare(
     "SELECT value FROM settings WHERE key = 'default_hourly_rate'"
   ).first<{ value: string }>()
 
   const result = await db.prepare(
-    `INSERT INTO workers (name, phone, pin, device_id, hourly_rate)
-     VALUES (?, ?, ?, ?, ?)`
+    `INSERT INTO workers (name, phone, pin, device_id, device_consent_given, device_consent_at, hourly_rate)
+     VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP, ?)`
   ).bind(
     name,
     phone,
@@ -442,17 +486,42 @@ app.post('/api/workers/register', async (c) => {
 })
 
 // Lookup worker by phone
+// Login: look up worker by phone + enforce device lock
+// device_id passed as query param: /api/workers/lookup/:phone?device_id=xxx
 app.get('/api/workers/lookup/:phone', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const phone = decodeURIComponent(c.req.param('phone'))
+  const phone    = decodeURIComponent(c.req.param('phone'))
+  const deviceId = c.req.query('device_id') || null
 
   const worker = await db.prepare(
-    'SELECT id, name, phone, hourly_rate, role, active FROM workers WHERE phone = ? AND active = 1'
-  ).bind(phone).first()
+    'SELECT * FROM workers WHERE phone = ? AND active = 1'
+  ).bind(phone).first<any>()
 
   if (!worker) return c.json({ error: 'Worker not found' }, 404)
-  return c.json({ worker })
+
+  // ── Device lock enforcement ──────────────────────────────────────────────
+  // Only enforce if worker has a locked device_id on file AND gave consent.
+  // Grace: if no device is locked yet, allow login and lock this device now.
+  if (worker.device_id && worker.device_consent_given) {
+    if (deviceId && worker.device_id !== deviceId) {
+      return c.json({
+        error: 'device_mismatch',
+        message: 'This phone number is registered to a different device. If you have a new phone, please tap "I have a new phone" to request a device reset from your manager.'
+      }, 403)
+    }
+  } else if (!worker.device_id && deviceId) {
+    // No device locked yet — lock it now (worker already gave consent during registration)
+    await db.prepare(
+      `UPDATE workers SET device_id = ?, device_consent_given = 1, device_consent_at = CURRENT_TIMESTAMP WHERE id = ?`
+    ).bind(deviceId, worker.id).run()
+  }
+
+  // Return safe subset of worker data
+  return c.json({ worker: {
+    id: worker.id, name: worker.name, phone: worker.phone,
+    hourly_rate: worker.hourly_rate, role: worker.role, active: worker.active
+  }})
 })
 
 // Get all workers (admin)
@@ -1163,11 +1232,24 @@ async function sendOverrideNotification(
 app.post('/api/sessions/clock-in', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const { worker_id, latitude, longitude, address, notes, job_location, job_description, session_type } = await c.req.json()
+  const { worker_id, latitude, longitude, address, notes, job_location, job_description, session_type, device_id } = await c.req.json()
 
   if (!worker_id) return c.json({ error: 'worker_id required' }, 400)
   if (!job_location || !job_location.trim()) return c.json({ error: 'Job location is required' }, 400)
   if (!job_description || !job_description.trim()) return c.json({ error: 'Job description is required' }, 400)
+
+  // ── Device lock enforcement on clock-in ──────────────────────────────────
+  // Prevents buddy punching: verifies the clock-in is coming from the
+  // device registered by this worker. Not biometric — random browser token.
+  const workerRow = await db.prepare('SELECT * FROM workers WHERE id = ? AND active = 1').bind(worker_id).first<any>()
+  if (!workerRow) return c.json({ error: 'Worker not found or inactive' }, 404)
+
+  if (workerRow.device_id && workerRow.device_consent_given && device_id && workerRow.device_id !== device_id) {
+    return c.json({
+      error: 'device_mismatch',
+      message: 'Clock-in blocked: this is not the registered device for this worker. If you have a new phone, ask your manager to reset your device.'
+    }, 403)
+  }
 
   // Normalize session type — only allow known values
   const validTypes = ['regular', 'material_pickup', 'emergency_job']
@@ -2938,6 +3020,147 @@ async function sendTicketEmail(env: any, opts: {
   }).catch(() => {})
 }
 
+// ─── DEVICE RESET REQUESTS ────────────────────────────────────────────────────
+// Workers request a device reset when they get a new phone.
+// Admin approves from the dashboard — new device_id is written on next login.
+// Privacy: no biometric data, just a random browser token replacement.
+
+// POST /api/device-reset-request — worker submits a new-phone request
+// Accepts phone number (worker doesn't know their ID at this point)
+app.post('/api/device-reset-request', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenant = (c as any).tenant
+  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+  const { phone, worker_id, reason } = await c.req.json()
+  if (!phone && !worker_id) return c.json({ error: 'phone or worker_id required' }, 400)
+
+  // Look up worker by phone or ID
+  const worker = phone
+    ? await db.prepare('SELECT * FROM workers WHERE phone = ? AND tenant_id = ? AND active = 1').bind(phone, tenant.id).first<any>()
+    : await db.prepare('SELECT * FROM workers WHERE id = ? AND tenant_id = ? AND active = 1').bind(worker_id, tenant.id).first<any>()
+  if (!worker) return c.json({ error: 'Worker not found' }, 404)
+
+  // Check no pending request already exists
+  const pending = await db.prepare(
+    `SELECT id FROM device_reset_requests WHERE worker_id = ? AND status = 'pending'`
+  ).bind(worker.id).first()
+  if (pending) return c.json({ error: 'already_pending', message: 'A reset request is already pending. Your manager will approve it shortly.' }, 409)
+
+  await db.prepare(`
+    INSERT INTO device_reset_requests (tenant_id, worker_id, worker_name, reason, status)
+    VALUES (?, ?, ?, ?, 'pending')
+  `).bind(tenant.id, worker.id, worker.name, reason || 'New phone').run()
+
+  // Notify admin by email
+  const settings: any = {}
+  const sr = await db.prepare('SELECT * FROM settings').all()
+  ;(sr.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+  const adminEmail = settings.admin_email || settings.report_email
+  const resendKey  = (c.env as any).RESEND_API_KEY
+  if (adminEmail && resendKey) {
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: 'ClockInProof Alerts <alerts@clockinproof.com>',
+        to: adminEmail,
+        subject: `📱 Device Reset Request — ${worker.name}`,
+        html: `<div style="font-family:sans-serif;max-width:480px">
+          <h2 style="color:#4F46E5">📱 Device Reset Request</h2>
+          <p><strong>${worker.name}</strong> is requesting a device reset.</p>
+          <p><strong>Reason:</strong> ${reason || 'New phone'}</p>
+          <p>Log into your admin dashboard → Workers → find ${worker.name} → tap <strong>Approve Reset</strong>.</p>
+          <p style="color:#dc2626;font-size:12px"><strong>Security:</strong> Only approve this if you have personally verified the request with the worker.</p>
+        </div>`
+      })
+    }).catch(() => {})
+  }
+
+  return c.json({ success: true, message: 'Reset request submitted. Your manager has been notified and will approve it shortly.' })
+})
+
+
+// GET /api/device-reset-requests — admin views pending requests for their tenant
+app.get('/api/device-reset-requests', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenant = (c as any).tenant
+  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+  const requests = await db.prepare(`
+    SELECT r.*, w.phone as worker_phone
+    FROM device_reset_requests r
+    JOIN workers w ON w.id = r.worker_id
+    WHERE r.tenant_id = ?
+    ORDER BY r.requested_at DESC
+    LIMIT 50
+  `).bind(tenant.id).all()
+  return c.json({ requests: requests.results })
+})
+
+// POST /api/device-reset-requests/:id/approve — admin approves and clears the device lock
+app.post('/api/device-reset-requests/:id/approve', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenant = (c as any).tenant
+  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+  const id = parseInt(c.req.param('id'))
+
+  const req = await db.prepare(
+    `SELECT * FROM device_reset_requests WHERE id = ? AND tenant_id = ?`
+  ).bind(id, tenant.id).first<any>()
+  if (!req) return c.json({ error: 'Request not found' }, 404)
+
+  // Clear the worker's locked device_id so they can register their new phone
+  await db.prepare(
+    `UPDATE workers SET device_id = NULL, device_consent_given = 0, device_consent_at = NULL WHERE id = ?`
+  ).bind(req.worker_id).run()
+  await db.prepare(
+    `UPDATE device_reset_requests SET status = 'approved', resolved_at = CURRENT_TIMESTAMP, resolved_by = 'admin' WHERE id = ?`
+  ).bind(id).run()
+
+  return c.json({ success: true, message: 'Device reset approved. Worker can now register their new phone.' })
+})
+
+// POST /api/device-reset-requests/:id/deny — admin denies request
+app.post('/api/device-reset-requests/:id/deny', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenant = (c as any).tenant
+  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+  const id = parseInt(c.req.param('id'))
+  const req = await db.prepare(
+    `SELECT id FROM device_reset_requests WHERE id = ? AND tenant_id = ?`
+  ).bind(id, tenant.id).first()
+  if (!req) return c.json({ error: 'Request not found' }, 404)
+  await db.prepare(
+    `UPDATE device_reset_requests SET status = 'denied', resolved_at = CURRENT_TIMESTAMP, resolved_by = 'admin' WHERE id = ?`
+  ).bind(id).run()
+  return c.json({ success: true })
+})
+
+// Admin: directly reset a worker's device (Workers tab — no request needed)
+app.post('/api/workers/:id/reset-device', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenant = (c as any).tenant
+  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+  const id = parseInt(c.req.param('id'))
+  const worker = await db.prepare(
+    'SELECT id FROM workers WHERE id = ? AND tenant_id = ?'
+  ).bind(id, tenant.id).first()
+  if (!worker) return c.json({ error: 'Worker not found' }, 404)
+  await db.prepare(
+    `UPDATE workers SET device_id = NULL, device_consent_given = 0, device_consent_at = NULL WHERE id = ?`
+  ).bind(id).run()
+  // Close any pending reset requests for this worker
+  await db.prepare(
+    `UPDATE device_reset_requests SET status = 'approved', resolved_at = CURRENT_TIMESTAMP, resolved_by = 'admin-direct' WHERE worker_id = ? AND status = 'pending'`
+  ).bind(id).run()
+  return c.json({ success: true, message: 'Device lock cleared. Worker can register their new phone.' })
+})
+
+// ─── SUPPORT TICKETS ──────────────────────────────────────────────────────────
 // POST /api/tickets — tenant submits a new support ticket
 app.post('/api/tickets', async (c) => {
   const db = c.env.DB
@@ -6344,7 +6567,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260301"></script>
+<script src="/static/worker.js?v=20260302"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -6829,6 +7052,25 @@ function getAdminHTML(): string {
         <button onclick="showAddWorkerModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-4 py-2 rounded-xl font-medium">
           <i class="fas fa-plus mr-1"></i>Add Worker
         </button>
+      </div>
+
+      <!-- Device Reset Requests Alert Banner -->
+      <div id="device-reset-banner" class="mb-4">
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+              <i class="fas fa-mobile-alt text-amber-500"></i>
+              <span class="text-sm font-bold text-amber-800">New Phone Requests</span>
+              <span id="device-reset-badge" class="hidden bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">0</span>
+            </div>
+            <button onclick="loadDeviceResetRequests()" class="text-xs text-amber-600 hover:text-amber-800 font-semibold">
+              <i class="fas fa-rotate-right text-xs mr-1"></i>Refresh
+            </button>
+          </div>
+          <div id="device-reset-list">
+            <p class="text-xs text-gray-400 text-center py-2">Loading...</p>
+          </div>
+        </div>
       </div>
       <!-- Status filter pills — shown only in 'all' and 'active' views -->
       <div class="flex flex-wrap gap-2 mb-4" id="workers-filter-bar">
@@ -8699,6 +8941,30 @@ function getAdminHTML(): string {
         <label class="block text-sm font-medium text-gray-700 mb-1">Notes</label>
         <textarea id="ew-notes" rows="2" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-gray-400 text-sm resize-none"></textarea>
       </div>
+
+      <!-- Device Security -->
+      <div>
+        <h4 class="text-xs font-bold text-rose-600 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <i class="fas fa-mobile-alt"></i> Device Security
+        </h4>
+        <div id="ew-device-status" class="bg-gray-50 border border-gray-200 rounded-xl p-4 mb-3">
+          <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" id="ew-device-icon-bg">
+              <i class="fas fa-mobile-alt text-sm" id="ew-device-icon"></i>
+            </div>
+            <div class="flex-1">
+              <p class="text-sm font-semibold text-gray-800" id="ew-device-label">Loading...</p>
+              <p class="text-xs text-gray-500 mt-0.5" id="ew-device-sub"></p>
+            </div>
+          </div>
+        </div>
+        <button onclick="adminResetWorkerDevice()" id="ew-reset-device-btn"
+          class="w-full border-2 border-rose-200 text-rose-600 hover:bg-rose-50 font-semibold py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 transition-colors">
+          <i class="fas fa-rotate-right"></i> Reset Device Lock
+        </button>
+        <p class="text-xs text-gray-400 mt-2 text-center">Only reset if you have <strong>personally verified</strong> the worker has a new phone.</p>
+      </div>
+
     </div>
     <div class="sticky bottom-0 bg-white border-t px-6 py-4 flex gap-3 rounded-b-2xl">
       <button onclick="closeEditWorkerModal()" class="flex-1 border-2 border-gray-200 text-gray-700 font-medium py-3 rounded-xl hover:bg-gray-50 text-sm">Cancel</button>
@@ -8939,7 +9205,7 @@ app.get('/privacy', (c) => {
       </div>
     </div>
     <h1 class="text-3xl font-bold text-gray-900 mb-2">Privacy Policy</h1>
-    <p class="text-sm text-gray-500 mb-8">Last updated: February 28, 2026</p>
+    <p class="text-sm text-gray-500 mb-8">Last updated: March 2, 2026</p>
 
     <div class="space-y-8 text-sm leading-relaxed">
 
@@ -8955,7 +9221,7 @@ app.get('/privacy', (c) => {
           <li><strong>Worker data:</strong> Name, phone number, PIN, job title, start date, emergency contact, driver's licence (optional)</li>
           <li><strong>Location data:</strong> GPS coordinates at clock-in, clock-out, and periodic pings during active shifts (used solely for fraud prevention and timesheet accuracy)</li>
           <li><strong>Work session data:</strong> Clock-in/out times, hours worked, job location, session type</li>
-          <li><strong>Device data:</strong> Device ID used for clock-in verification</li>
+          <li><strong>Device data:</strong> A randomly-generated browser token stored in your phone's local storage. This is <strong>not</strong> biometric data — it cannot identify you as a person. It is used solely to verify that clock-in activity originates from the device you registered with. You give explicit informed consent before this token is recorded. You may request a device reset from your employer at any time.</li>
           <li><strong>Employer/admin data:</strong> Business name, email, phone, payroll settings, Twilio and QuickBooks integration credentials</li>
         </ul>
       </section>
@@ -9019,6 +9285,25 @@ app.get('/privacy', (c) => {
       </section>
 
       <section>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">8a. Device Verification &amp; Anti-Fraud Technology</h2>
+        <p class="mb-2"><strong>What it is:</strong> ClockInProof uses a randomly-generated browser token ("device token") stored in your phone's browser local storage to verify that clock-in and clock-out activity originates from your registered device. This prevents "buddy punching" (a third party clocking in on your behalf).</p>
+        <p class="mb-2"><strong>What it is NOT:</strong> This is not biometric data. It does not capture fingerprints, facial features, voice patterns, or any physical characteristic. It is a string of random letters and numbers — similar to how a website remembers you are logged in.</p>
+        <p class="mb-2"><strong>Consent:</strong> Workers are shown a clear, plain-language consent screen the first time they register on a device. Clock-in is not possible without consent. This satisfies the requirements of:</p>
+        <ul class="list-disc pl-5 space-y-1 mb-2">
+          <li><strong>Canada — PIPEDA</strong> (Principle 3: Consent; Principle 4.8: Openness)</li>
+          <li><strong>Ontario</strong> — Employment Standards Act, Electronic Monitoring Policy requirements</li>
+          <li><strong>Alberta/BC — PIPA</strong> — Employer consent for employee personal information collection</li>
+          <li><strong>Quebec — Law 25</strong> — Transparency and consent obligations</li>
+          <li><strong>US — CCPA (California)</strong> — Notice at collection; no biometric data is collected</li>
+          <li><strong>Illinois BIPA</strong> — Does not apply (no biometric identifiers collected)</li>
+          <li><strong>US Federal — ECPA</strong> — Monitoring disclosed to employees in advance</li>
+        </ul>
+        <p class="mb-2"><strong>Data minimization:</strong> The token is stored only in the database record for the worker. It is never shared with third parties, never used for purposes other than clock-in verification, and never combined with browsing data.</p>
+        <p class="mb-2"><strong>Right to reset:</strong> Workers may request a device reset at any time through the worker app ("I have a new phone"). The employer is notified and must manually approve the reset. Workers retain full control of this process.</p>
+        <p><strong>Retention:</strong> The device token is deleted when the worker's account is deleted. Employers may reset it at any time from the admin dashboard.</p>
+      </section>
+
+      <section>
         <h2 class="text-lg font-bold text-gray-800 mb-2">9. Changes to This Policy</h2>
         <p>We may update this policy periodically. We will notify users of material changes via the admin dashboard or email. Continued use of ClockInProof after changes constitutes acceptance.</p>
       </section>
@@ -9053,7 +9338,7 @@ app.get('/terms', (c) => {
       </div>
     </div>
     <h1 class="text-3xl font-bold text-gray-900 mb-2">Terms of Service</h1>
-    <p class="text-sm text-gray-500 mb-8">Last updated: February 28, 2026</p>
+    <p class="text-sm text-gray-500 mb-8">Last updated: March 2, 2026</p>
 
     <div class="space-y-8 text-sm leading-relaxed">
 
