@@ -4682,60 +4682,83 @@ function timeSince(date) {
 
 
 
+
 // ─── ENCIRCLE INTEGRATION ─────────────────────────────────────────────────────
+
+let _encircleAllJobs = []
+
+const LOSS_TYPE_COLORS = {
+  'Water': 'bg-blue-100 text-blue-700',
+  'Fire':  'bg-red-100 text-red-700',
+  'Mold':  'bg-green-100 text-green-700',
+  'Wind Hail': 'bg-purple-100 text-purple-700',
+  'Wind':  'bg-purple-100 text-purple-700',
+}
+function lossColor(type) {
+  if (!type) return 'bg-gray-100 text-gray-600'
+  for (const [k,v] of Object.entries(LOSS_TYPE_COLORS)) {
+    if (type.toLowerCase().includes(k.toLowerCase())) return v
+  }
+  return 'bg-gray-100 text-gray-600'
+}
 
 async function loadEncircleStatus() {
   try {
     const res = await fetch('/api/encircle/status')
     const data = await res.json()
+    _encircleAllJobs = data.synced_jobs || []
 
-    const statusDot = document.getElementById('encircle-status-dot')
-    const statusTitle = document.getElementById('encircle-status-title')
-    const statusSub = document.getElementById('encircle-status-sub')
+    const connectedPill    = document.getElementById('encircle-connected-pill')
+    const statusSub        = document.getElementById('encircle-status-sub')
     const connectedActions = document.getElementById('encircle-connected-actions')
-    const setupCard = document.getElementById('encircle-setup-card')
-    const jobsCard = document.getElementById('encircle-jobs-card')
-    const logCard = document.getElementById('encircle-log-card')
-    const lastSyncEl = document.getElementById('encircle-last-sync')
-    const jobCountBadge = document.getElementById('encircle-job-count-badge')
-    const activeCount = document.getElementById('encircle-active-count')
+    const setupCard        = document.getElementById('encircle-setup-card')
+    const filterBar        = document.getElementById('encircle-filter-bar')
+    const jobsGrid         = document.getElementById('encircle-jobs-grid')
+    const logCard          = document.getElementById('encircle-log-card')
+    const lastSyncEl       = document.getElementById('encircle-last-sync')
+    const lastSyncTime     = document.getElementById('encircle-last-sync-time')
+    const jobCountNum      = document.getElementById('encircle-job-count-num')
 
     if (data.connected) {
-      statusDot.className = 'w-3 h-3 rounded-full bg-green-500 flex-shrink-0'
-      statusTitle.textContent = '✅ Connected to Encircle'
-      statusSub.textContent = '911 Restoration of Ottawa — syncing job sites automatically'
+      connectedPill.classList.remove('hidden')
+      statusSub.textContent = '911 Restoration of Ottawa — job sites sync automatically every 30 min'
       connectedActions.classList.remove('hidden')
       connectedActions.classList.add('flex')
       setupCard.classList.add('hidden')
-      jobsCard.classList.remove('hidden')
+      filterBar.classList.remove('hidden')
+      filterBar.classList.add('flex')
+      jobsGrid.classList.remove('hidden')
       logCard.classList.remove('hidden')
-      if (data.active_job_count > 0) {
-        jobCountBadge.textContent = data.active_job_count + ' active'
-        jobCountBadge.classList.remove('hidden')
-      }
-      if (data.last_sync_at) {
+      if (jobCountNum) jobCountNum.textContent = data.active_job_count || 0
+      if (data.last_sync_at && lastSyncEl) {
         lastSyncEl.classList.remove('hidden')
-        lastSyncEl.textContent = 'Last synced: ' + new Date(data.last_sync_at).toLocaleString()
+        if (lastSyncTime) lastSyncTime.textContent = new Date(data.last_sync_at + 'Z').toLocaleString()
       }
-      if (activeCount) activeCount.textContent = data.active_job_count + ' active sites'
-      // Render synced jobs table
-      renderEncircleJobs(data.synced_jobs || [])
-      // Render sync log
+      // Populate PM filter dropdown
+      const pmFilter = document.getElementById('encircle-filter-pm')
+      if (pmFilter) {
+        const pms = [...new Set(_encircleAllJobs.map(j => j.project_manager_name).filter(Boolean))].sort()
+        const currentVal = pmFilter.value
+        pmFilter.innerHTML = '<option value="">All Project Managers</option>' +
+          pms.map(pm => `<option value="${escHtml(pm)}" ${pm === currentVal ? 'selected' : ''}>${escHtml(pm)}</option>`).join('')
+      }
+      filterEncircleJobs()
       renderEncircleLog(data.sync_logs || [])
     } else {
-      statusDot.className = 'w-3 h-3 rounded-full bg-gray-300 flex-shrink-0'
-      statusTitle.textContent = 'Not Connected'
+      connectedPill.classList.add('hidden')
       statusSub.textContent = 'Enter your bearer token below to connect'
       connectedActions.classList.add('hidden')
+      connectedActions.classList.remove('flex')
       setupCard.classList.remove('hidden')
-      jobsCard.classList.add('hidden')
+      filterBar.classList.add('hidden')
+      jobsGrid.classList.add('hidden')
       logCard.classList.add('hidden')
     }
 
-    // Update badge count on sidebar
+    // Sidebar badge
     const badge = document.getElementById('encircle-badge')
     if (badge) {
-      if (data.active_job_count > 0 && data.connected) {
+      if (data.connected && data.active_job_count > 0) {
         badge.textContent = data.active_job_count
         badge.classList.remove('hidden')
       } else {
@@ -4747,42 +4770,150 @@ async function loadEncircleStatus() {
   }
 }
 
-function renderEncircleJobs(jobs) {
-  const tbody = document.getElementById('encircle-jobs-tbody')
-  const empty = document.getElementById('encircle-jobs-empty')
-  if (!tbody) return
+function filterEncircleJobs() {
+  const search   = (document.getElementById('encircle-search')?.value || '').toLowerCase()
+  const typeVal  = (document.getElementById('encircle-filter-type')?.value || '').toLowerCase()
+  const pmVal    = (document.getElementById('encircle-filter-pm')?.value || '').toLowerCase()
 
-  const active = jobs.filter(j => j.active == 1)
-  if (active.length === 0) {
-    tbody.innerHTML = ''
+  let filtered = _encircleAllJobs.filter(j => {
+    if (j.status === 'closed') return false  // Only show active by default
+    const hay = [j.policyholder_name, j.full_address, j.policyholder_phone, j.project_manager_name,
+                 j.insurer_identifier, j.loss_details, j.type_of_loss].join(' ').toLowerCase()
+    const matchSearch = !search || hay.includes(search)
+    const matchType   = !typeVal || (j.type_of_loss || '').toLowerCase().includes(typeVal)
+    const matchPm     = !pmVal  || (j.project_manager_name || '').toLowerCase() === pmVal
+    return matchSearch && matchType && matchPm
+  })
+
+  const countEl = document.getElementById('encircle-showing-count')
+  if (countEl) countEl.textContent = `Showing ${filtered.length} of ${_encircleAllJobs.filter(j => j.status !== 'closed').length} active jobs`
+
+  renderEncircleCards(filtered)
+}
+
+function renderEncircleCards(jobs) {
+  const container = document.getElementById('encircle-cards-container')
+  const empty     = document.getElementById('encircle-jobs-empty')
+  if (!container) return
+
+  if (jobs.length === 0) {
+    container.innerHTML = ''
     if (empty) empty.classList.remove('hidden')
     return
   }
   if (empty) empty.classList.add('hidden')
 
-  tbody.innerHTML = active.map(j => {
-    const typeOfLoss = j.encircle_status || 'active'
-    const statusBadge = j.active == 1
-      ? '<span class="bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold">Active</span>'
-      : '<span class="bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full text-[10px]">Closed</span>'
-    const syncedAt = j.encircle_synced_at ? new Date(j.encircle_synced_at).toLocaleString() : '—'
-    const hasCoords = j.lat && j.lng
-    const coordsBadge = hasCoords
-      ? '<span class="ml-1 text-green-500" title="GPS coordinates available"><i class="fas fa-map-marker-alt text-[10px]"></i></span>'
-      : '<span class="ml-1 text-amber-400" title="No GPS coordinates yet"><i class="fas fa-exclamation-triangle text-[10px]"></i></span>'
-    const nameDisplay = escHtml(j.name)
-    return `<tr class="hover:bg-gray-50">
-      <td class="py-2 px-2">
-        <div class="font-medium text-gray-800 flex items-center gap-1">
-          <span class="bg-sky-100 text-sky-600 text-[9px] font-bold px-1 py-0.5 rounded mr-1">ENC</span>
-          ${nameDisplay}
+  container.innerHTML = jobs.map(j => {
+    const hasGPS = j.lat && j.lng
+    const typeColor = lossColor(j.type_of_loss)
+    const typeLabel = j.type_of_loss || 'Unknown'
+    const date = j.date_of_loss ? new Date(j.date_of_loss).toLocaleDateString('en-CA', {month:'short', day:'numeric', year:'numeric'}) : null
+    const created = j.date_claim_created ? new Date(j.date_claim_created).toLocaleDateString('en-CA', {month:'short', day:'numeric', year:'numeric'}) : null
+    const mapsUrl = hasGPS ? `https://maps.google.com/?q=${j.lat},${j.lng}` : `https://maps.google.com/?q=${encodeURIComponent(j.full_address || '')}`
+
+    // Format phone as clickable
+    const phoneRaw = j.policyholder_phone || ''
+    const phoneClean = phoneRaw.replace(/\D/g,'')
+    const phoneLink = phoneClean ? `<a href="tel:+${phoneClean}" class="text-sky-600 hover:underline font-medium">${phoneRaw}</a>` : '<span class="text-gray-300">—</span>'
+
+    // Format email
+    const emailLink = j.policyholder_email
+      ? `<a href="mailto:${escHtml(j.policyholder_email)}" class="text-sky-600 hover:underline">${escHtml(j.policyholder_email)}</a>`
+      : '<span class="text-gray-300">—</span>'
+
+    // Encircle deep link
+    const encLink = j.permalink_url
+      ? `<a href="${j.permalink_url}" target="_blank" class="text-indigo-500 hover:underline text-[11px]"><i class="fas fa-external-link-alt mr-1"></i>Open in Encircle</a>`
+      : ''
+
+    // Loss notes snippet
+    const notesSnippet = j.loss_details
+      ? `<p class="text-xs text-gray-500 mt-2 line-clamp-2 leading-relaxed italic">${escHtml(j.loss_details.substring(0,180))}${j.loss_details.length > 180 ? '…' : ''}</p>`
+      : ''
+
+    return `
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 hover:border-sky-200 transition-all overflow-hidden">
+      <!-- Card Header -->
+      <div class="flex items-start justify-between p-4 pb-3 gap-3">
+        <div class="flex items-start gap-3 min-w-0 flex-1">
+          <div class="w-9 h-9 rounded-xl ${typeColor.split(' ')[0]} flex items-center justify-center flex-shrink-0 mt-0.5">
+            <i class="fas ${typeLabel.includes('Water') ? 'fa-tint' : typeLabel.includes('Fire') ? 'fa-fire' : typeLabel.includes('Mold') ? 'fa-leaf' : typeLabel.includes('Wind') ? 'fa-wind' : 'fa-home'} text-sm ${typeColor.split(' ')[1]}"></i>
+          </div>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2 flex-wrap">
+              <p class="font-bold text-gray-800 text-sm leading-tight">${escHtml(j.policyholder_name || 'Unknown')}</p>
+              <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${typeColor}">${escHtml(typeLabel)}</span>
+            </div>
+            <p class="text-xs text-gray-500 mt-0.5 truncate">${escHtml(j.insurer_identifier || '')}</p>
+          </div>
         </div>
-      </td>
-      <td class="py-2 px-2 text-gray-600 max-w-[180px] truncate">${escHtml(j.address)}${coordsBadge}</td>
-      <td class="py-2 px-2 text-gray-500">${escHtml(typeOfLoss)}</td>
-      <td class="py-2 px-2">${statusBadge}</td>
-      <td class="py-2 px-2 text-gray-400 whitespace-nowrap">${syncedAt}</td>
-    </tr>`
+        <div class="flex-shrink-0 flex flex-col items-end gap-1">
+          ${hasGPS
+            ? `<span class="text-[10px] text-green-600 font-medium flex items-center gap-1"><i class="fas fa-map-marker-alt"></i> GPS</span>`
+            : `<span class="text-[10px] text-amber-500 font-medium flex items-center gap-1"><i class="fas fa-exclamation-triangle"></i> No GPS</span>`
+          }
+          ${encLink}
+        </div>
+      </div>
+
+      <!-- Divider -->
+      <div class="border-t border-gray-50 mx-4"></div>
+
+      <!-- Contact + Details grid -->
+      <div class="p-4 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-xs">
+        <!-- Address -->
+        <div class="sm:col-span-2">
+          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Address</span>
+          <div class="flex items-center gap-2 mt-0.5">
+            <a href="${mapsUrl}" target="_blank" class="text-gray-700 hover:text-sky-600 hover:underline transition-colors leading-snug">${escHtml(j.full_address || '—')}</a>
+          </div>
+        </div>
+        <!-- Phone -->
+        <div>
+          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Phone</span>
+          <div class="mt-0.5">${phoneLink}</div>
+        </div>
+        <!-- Email -->
+        <div>
+          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Email</span>
+          <div class="mt-0.5 truncate">${emailLink}</div>
+        </div>
+        <!-- Date of Loss -->
+        ${date ? `<div>
+          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Date of Loss</span>
+          <div class="mt-0.5 text-gray-700">${date}</div>
+        </div>` : ''}
+        <!-- Project Manager -->
+        ${j.project_manager_name ? `<div>
+          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Project Manager</span>
+          <div class="mt-0.5 text-gray-700 font-medium">${escHtml(j.project_manager_name)}</div>
+        </div>` : ''}
+        <!-- Adjuster -->
+        ${j.adjuster_name ? `<div>
+          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Adjuster</span>
+          <div class="mt-0.5 text-gray-700">${escHtml(j.adjuster_name)}</div>
+        </div>` : ''}
+        <!-- Insurance -->
+        ${j.insurance_company_name ? `<div>
+          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Insurer</span>
+          <div class="mt-0.5 text-gray-700">${escHtml(j.insurance_company_name)}</div>
+        </div>` : ''}
+        <!-- Policy # -->
+        ${j.policy_number ? `<div>
+          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Policy #</span>
+          <div class="mt-0.5 text-gray-600 font-mono">${escHtml(j.policy_number)}</div>
+        </div>` : ''}
+      </div>
+
+      <!-- Notes -->
+      ${notesSnippet ? `<div class="px-4 pb-3">${notesSnippet}</div>` : ''}
+
+      <!-- Footer -->
+      <div class="bg-gray-50 px-4 py-2 flex items-center justify-between text-[11px] text-gray-400 border-t border-gray-100">
+        <span>Claim #${j.encircle_claim_id}</span>
+        <span>${created ? 'Created ' + created : ''}</span>
+      </div>
+    </div>`
   }).join('')
 }
 
@@ -4797,40 +4928,45 @@ function renderEncircleLog(logs) {
   }
   if (empty) empty.classList.add('hidden')
   tbody.innerHTML = logs.map(l => {
-    const statusBadge = l.status === 'success'
+    const badge = l.status === 'success'
       ? '<span class="bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold">✅ Success</span>'
-      : `<span class="bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold">❌ Error</span>`
-    const errMsg = l.error_message ? `<div class="text-red-500 text-[10px] mt-0.5 truncate max-w-xs">${escHtml(l.error_message)}</div>` : ''
-    return `<tr class="hover:bg-gray-50">
-      <td class="py-2 px-2 text-gray-600 whitespace-nowrap">${new Date(l.synced_at).toLocaleString()}</td>
-      <td class="py-2 px-2 text-center font-bold text-green-600">${l.jobs_added}</td>
-      <td class="py-2 px-2 text-center font-bold text-sky-600">${l.jobs_updated}</td>
-      <td class="py-2 px-2 text-center font-bold text-amber-600">${l.jobs_closed}</td>
-      <td class="py-2 px-2">${statusBadge}${errMsg}</td>
+      : '<span class="bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold">❌ Error</span>'
+    const err = l.error_message ? `<div class="text-red-500 text-[10px] mt-0.5 max-w-xs truncate">${escHtml(l.error_message)}</div>` : ''
+    return `<tr class="hover:bg-gray-50 text-xs">
+      <td class="py-2 text-gray-600 whitespace-nowrap pr-3">${new Date(l.synced_at + 'Z').toLocaleString()}</td>
+      <td class="py-2 text-center font-bold text-green-600 px-2">+${l.jobs_added}</td>
+      <td class="py-2 text-center font-bold text-sky-600 px-2">↻${l.jobs_updated}</td>
+      <td class="py-2 text-center font-bold text-amber-600 px-2">✕${l.jobs_closed}</td>
+      <td class="py-2 px-2">${badge}${err}</td>
     </tr>`
   }).join('')
 }
 
+function toggleEncircleLog() {
+  const body = document.getElementById('encircle-log-body')
+  const chevron = document.getElementById('encircle-log-chevron')
+  if (!body) return
+  const isHidden = body.classList.contains('hidden')
+  body.classList.toggle('hidden', !isHidden)
+  if (chevron) chevron.style.transform = isHidden ? 'rotate(180deg)' : ''
+}
+
 async function encircleConnect() {
-  const tokenInput = document.getElementById('encircle-token-input')
+  const tokenInput  = document.getElementById('encircle-token-input')
   const syncEnabled = document.getElementById('encircle-sync-enabled')
-  const btn = document.getElementById('encircle-connect-btn')
-  const token = tokenInput ? tokenInput.value.trim() : ''
+  const btn         = document.getElementById('encircle-connect-btn')
+  const token       = tokenInput?.value.trim() || ''
   if (!token) { showAdminToast('Please enter a bearer token', 'error'); return }
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Connecting...' }
   try {
-    const res = await fetch('/api/encircle/settings', {
+    const res  = await fetch('/api/encircle/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bearer_token: token, sync_enabled: syncEnabled?.checked !== false })
     })
     const data = await res.json()
-    if (!res.ok) {
-      showAdminToast(data.error || 'Connection failed', 'error')
-      return
-    }
-    showAdminToast('✅ Encircle connected! Running initial sync...', 'success')
-    // Auto-run first sync
+    if (!res.ok) { showAdminToast(data.error || 'Connection failed', 'error'); return }
+    showAdminToast('✅ Encircle connected! Running first sync…', 'success')
     await encircleSync(true)
     await loadEncircleStatus()
   } catch (e) {
@@ -4842,17 +4978,16 @@ async function encircleConnect() {
 
 async function encircleSync(silent = false) {
   const btn = document.getElementById('encircle-sync-btn')
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...' }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing…' }
   try {
-    const res = await fetch('/api/encircle/sync', { method: 'POST' })
+    const res  = await fetch('/api/encircle/sync', { method: 'POST' })
     const data = await res.json()
     if (data.status === 'success') {
-      if (!silent) showAdminToast(`✅ Sync complete: ${data.jobs_added} added, ${data.jobs_updated} updated, ${data.jobs_closed} closed`, 'success', 6000)
+      if (!silent) showAdminToast(`✅ Sync complete — ${data.jobs_added} added, ${data.jobs_updated} updated`, 'success', 6000)
     } else {
       showAdminToast('⚠️ Sync error: ' + (data.error_message || 'Unknown error'), 'error', 7000)
     }
     await loadEncircleStatus()
-    // Also refresh job-sites tab if loaded
     if (typeof loadJobSites === 'function') loadJobSites()
   } catch (e) {
     showAdminToast('Sync failed: ' + e.message, 'error')
@@ -4864,7 +4999,7 @@ async function encircleSync(silent = false) {
 async function encircleDisconnect() {
   if (!confirm('Disconnect Encircle? All synced job sites will be deactivated. Your manual job sites are not affected.')) return
   try {
-    const res = await fetch('/api/encircle/settings', { method: 'DELETE' })
+    const res  = await fetch('/api/encircle/settings', { method: 'DELETE' })
     const data = await res.json()
     showAdminToast(data.message || 'Encircle disconnected', 'info')
     await loadEncircleStatus()

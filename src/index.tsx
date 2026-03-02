@@ -449,6 +449,35 @@ async function ensureSchema(db: D1Database) {
       error_message TEXT
     )`,
     `CREATE INDEX IF NOT EXISTS idx_job_sites_encircle ON job_sites(encircle_job_id)`,
+
+    // ── Encircle full claim data (contact info, notes, etc.) ─────────────────
+    `CREATE TABLE IF NOT EXISTS encircle_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      encircle_claim_id TEXT UNIQUE NOT NULL,
+      policyholder_name TEXT,
+      policyholder_phone TEXT,
+      policyholder_email TEXT,
+      full_address TEXT,
+      type_of_loss TEXT,
+      date_of_loss TEXT,
+      date_claim_created TEXT,
+      loss_details TEXT,
+      project_manager_name TEXT,
+      insurer_identifier TEXT,
+      insurance_company_name TEXT,
+      policy_number TEXT,
+      adjuster_name TEXT,
+      contractor_identifier TEXT,
+      assignment_identifier TEXT,
+      emergency_estimate REAL,
+      repair_estimate REAL,
+      permalink_url TEXT,
+      status TEXT DEFAULT 'active',
+      synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      tenant_id INTEGER DEFAULT 1
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_encircle_jobs_claim ON encircle_jobs(encircle_claim_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_encircle_jobs_tenant ON encircle_jobs(tenant_id)`,
   ]
   for (const sql of statements) {
     try {
@@ -2654,48 +2683,110 @@ async function runEncircleSync(db: D1Database): Promise<{
     for (const claim of claims) {
       const encId = String(claim.id)
       encircleIds.push(encId)
-      const name = `[Encircle] ${claim.policyholder_name || claim.insurer_identifier || encId}`
+
+      // ── Derive display name: prefer policyholder name, fall back to insurer ref ──
+      const policyholderName = claim.policyholder_name || ''
+      const displayName = `[Encircle] ${policyholderName || claim.insurer_identifier || encId}`
       const address = claim.full_address || ''
-      const encStatus = claim.date_of_loss ? 'active' : 'active'
-      // Geocode address via Nominatim if no lat/lng from API
+
+      // ── Format type of loss for display ──────────────────────────────────────
+      const rawType = claim.type_of_loss || ''
+      const typeDisplay = rawType.replace('type_of_loss_', '').replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())
+
+      // ── Geocode address via Nominatim if no lat/lng from API ──────────────────
       let lat: number | null = null
       let lng: number | null = null
       try {
         const geo = await geocodeAddress(address)
         if (geo) { lat = geo.lat; lng = geo.lng }
       } catch (_) {}
-      // Check existing
+
+      // ── 1. Upsert into encircle_jobs (full contact data) ──────────────────────
+      await db.prepare(`
+        INSERT INTO encircle_jobs (
+          encircle_claim_id, policyholder_name, policyholder_phone, policyholder_email,
+          full_address, type_of_loss, date_of_loss, date_claim_created,
+          loss_details, project_manager_name, insurer_identifier, insurance_company_name,
+          policy_number, adjuster_name, contractor_identifier, assignment_identifier,
+          emergency_estimate, repair_estimate, permalink_url, status, synced_at, tenant_id
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',CURRENT_TIMESTAMP,1)
+        ON CONFLICT(encircle_claim_id) DO UPDATE SET
+          policyholder_name=excluded.policyholder_name,
+          policyholder_phone=excluded.policyholder_phone,
+          policyholder_email=excluded.policyholder_email,
+          full_address=excluded.full_address,
+          type_of_loss=excluded.type_of_loss,
+          date_of_loss=excluded.date_of_loss,
+          date_claim_created=excluded.date_claim_created,
+          loss_details=excluded.loss_details,
+          project_manager_name=excluded.project_manager_name,
+          insurer_identifier=excluded.insurer_identifier,
+          insurance_company_name=excluded.insurance_company_name,
+          policy_number=excluded.policy_number,
+          adjuster_name=excluded.adjuster_name,
+          contractor_identifier=excluded.contractor_identifier,
+          assignment_identifier=excluded.assignment_identifier,
+          emergency_estimate=excluded.emergency_estimate,
+          repair_estimate=excluded.repair_estimate,
+          permalink_url=excluded.permalink_url,
+          status='active',
+          synced_at=CURRENT_TIMESTAMP
+      `).bind(
+        encId,
+        policyholderName,
+        claim.policyholder_phone_number || null,
+        claim.policyholder_email_address || null,
+        address,
+        typeDisplay || null,
+        claim.date_of_loss || null,
+        claim.date_claim_created || null,
+        claim.loss_details || null,
+        claim.project_manager_name || null,
+        claim.insurer_identifier || null,
+        claim.insurance_company_name || null,
+        claim.policy_number || null,
+        claim.adjuster_name || null,
+        claim.contractor_identifier || null,
+        claim.assignment_identifier || null,
+        claim.emergency_estimate || null,
+        claim.repair_estimate || null,
+        claim.permalink_url || null
+      ).run()
+
+      // ── 2. Upsert into job_sites (for GPS geofencing) ─────────────────────────
       const existing = await db.prepare(
-        `SELECT id, name, address, lat, lng, encircle_status FROM job_sites WHERE encircle_job_id = ?`
+        `SELECT id, name, lat, lng FROM job_sites WHERE encircle_job_id = ?`
       ).bind(encId).first() as any
 
       if (!existing) {
         await db.prepare(
           `INSERT INTO job_sites (name, address, lat, lng, active, encircle_job_id, encircle_synced_at, encircle_status, tenant_id)
            VALUES (?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP, ?, 1)`
-        ).bind(name, address, lat, lng, encId, encStatus).run()
+        ).bind(displayName, address, lat, lng, encId, typeDisplay || 'active').run()
         added++
       } else {
-        // Only update address/status — preserve manual name edits if name was customised
-        const keepName = existing.name.startsWith('[Encircle]') ? name : existing.name
-        // Don't overwrite manually set lat/lng
+        const keepName = existing.name.startsWith('[Encircle]') ? displayName : existing.name
         const keepLat = (existing.lat != null) ? existing.lat : lat
         const keepLng = (existing.lng != null) ? existing.lng : lng
         await db.prepare(
           `UPDATE job_sites SET name=?, address=?, lat=?, lng=?, active=1, encircle_status=?, encircle_synced_at=CURRENT_TIMESTAMP WHERE encircle_job_id=?`
-        ).bind(keepName, address, keepLat, keepLng, encStatus, encId).run()
+        ).bind(keepName, address, keepLat, keepLng, typeDisplay || 'active', encId).run()
         updated++
       }
     }
-    // Deactivate Encircle jobs not in latest fetch (closed/removed)
+
+    // ── Deactivate jobs no longer in Encircle ────────────────────────────────
     if (encircleIds.length > 0) {
-      const placeholders = encircleIds.map(() => '?').join(',')
+      const ph = encircleIds.map(() => '?').join(',')
       const deactivateResult = await db.prepare(
-        `UPDATE job_sites SET active=0, encircle_status='closed' WHERE encircle_job_id IS NOT NULL AND encircle_job_id NOT IN (${placeholders})`
+        `UPDATE job_sites SET active=0, encircle_status='Closed' WHERE encircle_job_id IS NOT NULL AND encircle_job_id NOT IN (${ph})`
+      ).bind(...encircleIds).run()
+      await db.prepare(
+        `UPDATE encircle_jobs SET status='closed' WHERE encircle_claim_id NOT IN (${ph})`
       ).bind(...encircleIds).run()
       closed = deactivateResult.meta?.changes || 0
     }
-    // Update last_sync_at
+
     await db.prepare(`UPDATE encircle_settings SET last_sync_at=CURRENT_TIMESTAMP WHERE id=1`).run()
     await db.prepare(`INSERT INTO encircle_sync_log (jobs_added,jobs_updated,jobs_closed,status) VALUES (?,?,?,'success')`).bind(added, updated, closed).run()
     return { jobs_added: added, jobs_updated: updated, jobs_closed: closed, status: 'success' }
@@ -2751,20 +2842,33 @@ app.post('/api/encircle/sync', async (c) => {
   return c.json(result, result.status === 'error' ? 500 : 200)
 })
 
-// GET /api/encircle/status — latest sync info + synced jobs
+// GET /api/encircle/status — latest sync info + full job contact data
 app.get('/api/encircle/status', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const settings = await db.prepare('SELECT id, sync_enabled, last_sync_at, created_at, (bearer_token IS NOT NULL AND bearer_token != \'\') AS has_token FROM encircle_settings WHERE id = 1').first() as any
+  const settings = await db.prepare(
+    `SELECT id, sync_enabled, last_sync_at, created_at,
+     (bearer_token IS NOT NULL AND bearer_token != '') AS has_token
+     FROM encircle_settings WHERE id = 1`
+  ).first() as any
   const lastLog = await db.prepare('SELECT * FROM encircle_sync_log ORDER BY synced_at DESC LIMIT 1').first() as any
   const syncLogs = await db.prepare('SELECT * FROM encircle_sync_log ORDER BY synced_at DESC LIMIT 20').all()
-  const syncedJobs = await db.prepare(
-    `SELECT id, name, address, lat, lng, active, encircle_job_id, encircle_status, encircle_synced_at
-     FROM job_sites WHERE encircle_job_id IS NOT NULL ORDER BY encircle_synced_at DESC`
-  ).all()
+
+  // Rich job data — join encircle_jobs with job_sites for GPS status
+  const syncedJobs = await db.prepare(`
+    SELECT
+      ej.*,
+      js.lat, js.lng, js.active AS site_active,
+      js.id AS job_site_id
+    FROM encircle_jobs ej
+    LEFT JOIN job_sites js ON js.encircle_job_id = ej.encircle_claim_id
+    ORDER BY ej.date_claim_created DESC
+  `).all()
+
   const totalCount = await db.prepare(
-    `SELECT COUNT(*) as cnt FROM job_sites WHERE encircle_job_id IS NOT NULL AND active = 1`
+    `SELECT COUNT(*) as cnt FROM encircle_jobs WHERE status = 'active'`
   ).first() as any
+
   return c.json({
     connected: !!(settings?.has_token),
     sync_enabled: settings?.sync_enabled === 1,
@@ -7034,7 +7138,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260302i"></script>
+<script src="/static/worker.js?v=20260302j"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -8762,115 +8866,130 @@ function getAdminHTML(): string {
     </div>
 
     <!-- ── Tab: Encircle Integration ──────────────────────────────────────── -->
-    <div id="tab-encircle" class="tab-content hidden space-y-5">
+    <div id="tab-encircle" class="tab-content hidden space-y-4">
 
-      <!-- Section A: Connection Status Card -->
-      <div id="encircle-status-card" class="bg-white rounded-2xl shadow-sm p-5">
-        <div class="flex items-center gap-3 mb-4">
-          <div class="w-10 h-10 bg-sky-100 rounded-xl flex items-center justify-center">
-            <i class="fas fa-sync-alt text-sky-600 text-lg"></i>
+      <!-- Header bar -->
+      <div class="bg-white rounded-2xl shadow-sm p-5">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div class="flex items-center gap-3">
+            <div class="w-11 h-11 bg-sky-100 rounded-xl flex items-center justify-center flex-shrink-0">
+              <i class="fas fa-sync-alt text-sky-600 text-lg"></i>
+            </div>
+            <div>
+              <h3 class="text-base font-bold text-gray-800 flex items-center gap-2">
+                Encircle Integration
+                <span id="encircle-connected-pill" class="hidden text-[11px] font-bold px-2 py-0.5 rounded-full bg-green-100 text-green-700">● Connected</span>
+              </h3>
+              <p id="encircle-status-sub" class="text-xs text-gray-400 mt-0.5">Enter your bearer token below to connect</p>
+            </div>
           </div>
-          <div>
-            <h3 class="text-base font-bold text-gray-800">Encircle Integration</h3>
-            <p class="text-xs text-gray-500">Automatically sync active job sites from your Encircle account</p>
+          <!-- Actions (visible when connected) -->
+          <div id="encircle-connected-actions" class="hidden items-center gap-2 flex-wrap">
+            <div class="text-center bg-sky-50 rounded-xl px-3 py-1.5">
+              <p class="text-lg font-bold text-sky-700" id="encircle-job-count-num">0</p>
+              <p class="text-[10px] text-sky-500 font-medium">Active Jobs</p>
+            </div>
+            <button onclick="encircleSync()" id="encircle-sync-btn"
+              class="bg-sky-600 hover:bg-sky-700 text-white text-sm font-bold px-4 py-2 rounded-xl flex items-center gap-2 shadow-sm transition-colors">
+              <i class="fas fa-sync-alt"></i> Sync Now
+            </button>
+            <button onclick="encircleDisconnect()"
+              class="bg-gray-100 hover:bg-red-50 hover:text-red-600 text-gray-600 text-sm font-medium px-3 py-2 rounded-xl flex items-center gap-1.5 transition-colors">
+              <i class="fas fa-unlink text-xs"></i> Disconnect
+            </button>
           </div>
         </div>
-        <div id="encircle-connection-status" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 mb-4">
-          <span id="encircle-status-dot" class="w-3 h-3 rounded-full bg-gray-300 flex-shrink-0"></span>
-          <div class="flex-1 min-w-0">
-            <p id="encircle-status-title" class="text-sm font-semibold text-gray-700">Not Connected</p>
-            <p id="encircle-status-sub" class="text-xs text-gray-400">Enter your bearer token below to connect</p>
-          </div>
-          <span id="encircle-job-count-badge" class="hidden bg-sky-100 text-sky-700 text-xs font-bold px-2.5 py-1 rounded-full"></span>
-        </div>
-        <div id="encircle-connected-actions" class="hidden flex flex-wrap gap-2 mb-4">
-          <button onclick="encircleSync()" id="encircle-sync-btn"
-            class="bg-sky-600 hover:bg-sky-700 text-white text-sm font-bold px-4 py-2 rounded-xl flex items-center gap-2 shadow-sm">
-            <i class="fas fa-sync-alt"></i> Sync Now
-          </button>
-          <button onclick="encircleDisconnect()"
-            class="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium px-4 py-2 rounded-xl flex items-center gap-2">
-            <i class="fas fa-unlink"></i> Disconnect
-          </button>
-        </div>
-        <div id="encircle-last-sync" class="hidden text-xs text-gray-400 mb-1"></div>
+        <p id="encircle-last-sync" class="hidden text-xs text-gray-400 mt-3 pt-3 border-t border-gray-100">
+          <i class="fas fa-clock mr-1"></i> Last synced: <span id="encircle-last-sync-time"></span>
+        </p>
       </div>
 
-      <!-- Section B: Setup form (shown when not connected) -->
+      <!-- Setup form (hidden when connected) -->
       <div id="encircle-setup-card" class="bg-white rounded-2xl shadow-sm p-5">
         <h4 class="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
           <i class="fas fa-key text-amber-500"></i> Connect Your Encircle Account
         </h4>
         <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 text-xs text-amber-800">
           <p class="font-semibold mb-1">How to get your Bearer Token:</p>
-          <ol class="list-decimal list-inside space-y-1">
-            <li>Log in to <a href="https://encircleapp.com" target="_blank" class="underline">encircleapp.com</a></li>
+          <ol class="list-decimal list-inside space-y-1 leading-relaxed">
+            <li>Log in to <a href="https://encircleapp.com" target="_blank" class="underline font-medium">encircleapp.com</a></li>
             <li>Go to <strong>Settings → Integrations → API</strong></li>
             <li>Copy your Bearer Token and paste it below</li>
           </ol>
         </div>
-        <div class="space-y-3">
+        <div class="space-y-3 max-w-md">
           <div>
             <label class="text-xs font-semibold text-gray-600 block mb-1">Bearer Token</label>
-            <input id="encircle-token-input" type="password" placeholder="e.g. b47b6ad0-3110-4561-9810-cb529b6e1106"
-              class="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-sky-300 focus:border-sky-400 bg-gray-50 font-mono" />
+            <input id="encircle-token-input" type="password"
+              placeholder="e.g. b47b6ad0-3110-4561-9810-cb529b6e1106"
+              class="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-sky-300 focus:border-sky-400 font-mono bg-gray-50" />
           </div>
           <div class="flex items-center gap-2">
-            <input type="checkbox" id="encircle-sync-enabled" checked class="rounded" />
+            <input type="checkbox" id="encircle-sync-enabled" checked class="rounded text-sky-600" />
             <label for="encircle-sync-enabled" class="text-xs text-gray-600">Auto-sync every 30 minutes</label>
           </div>
           <button onclick="encircleConnect()" id="encircle-connect-btn"
-            class="w-full bg-sky-600 hover:bg-sky-700 text-white text-sm font-bold py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-sm">
+            class="bg-sky-600 hover:bg-sky-700 text-white text-sm font-bold py-2.5 px-5 rounded-xl flex items-center gap-2 shadow-sm transition-colors">
             <i class="fas fa-link"></i> Connect to Encircle
           </button>
         </div>
       </div>
 
-      <!-- Section C: Synced Jobs Table -->
-      <div id="encircle-jobs-card" class="bg-white rounded-2xl shadow-sm p-5 hidden">
-        <div class="flex items-center justify-between mb-4">
-          <h4 class="text-sm font-bold text-gray-700 flex items-center gap-2">
-            <i class="fas fa-list text-sky-500"></i> Synced Job Sites
-          </h4>
-          <span id="encircle-active-count" class="bg-sky-100 text-sky-700 text-xs font-bold px-2.5 py-1 rounded-full"></span>
+      <!-- Search + filter bar (visible when connected) -->
+      <div id="encircle-filter-bar" class="hidden bg-white rounded-2xl shadow-sm p-4 flex flex-col sm:flex-row gap-3 items-center">
+        <div class="relative flex-1 w-full">
+          <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
+          <input id="encircle-search" type="text" placeholder="Search by name, address, phone, PM..."
+            oninput="filterEncircleJobs()"
+            class="w-full pl-9 pr-3 py-2 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-sky-300 focus:border-sky-400 bg-gray-50" />
         </div>
-        <div class="overflow-x-auto">
-          <table class="w-full text-xs">
-            <thead>
-              <tr class="border-b border-gray-100">
-                <th class="text-left py-2 px-2 text-gray-500 font-semibold">Job / Policyholder</th>
-                <th class="text-left py-2 px-2 text-gray-500 font-semibold">Address</th>
-                <th class="text-left py-2 px-2 text-gray-500 font-semibold">Type</th>
-                <th class="text-left py-2 px-2 text-gray-500 font-semibold">Status</th>
-                <th class="text-left py-2 px-2 text-gray-500 font-semibold">Synced</th>
-              </tr>
-            </thead>
-            <tbody id="encircle-jobs-tbody" class="divide-y divide-gray-50"></tbody>
-          </table>
-        </div>
-        <p id="encircle-jobs-empty" class="hidden text-gray-400 text-sm text-center py-6">No synced jobs yet. Click Sync Now to import from Encircle.</p>
+        <select id="encircle-filter-type" onchange="filterEncircleJobs()"
+          class="px-3 py-2 rounded-xl border border-gray-200 text-sm text-gray-600 bg-gray-50 focus:ring-2 focus:ring-sky-300">
+          <option value="">All Types</option>
+          <option value="Water">Water</option>
+          <option value="Fire">Fire</option>
+          <option value="Mold">Mold</option>
+          <option value="Wind">Wind / Hail</option>
+        </select>
+        <select id="encircle-filter-pm" onchange="filterEncircleJobs()"
+          class="px-3 py-2 rounded-xl border border-gray-200 text-sm text-gray-600 bg-gray-50 focus:ring-2 focus:ring-sky-300">
+          <option value="">All Project Managers</option>
+        </select>
       </div>
 
-      <!-- Section D: Sync History Log -->
-      <div id="encircle-log-card" class="bg-white rounded-2xl shadow-sm p-5 hidden">
-        <h4 class="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
-          <i class="fas fa-history text-gray-400"></i> Sync History
-        </h4>
-        <div class="overflow-x-auto">
-          <table class="w-full text-xs">
-            <thead>
-              <tr class="border-b border-gray-100">
-                <th class="text-left py-2 px-2 text-gray-500 font-semibold">Date / Time</th>
-                <th class="text-center py-2 px-2 text-gray-500 font-semibold">Added</th>
-                <th class="text-center py-2 px-2 text-gray-500 font-semibold">Updated</th>
-                <th class="text-center py-2 px-2 text-gray-500 font-semibold">Closed</th>
-                <th class="text-left py-2 px-2 text-gray-500 font-semibold">Result</th>
-              </tr>
-            </thead>
-            <tbody id="encircle-log-tbody" class="divide-y divide-gray-50"></tbody>
-          </table>
+      <!-- Job cards grid -->
+      <div id="encircle-jobs-grid" class="hidden space-y-3">
+        <p class="text-xs text-gray-400 font-medium px-1" id="encircle-showing-count"></p>
+        <div id="encircle-cards-container" class="space-y-3"></div>
+        <p id="encircle-jobs-empty" class="hidden text-gray-400 text-sm text-center py-10 bg-white rounded-2xl">
+          <i class="fas fa-inbox text-3xl block mb-3 text-gray-300"></i>
+          No jobs found. Click <strong>Sync Now</strong> to import from Encircle.
+        </p>
+      </div>
+
+      <!-- Sync History Log (collapsible) -->
+      <div id="encircle-log-card" class="bg-white rounded-2xl shadow-sm hidden">
+        <button onclick="toggleEncircleLog()" class="w-full flex items-center justify-between p-4 text-sm font-semibold text-gray-600 hover:text-gray-800 transition-colors">
+          <span class="flex items-center gap-2"><i class="fas fa-history text-gray-400"></i> Sync History</span>
+          <i class="fas fa-chevron-down text-gray-400 transition-transform" id="encircle-log-chevron"></i>
+        </button>
+        <div id="encircle-log-body" class="hidden border-t border-gray-100">
+          <div class="overflow-x-auto p-4">
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="border-b border-gray-100">
+                  <th class="text-left py-2 text-gray-500 font-semibold">Date / Time</th>
+                  <th class="text-center py-2 px-2 text-gray-500 font-semibold">Added</th>
+                  <th class="text-center py-2 px-2 text-gray-500 font-semibold">Updated</th>
+                  <th class="text-center py-2 px-2 text-gray-500 font-semibold">Closed</th>
+                  <th class="text-left py-2 px-2 text-gray-500 font-semibold">Result</th>
+                </tr>
+              </thead>
+              <tbody id="encircle-log-tbody" class="divide-y divide-gray-50"></tbody>
+            </table>
+          </div>
+          <p id="encircle-log-empty" class="hidden text-gray-400 text-sm text-center py-6">No sync history yet.</p>
         </div>
-        <p id="encircle-log-empty" class="hidden text-gray-400 text-sm text-center py-6">No sync history yet.</p>
       </div>
 
     </div>
@@ -9783,7 +9902,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260302b"></script>
+<script src="/static/admin.js?v=20260302c"></script>
 
 </body>
 </html>`
