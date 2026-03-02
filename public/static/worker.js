@@ -165,15 +165,29 @@ async function registerWorker() {
     if (data.worker) {
       currentWorker = data.worker
       localStorage.setItem('wt_worker', JSON.stringify(data.worker))
-      // If admin set a temp PIN → force worker to choose their own PIN before proceeding
+      if (data.isNew === false) {
+        // Already registered — switch to login so they use their PIN properly
+        showToast('You\'re already registered! Please sign in with your PIN.', 'info', 5000)
+        showScreen('login')
+        const lp = document.getElementById('login-phone')
+        if (lp) lp.value = phone
+        return
+      }
+      // Brand new worker — if admin set a temp PIN → force PIN change
       if (data.worker.is_temp_pin) {
         showChangePinScreen(data.worker, true)
       } else {
-        showToast(data.isNew ? 'Registered! Welcome 🎉' : 'Welcome back!', 'success')
+        showToast('Registered! Welcome 🎉', 'success')
         await initMain()
       }
     } else if (data.error === 'device_mismatch') {
       showDeviceMismatchScreen(phone)
+    } else if (data.error === 'duplicate_phone') {
+      // Phone exists but no device — redirect to login
+      showToast('Phone already registered. Please sign in instead.', 'info', 5000)
+      showScreen('login')
+      const lp = document.getElementById('login-phone')
+      if (lp) lp.value = phone
     } else {
       showToast(data.message || data.error || 'Registration failed', 'error')
     }

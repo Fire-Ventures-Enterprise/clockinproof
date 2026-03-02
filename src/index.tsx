@@ -447,7 +447,9 @@ async function ensureSchema(db: D1Database) {
 app.post('/api/workers/register', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const { name, phone, pin, device_id, consent_given } = await c.req.json()
+  const { name, phone: rawPhone, pin, device_id, consent_given } = await c.req.json()
+  // Normalize phone: digits only for consistent storage and lookup
+  const phone = rawPhone ? rawPhone.replace(/\D/g, '') : rawPhone
 
   if (!name || !phone) {
     return c.json({ error: 'Name and phone are required' }, 400)
@@ -458,10 +460,22 @@ app.post('/api/workers/register', async (c) => {
     return c.json({ error: 'consent_required', message: 'Device consent is required to register.' }, 400)
   }
 
-  // Check if worker already exists by phone
-  const existing = await db.prepare(
-    'SELECT * FROM workers WHERE phone = ?'
-  ).bind(phone).first<any>()
+  // Check if worker already exists — try digits-only match against stored phone
+  const digitsOnly = phone.replace(/\D/g, '')
+  let existing = await db.prepare(
+    "SELECT * FROM workers WHERE REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ','') = ?"
+  ).bind(digitsOnly).first<any>()
+  // Also try with leading 1 stripped
+  if (!existing && digitsOnly.startsWith('1') && digitsOnly.length === 11) {
+    existing = await db.prepare(
+      "SELECT * FROM workers WHERE REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ','') = ?"
+    ).bind(digitsOnly.slice(1)).first<any>()
+  }
+  if (!existing && !digitsOnly.startsWith('1') && digitsOnly.length === 10) {
+    existing = await db.prepare(
+      "SELECT * FROM workers WHERE REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ','') = ?"
+    ).bind('1' + digitsOnly).first<any>()
+  }
 
   if (existing) {
     // ── Admin path: no device_id sent → admin is trying to create a duplicate ──
@@ -6209,8 +6223,8 @@ function getWorkerHTML(tenant?: any): string {
         class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl clock-btn shadow-md">
         <i class="fas fa-user-plus mr-2"></i>Get Started
       </button>
-      <button onclick="showLogin()" class="w-full text-blue-600 hover:text-blue-700 font-medium py-2 text-sm">
-        Already registered? Sign in
+      <button onclick="showLogin()" class="w-full bg-gray-100 hover:bg-gray-200 text-blue-700 font-semibold py-3 rounded-xl text-sm border border-blue-200">
+        <i class="fas fa-sign-in-alt mr-2"></i>Already registered? Sign In
       </button>
     </div>
   </div>
@@ -6787,7 +6801,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260302e"></script>
+<script src="/static/worker.js?v=20260302f"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
