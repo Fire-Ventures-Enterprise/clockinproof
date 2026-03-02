@@ -585,6 +585,115 @@ app.post('/api/workers/:id/change-pin', async (c) => {
   return c.json({ success: true, message: 'PIN updated successfully.' })
 })
 
+// POST /api/workers/forgot-pin — fully automated PIN reset via email (no admin needed)
+// Worker enters phone → system generates temp PIN → emails it → worker logs in and sets new PIN
+app.post('/api/workers/forgot-pin', async (c) => {
+  const db  = c.env.DB
+  const env = c.env
+  await ensureSchema(db)
+
+  const { phone } = await c.req.json()
+  if (!phone) return c.json({ error: 'Phone number is required' }, 400)
+
+  // Look up active worker by phone
+  const worker = await db.prepare(
+    'SELECT id, name, phone, email FROM workers WHERE phone = ? AND active = 1'
+  ).bind(phone).first<any>()
+
+  // Always return success message to prevent phone enumeration attacks
+  const safeResponse = c.json({
+    success: true,
+    message: 'If this phone number is registered, a PIN reset email has been sent.'
+  })
+
+  if (!worker) return safeResponse
+
+  // Worker must have an email on file
+  if (!worker.email) {
+    // No email — still return safe message but log it
+    return c.json({
+      success: false,
+      error: 'no_email',
+      message: 'No email address on file. Please contact your manager to reset your PIN.'
+    }, 400)
+  }
+
+  // Generate a new random 4-digit temp PIN
+  const tempPin = String(Math.floor(1000 + Math.random() * 9000))
+
+  // Save temp PIN to DB
+  await db.prepare(
+    'UPDATE workers SET pin = ?, is_temp_pin = 1 WHERE id = ?'
+  ).bind(tempPin, worker.id).run()
+
+  // Get app settings for branding
+  const settingsRaw = await db.prepare('SELECT key, value FROM settings').all()
+  const settings: Record<string, string> = {}
+  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+  const appName = settings.app_name || 'ClockInProof'
+  const appHost = (settings.app_host || 'https://app.clockinproof.com').replace(/\/$/, '')
+  const joinLink = `\${appHost}/join/\${worker.id}`
+
+  // Send email via Resend
+  const resendKey = ((env as any).RESEND_API_KEY || settings.resend_api_key || '').trim()
+  if (!resendKey) {
+    return c.json({ success: false, error: 'Email service not configured. Contact your manager.' }, 500)
+  }
+
+  const emailHtml = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <div style="max-width:480px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08)">
+    <div style="background:#4f46e5;padding:28px 32px;text-align:center">
+      <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700">\${appName}</h1>
+      <p style="color:rgba(255,255,255,0.85);margin:6px 0 0;font-size:14px">PIN Reset Request</p>
+    </div>
+    <div style="padding:32px">
+      <p style="font-size:15px;color:#374151;margin:0 0 16px">Hi <strong>\${worker.name}</strong>,</p>
+      <p style="font-size:14px;color:#6b7280;margin:0 0 24px;line-height:1.6">
+        We received a request to reset your clock-in PIN. Use the temporary PIN below to log in — you will be asked to create a new personal PIN immediately after.
+      </p>
+      <div style="background:#f8fafc;border:2px dashed #6366f1;border-radius:14px;padding:24px;text-align:center;margin-bottom:24px">
+        <p style="font-size:12px;color:#6b7280;margin:0 0 8px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600">Your Temporary PIN</p>
+        <p style="font-size:48px;font-weight:800;color:#4f46e5;letter-spacing:14px;margin:0;font-family:monospace">\${tempPin}</p>
+      </div>
+      <a href="\${joinLink}" style="display:block;background:#4f46e5;color:#fff;text-decoration:none;text-align:center;padding:14px;border-radius:10px;font-size:15px;font-weight:700;margin-bottom:20px">
+        Open Clock-In App →
+      </a>
+      <div style="background:#fefce8;border:1px solid #fde68a;border-radius:10px;padding:14px;font-size:12px;color:#92400e;line-height:1.5">
+        <strong>⚠️ Security notice:</strong> This PIN expires once you set a new one. If you did not request this reset, please contact your manager immediately.
+      </div>
+    </div>
+    <div style="padding:16px 32px;border-top:1px solid #f3f4f6;text-align:center">
+      <p style="font-size:11px;color:#9ca3af;margin:0">\${appName} · Automated security email · Do not reply</p>
+    </div>
+  </div>
+</body>
+</html>`
+
+  try {
+    const emailRes = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer \${resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: `\${appName} <alerts@clockinproof.com>`,
+        to: [worker.email],
+        subject: `\${appName} — Your Temporary PIN`,
+        html: emailHtml
+      })
+    })
+    const emailData: any = await emailRes.json()
+    if (!emailRes.ok) {
+      return c.json({ success: false, error: 'Failed to send email. Contact your manager.' }, 500)
+    }
+    return safeResponse
+  } catch (e: any) {
+    return c.json({ success: false, error: 'Email delivery failed. Contact your manager.' }, 500)
+  }
+})
+
 // Get all workers (admin)
 app.get('/api/workers', async (c) => {
   const db = c.env.DB
@@ -6094,6 +6203,9 @@ function getWorkerHTML(tenant?: any): string {
         class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl clock-btn shadow-md">
         <i class="fas fa-sign-in-alt mr-2"></i>Sign In
       </button>
+      <button onclick="showForgotPin()" class="w-full text-gray-500 hover:text-blue-600 font-medium py-2 text-sm transition-colors">
+        <i class="fas fa-key mr-1"></i>Forgot PIN?
+      </button>
       <button onclick="showRegister()" class="w-full text-blue-600 font-medium py-2 text-sm">
         New user? Register here
       </button>
@@ -6636,7 +6748,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260302c"></script>
+<script src="/static/worker.js?v=20260302d"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">

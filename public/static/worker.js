@@ -276,6 +276,96 @@ async function saveNewPin() {
   btn.disabled = false; btn.innerHTML = '<i class="fas fa-check mr-2"></i>Save My PIN'
 }
 
+// ── Forgot PIN flow ──────────────────────────────────────────────────────────
+function showForgotPin() {
+  let m = document.getElementById('forgot-pin-modal')
+  if (!m) {
+    m = document.createElement('div')
+    m.id = 'forgot-pin-modal'
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end;justify-content:center;z-index:9999;padding:16px'
+    m.innerHTML = `
+<div style="background:#fff;border-radius:20px 20px 12px 12px;max-width:420px;width:100%;padding:24px;box-shadow:0 -4px 32px rgba(0,0,0,.15)">
+  <div style="text-align:center;margin-bottom:18px">
+    <div style="width:48px;height:48px;background:#fef3c7;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:10px">
+      <i class="fas fa-key" style="color:#d97706;font-size:20px"></i>
+    </div>
+    <h3 style="font-size:17px;font-weight:700;color:#111;margin:0 0 6px">Forgot Your PIN?</h3>
+    <p style="font-size:13px;color:#4b5563;margin:0;line-height:1.5">Enter your phone number and we'll email you a temporary PIN to get back in.</p>
+  </div>
+  <div style="margin-bottom:16px">
+    <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Phone Number</label>
+    <input id="forgot-pin-phone" type="tel" placeholder="+1 234 567 8900" inputmode="tel"
+      style="width:100%;padding:12px 14px;border:2px solid #e5e7eb;border-radius:10px;font-size:15px;box-sizing:border-box;outline:none"
+      onfocus="this.style.borderColor='#6366f1'" onblur="this.style.borderColor='#e5e7eb'"/>
+  </div>
+  <div id="forgot-pin-msg" style="display:none;margin-bottom:12px;padding:12px;border-radius:10px;font-size:13px;line-height:1.5"></div>
+  <button id="forgot-pin-btn" onclick="submitForgotPin()"
+    style="width:100%;background:#4f46e5;color:#fff;border:none;border-radius:10px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;margin-bottom:10px">
+    <i class="fas fa-paper-plane mr-2"></i>Send Reset PIN
+  </button>
+  <button onclick="document.getElementById('forgot-pin-modal').style.display='none'"
+    style="width:100%;background:transparent;color:#6b7280;border:none;font-size:13px;cursor:pointer;padding:6px">
+    Cancel
+  </button>
+</div>`
+    document.body.appendChild(m)
+  }
+  // Reset state
+  document.getElementById('forgot-pin-phone').value = ''
+  document.getElementById('forgot-pin-msg').style.display = 'none'
+  document.getElementById('forgot-pin-btn').disabled = false
+  document.getElementById('forgot-pin-btn').innerHTML = '<i class="fas fa-paper-plane mr-2"></i>Send Reset PIN'
+  m.style.display = 'flex'
+  setTimeout(() => document.getElementById('forgot-pin-phone').focus(), 100)
+}
+
+async function submitForgotPin() {
+  const phone = document.getElementById('forgot-pin-phone').value.trim()
+  if (!phone) { showToast('Please enter your phone number', 'error'); return }
+
+  const btn = document.getElementById('forgot-pin-btn')
+  const msg = document.getElementById('forgot-pin-msg')
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Sending...'
+  msg.style.display = 'none'
+
+  try {
+    const res = await fetch('/api/workers/forgot-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone })
+    })
+    const data = await res.json()
+
+    if (data.error === 'no_email') {
+      msg.style.cssText = 'display:block;margin-bottom:12px;padding:12px;border-radius:10px;font-size:13px;line-height:1.5;background:#fef2f2;border:1px solid #fecaca;color:#991b1b'
+      msg.innerHTML = '<i class="fas fa-exclamation-circle mr-1"></i>' + data.message
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-paper-plane mr-2"></i>Send Reset PIN'
+    } else {
+      // Success — show confirmation and close after delay
+      msg.style.cssText = 'display:block;margin-bottom:12px;padding:12px;border-radius:10px;font-size:13px;line-height:1.5;background:#f0fdf4;border:1px solid #bbf7d0;color:#166534'
+      msg.innerHTML = '<i class="fas fa-check-circle mr-1"></i>Check your email! A temporary PIN has been sent. Use it to log in, then you'll be prompted to set a new PIN.'
+      btn.innerHTML = '<i class="fas fa-check mr-2"></i>Email Sent!'
+      // Auto-close after 4 seconds
+      setTimeout(() => {
+        const m = document.getElementById('forgot-pin-modal')
+        if (m) m.style.display = 'none'
+        // Pre-fill phone in login screen
+        const loginPhone = document.getElementById('login-phone')
+        if (loginPhone) loginPhone.value = phone
+        showScreen('login')
+        document.getElementById('login-pin').focus()
+      }, 4000)
+    }
+  } catch(e) {
+    msg.style.cssText = 'display:block;margin-bottom:12px;padding:12px;border-radius:10px;font-size:13px;line-height:1.5;background:#fef2f2;border:1px solid #fecaca;color:#991b1b'
+    msg.innerHTML = '<i class="fas fa-exclamation-circle mr-1"></i>Connection error. Please try again.'
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-paper-plane mr-2"></i>Send Reset PIN'
+  }
+}
+
 // ── Device Mismatch: new-phone request screen ─────────────────────────────────
 function showDeviceMismatchScreen(phone) {
   let m = document.getElementById('new-phone-modal')
