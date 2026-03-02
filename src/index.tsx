@@ -2807,6 +2807,30 @@ app.delete('/api/dispatch/:id', async (c) => {
   return c.json({ success: true })
 })
 
+// GET /api/dispatch/pending/:worker_id  — return the most recent active dispatch for a worker
+// Used by the worker app to pre-fill the job modal and show a dispatch banner
+app.get('/api/dispatch/pending/:worker_id', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const workerId = c.req.param('worker_id')
+  // Return the most recent dispatch sent to this worker in the last 48 hours that hasn't been cancelled
+  const row = await db.prepare(`
+    SELECT d.*, js.id AS matched_site_id
+    FROM job_dispatches d
+    LEFT JOIN job_sites js ON (
+      js.encircle_job_id = d.encircle_claim_id
+      OR js.address = d.job_address
+    )
+    WHERE d.worker_id = ?
+      AND d.status IN ('sent','replied','arrived','failed')
+      AND d.created_at >= datetime('now','-48 hours')
+    ORDER BY d.created_at DESC
+    LIMIT 1
+  `).bind(workerId).first() as any
+  if (!row) return c.json({ dispatch: null })
+  return c.json({ dispatch: row })
+})
+
 // POST /api/twilio/webhook  — inbound SMS from workers (Twilio calls this URL)
 // Configure in Twilio Console: Messaging → Phone Number → Incoming messages webhook
 // URL: https://admin.clockinproof.com/api/twilio/webhook  Method: POST
@@ -7352,7 +7376,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260302j"></script>
+<script src="/static/worker.js?v=20260302k"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -10373,7 +10397,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260302g"></script>
+<script src="/static/admin.js?v=20260302h"></script>
 
 </body>
 </html>`

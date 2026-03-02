@@ -17,6 +17,8 @@ let recentLocations = []
 let pendingOverrideId = null
 let overridePollTimer = null
 let fraudMap = null
+// Active dispatch assigned to this worker
+let pendingDispatch = null
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 window.onload = async () => {
@@ -503,9 +505,61 @@ async function initMain() {
       _searchLng = parseFloat(sites[0].lng)
     }
   } catch(_) {}
+  // Fetch pending dispatch for this worker — used to pre-fill job modal
+  await checkPendingDispatch()
   await checkStatus()
   await loadStats()
   await loadWorkLog()
+}
+
+// ── Pending Dispatch ──────────────────────────────────────────────────────────
+async function checkPendingDispatch() {
+  if (!currentWorker?.id) return
+  try {
+    const res = await fetch('/api/dispatch/pending/' + currentWorker.id)
+    const data = await res.json()
+    pendingDispatch = data.dispatch || null
+    renderDispatchBanner()
+  } catch(_) {
+    pendingDispatch = null
+  }
+}
+
+function renderDispatchBanner() {
+  // Remove any existing banner
+  const existing = document.getElementById('dispatch-alert-banner')
+  if (existing) existing.remove()
+
+  if (!pendingDispatch || activeSession) return   // hide when clocked in
+
+  const banner = document.createElement('div')
+  banner.id = 'dispatch-alert-banner'
+  banner.className = 'mx-4 mb-4 flex items-start gap-3 bg-blue-50 border-2 border-blue-400 rounded-2xl p-4 shadow-sm cursor-pointer'
+  banner.onclick = () => openJobModal()
+  banner.innerHTML = `
+    <span class="text-3xl mt-0.5">📋</span>
+    <div class="flex-1 min-w-0">
+      <p class="font-bold text-blue-900 text-sm">Job Assigned to You</p>
+      <p class="text-blue-800 font-semibold truncate mt-0.5">${escHtml(pendingDispatch.job_name)}</p>
+      <p class="text-blue-600 text-xs truncate mt-0.5">📍 ${escHtml(pendingDispatch.job_address)}</p>
+      ${pendingDispatch.notes ? `<p class="text-blue-500 text-xs mt-0.5 italic truncate">📝 ${escHtml(pendingDispatch.notes)}</p>` : ''}
+      <p class="text-blue-400 text-xs mt-1">Tap Clock In — your job is pre-selected ✓</p>
+    </div>
+    <a href="${pendingDispatch.maps_url}" target="_blank" onclick="event.stopPropagation()"
+       class="flex-shrink-0 bg-blue-600 text-white text-xs font-semibold rounded-lg px-3 py-2 hover:bg-blue-700">
+       <i class="fas fa-directions mr-1"></i>Directions
+    </a>
+  `
+
+  // Insert the banner just before the clock button area (after status row)
+  const clockBtn = document.getElementById('clock-btn')
+  if (clockBtn && clockBtn.parentNode) {
+    clockBtn.parentNode.insertBefore(banner, clockBtn)
+  }
+}
+
+function escHtml(str) {
+  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
 }
 
 async function checkStatus() {
@@ -536,6 +590,9 @@ function setClockedInUI(isClockedIn) {
   if (!isClockedIn) closeMap()  // always close map when not clocked in
 
   if (isClockedIn) {
+    // Hide dispatch banner while worker is clocked in
+    const db = document.getElementById('dispatch-alert-banner')
+    if (db) db.remove()
     btn.className = 'w-full py-5 rounded-2xl text-white text-xl font-bold shadow-lg clock-btn flex items-center justify-center gap-3 bg-red-500 hover:bg-red-600'
     dot.className = 'w-3 h-3 rounded-full bg-green-500 pulse'
     txt.textContent = 'Currently Working'
@@ -564,6 +621,8 @@ function setClockedInUI(isClockedIn) {
     jobBanner.classList.add('hidden')
     clearInterval(durationTimer)
     clearInterval(pingInterval)
+    // Re-show dispatch banner if there's still a pending dispatch
+    renderDispatchBanner()
   }
 }
 
@@ -657,12 +716,12 @@ function openJobModal() {
   if (recentLocations.length > 0) {
     document.getElementById('job-location-input').value = recentLocations[0]
   }
-  // Load saved job sites from admin
-  loadSavedSitesDropdown()
+  // Load saved job sites from admin, then auto-apply pending dispatch
+  loadSavedSitesDropdown(true)
   setTimeout(() => document.getElementById('job-location-input').focus(), 300)
 }
 
-async function loadSavedSitesDropdown() {
+async function loadSavedSitesDropdown(applyDispatch = false) {
   try {
     const res  = await fetch('/api/job-sites')
     const data = await res.json()
@@ -685,12 +744,77 @@ async function loadSavedSitesDropdown() {
             // Show city only (first two parts of address) to keep option short
             const addrParts = (s.address || '').split(',')
             const shortAddr = addrParts.slice(0, 2).join(',').trim()
-            return '<option value="' + s.address + '" data-site-id="' + s.id + '">' + displayName + '  ·  ' + shortAddr + '</option>'
+            // Highlight dispatched job
+            const isDispatched = pendingDispatch && (
+              s.id == pendingDispatch.matched_site_id ||
+              (s.address && pendingDispatch.job_address &&
+               s.address.trim().toLowerCase() === pendingDispatch.job_address.trim().toLowerCase())
+            )
+            const prefix = isDispatched ? '🔔 ASSIGNED · ' : ''
+            return '<option value="' + s.address + '" data-site-id="' + s.id + '">' + prefix + displayName + '  ·  ' + shortAddr + '</option>'
           }).join('') +
           '</optgroup>'
         : '')
     row.classList.remove('hidden')
+
+    // Auto-select and apply the dispatched job if requested
+    if (applyDispatch && pendingDispatch) {
+      // Try to find the matching option by address
+      let matchedOption = null
+      for (const opt of sel.options) {
+        if (!opt.value || opt.value.startsWith('__')) continue
+        if (opt.value.trim().toLowerCase() === pendingDispatch.job_address.trim().toLowerCase()) {
+          matchedOption = opt
+          break
+        }
+      }
+      if (matchedOption) {
+        sel.value = matchedOption.value
+        // Apply it
+        pickSavedSite(matchedOption.value)
+        // Pre-fill notes / description from dispatch
+        if (pendingDispatch.notes) {
+          const descInput = document.getElementById('job-description-input')
+          if (descInput && !descInput.value.trim()) descInput.value = pendingDispatch.notes
+        }
+        // Show dispatch pre-fill banner inside modal
+        showDispatchPrefilledBanner(pendingDispatch)
+      } else {
+        // No exact match in saved sites — fill address directly
+        document.getElementById('job-location-input').value = pendingDispatch.job_address
+        document.getElementById('job-location-input').placeholder = pendingDispatch.job_address
+        if (pendingDispatch.notes) {
+          const descInput = document.getElementById('job-description-input')
+          if (descInput && !descInput.value.trim()) descInput.value = pendingDispatch.notes
+        }
+        showDispatchPrefilledBanner(pendingDispatch)
+      }
+    }
   } catch(_) {}
+}
+
+function showDispatchPrefilledBanner(dispatch) {
+  // Remove any old pre-fill banner
+  const old = document.getElementById('dispatch-prefill-banner')
+  if (old) old.remove()
+
+  const banner = document.createElement('div')
+  banner.id = 'dispatch-prefill-banner'
+  banner.className = 'mb-4 flex items-start gap-3 bg-blue-50 border border-blue-300 rounded-xl p-3'
+  banner.innerHTML = `
+    <span class="text-xl">📋</span>
+    <div class="min-w-0">
+      <p class="font-bold text-blue-900 text-xs uppercase tracking-wide">Dispatched Job Pre-Filled</p>
+      <p class="text-blue-800 text-sm font-semibold truncate mt-0.5">${escHtml(dispatch.job_name)}</p>
+      <p class="text-blue-600 text-xs truncate mt-0.5">📍 ${escHtml(dispatch.job_address)}</p>
+    </div>
+  `
+
+  // Insert at top of modal body (before the first label)
+  const firstLabel = document.querySelector('#job-modal label')
+  if (firstLabel && firstLabel.parentNode) {
+    firstLabel.parentNode.insertBefore(banner, firstLabel)
+  }
 }
 
 function pickSavedSite(value) {
@@ -760,6 +884,9 @@ function hideSessionTypeBanner() {
 
 function closeJobModal() {
   document.getElementById('job-modal').classList.add('hidden')
+  // Clean up dispatch pre-fill banner for next open
+  const b = document.getElementById('dispatch-prefill-banner')
+  if (b) b.remove()
 }
 
 // Close modal on backdrop click
