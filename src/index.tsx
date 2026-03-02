@@ -525,15 +525,34 @@ app.post('/api/workers/register', async (c) => {
 // Lookup worker by phone
 // Login: look up worker by phone + enforce device lock
 // device_id passed as query param: /api/workers/lookup/:phone?device_id=xxx
+// Normalize phone: strip all non-digit characters, then try exact match first,
+// then match by stripping leading country code (1 for Canada/US)
+function normalizePhone(raw: string): string {
+  return raw.replace(/\D/g, '') // digits only
+}
+
 app.get('/api/workers/lookup/:phone', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const phone    = decodeURIComponent(c.req.param('phone'))
+  const rawPhone = decodeURIComponent(c.req.param('phone'))
+  const phone    = normalizePhone(rawPhone)
   const deviceId = c.req.query('device_id') || null
 
-  const worker = await db.prepare(
-    'SELECT * FROM workers WHERE phone = ? AND active = 1'
-  ).bind(phone).first<any>()
+  // Try multiple phone formats: digits-only, with country code 1, without leading 1
+  const phoneVariants = Array.from(new Set([
+    phone,
+    phone.startsWith('1') ? phone.slice(1) : '1' + phone,  // toggle leading 1
+    '+' + phone,
+    '+1' + (phone.startsWith('1') ? phone.slice(1) : phone)
+  ]))
+
+  let worker: any = null
+  for (const v of phoneVariants) {
+    worker = await db.prepare(
+      'SELECT * FROM workers WHERE REPLACE(REPLACE(REPLACE(REPLACE(phone,"+",""),"-","")," ",""),"(","") = ? AND active = 1'
+    ).bind(v.replace(/\D/g, '')).first<any>()
+    if (worker) break
+  }
 
   if (!worker) return c.json({ error: 'Worker not found' }, 404)
 
