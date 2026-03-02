@@ -53,7 +53,9 @@ function showRegister() { showScreen('register') }
 
 // ── Register ──────────────────────────────────────────────────────────────────
 async function registerWorker() {
-  const name = document.getElementById('reg-name').value.trim()
+  const rawName = document.getElementById('reg-name').value.trim()
+  // Title-case: capitalize first letter of every word
+  const name = rawName.replace(/\b\w/g, c => c.toUpperCase())
   const phone = document.getElementById('reg-phone').value.trim()
   const pin = document.getElementById('reg-pin').value.trim()
   if (!name || !phone) { showToast('Please enter name and phone', 'error'); return }

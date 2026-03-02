@@ -589,8 +589,9 @@ function toggleEwPayType() {
 }
 
 async function saveEditWorker() {
-  const id   = document.getElementById('ew-worker-id').value
-  const name = document.getElementById('ew-name').value.trim()
+  const id      = document.getElementById('ew-worker-id').value
+  const rawName = document.getElementById('ew-name').value.trim()
+  const name    = rawName.replace(/\b\w/g, c => c.toUpperCase())
   if (!name) { showAdminToast('Name is required', 'error'); return }
 
   const payType = document.getElementById('ew-pay-type').value
@@ -1517,7 +1518,15 @@ async function loadSessions() {
                 <span class="font-bold text-gray-800 text-sm">${sess.worker_name || '–'}</span>
                 <span class="text-gray-400 text-xs">${sess.worker_phone || ''}</span>
                 ${isActive ? `<span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium pulse ml-auto">● LIVE</span>`
-                  : sess.auto_clockout ? `<span class="bg-red-100 text-red-600 text-xs px-2 py-0.5 rounded-full font-medium ml-auto"><i class="fas fa-stop-circle mr-0.5"></i>Admin Out</span>` : ''}
+                  : sess.auto_clockout ? (() => {
+                      const lbl = autoClockoutLabel(sess)
+                      const isGeo = lbl.includes('Geofence')
+                      const isEod = lbl.includes('End of Day')
+                      const isMax = lbl.includes('Max Shift')
+                      const color = isGeo ? 'bg-orange-100 text-orange-700' : isEod ? 'bg-purple-100 text-purple-700' : isMax ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-600'
+                      const icon  = isGeo ? 'fa-map-marker-slash' : isEod ? 'fa-moon' : isMax ? 'fa-business-time' : 'fa-stop-circle'
+                      return `<span class="${color} text-xs px-2 py-0.5 rounded-full font-medium ml-auto"><i class="fas ${icon} mr-0.5"></i>${lbl.replace('Auto Clock-Out: ','').replace('Admin Clock-Out: ','')}</span>`
+                    })() : ''}
               </div>
               <!-- Job location -->
               ${sess.job_location ? `
@@ -1698,7 +1707,8 @@ function previewLicense(input, previewId, hiddenId) {
 }
 
 async function addWorker() {
-  const name  = document.getElementById('modal-name').value.trim()
+  const rawName = document.getElementById('modal-name').value.trim()
+  const name    = rawName.replace(/\b\w/g, c => c.toUpperCase())
   const phone = document.getElementById('modal-phone').value.trim()
   if (!name || !phone) { showAdminToast('Name and phone are required', 'error'); return }
 
@@ -2528,9 +2538,13 @@ function updateExportWeekLabel() {
   document.getElementById('export-week-label').textContent = fmt(mon) + ' → ' + fmt(fri)
 }
 
+let _exportInited = false
 async function initExportTab() {
   setExportWeek(0)  // default to current week
-  document.getElementById('export-week-date').addEventListener('change', updateExportWeekLabel)
+  if (!_exportInited) {
+    _exportInited = true
+    document.getElementById('export-week-date').addEventListener('change', updateExportWeekLabel)
+  }
 
   // Populate worker dropdown
   try {
