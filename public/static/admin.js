@@ -3641,7 +3641,7 @@ function renderSiteDetailPanel(siteId, job) {
   if (!panel) return
 
   const typeColor = lossColor ? lossColor(job.type_of_loss) : 'bg-gray-100 text-gray-600'
-  const typeLabel = job.type_of_loss || '—'
+  const typeLabel = (job.type_of_loss || '—').replace('type_of_loss_','').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())
   const mapsUrl   = `https://maps.google.com/?q=${encodeURIComponent(job.full_address || '')}`
   const phoneRaw  = job.policyholder_phone || ''
   const phoneClean = phoneRaw.replace(/\D/g,'')
@@ -3662,6 +3662,11 @@ function renderSiteDetailPanel(siteId, job) {
     : ''
 
   panel.innerHTML = `
+    <!-- Read-only notice -->
+    <div class="flex items-center gap-1.5 mb-3 text-[11px] text-sky-600 bg-sky-50 rounded-lg px-3 py-2">
+      <i class="fas fa-lock text-[10px]"></i>
+      <span>Read-only — synced <strong>from</strong> Encircle. No changes sent back.</span>
+    </div>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-xs pb-1">
       <!-- Policyholder -->
       <div class="sm:col-span-2 flex items-start justify-between gap-3">
@@ -3784,7 +3789,8 @@ function _showEncircleDetailModal(siteId, job) {
   }
 
   const typeColor = lossColor ? lossColor(job.type_of_loss) : 'bg-gray-100 text-gray-600'
-  const typeLabel = job.type_of_loss || 'Unknown'
+  const typeLabel = (job.type_of_loss || 'Unknown').replace('type_of_loss_','').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())
+  const typeIcon  = typeLabel.toLowerCase().includes('water') ? 'fa-tint' : typeLabel.toLowerCase().includes('fire') ? 'fa-fire' : typeLabel.toLowerCase().includes('mold') ? 'fa-leaf' : typeLabel.toLowerCase().includes('wind') ? 'fa-wind' : 'fa-home'
   const mapsUrl = `https://maps.google.com/?q=${encodeURIComponent(job.full_address || '')}`
   const phoneRaw = job.policyholder_phone || ''
   const phoneClean = phoneRaw.replace(/\D/g,'')
@@ -3817,7 +3823,7 @@ function _showEncircleDetailModal(siteId, job) {
       </div>
       <div class="flex items-center gap-3 mt-3 flex-wrap">
         <span class="text-xs font-bold px-2.5 py-1 rounded-full bg-white bg-opacity-20 flex items-center gap-1.5">
-          <i class="fas ${typeLabel.includes('Water') ? 'fa-tint' : typeLabel.includes('Fire') ? 'fa-fire' : typeLabel.includes('Mold') ? 'fa-leaf' : typeLabel.includes('Wind') ? 'fa-wind' : 'fa-home'}"></i>
+          <i class="fas ${typeIcon}"></i>
           ${escHtml(typeLabel)}
         </span>
         ${date ? `<span class="text-sky-200 text-xs">Loss: ${date}</span>` : ''}
@@ -3825,8 +3831,14 @@ function _showEncircleDetailModal(siteId, job) {
       </div>
     </div>
 
+    <!-- Read-only banner -->
+    <div class="bg-sky-50 border-b border-sky-100 px-6 py-2.5 flex items-center gap-2">
+      <i class="fas fa-lock text-sky-400 text-xs"></i>
+      <span class="text-xs text-sky-700 font-medium">Read-only — this data is synced <strong>from</strong> Encircle. No changes are sent back.</span>
+    </div>
+
     <!-- Modal Body -->
-    <div class="p-6 space-y-6 overflow-y-auto max-h-[70vh]">
+    <div class="p-6 space-y-6 overflow-y-auto max-h-[65vh]">
 
       <!-- Contact Information -->
       <section>
@@ -3924,29 +3936,42 @@ function _showEncircleDetailModal(siteId, job) {
         <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-line">${escHtml(job.loss_details)}</div>
       </section>` : ''}
 
-      <!-- Edit geofence name/address -->
+      <!-- ClockIn Display Settings (local only, never sent to Encircle) -->
       <section>
         <h3 class="text-xs font-bold text-emerald-700 uppercase tracking-wider mb-3 flex items-center gap-2">
-          <i class="fas fa-map-marker-alt"></i> GPS Geofence Settings
+          <i class="fas fa-map-marker-alt"></i> ClockIn Geofence
+          <span class="text-[9px] text-gray-400 font-normal normal-case">Local only – never sent to Encircle</span>
         </h3>
         <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-4 space-y-3">
-          <p class="text-xs text-emerald-700">These settings control how workers clock in. The address is synced from Encircle automatically.</p>
+          <div class="flex items-start gap-2 text-xs text-emerald-700">
+            <i class="fas fa-info-circle mt-0.5 flex-shrink-0"></i>
+            <span>Workers clock in at this address. You can rename the display label below — this only affects how it appears in ClockIn, nothing is sent to Encircle.</span>
+          </div>
           <div>
             <label class="text-xs font-semibold text-gray-600 block mb-1">Display Name for Workers</label>
-            <input id="enc-edit-name-${siteId}" type="text" value="${escHtml(job.policyholder_name || '')}"
-              class="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-emerald-400" />
+            <div class="flex gap-2">
+              <input id="enc-edit-name-${siteId}" type="text" value="${escHtml(job.policyholder_name || '')}"
+                class="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-emerald-400" />
+              <button onclick="saveEncircleSiteName(${siteId})"
+                class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold px-4 py-2 rounded-xl flex items-center gap-2 shadow-sm transition-colors whitespace-nowrap">
+                <i class="fas fa-save"></i> Save
+              </button>
+            </div>
           </div>
-          <button onclick="saveEncircleSiteName(${siteId})"
-            class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold px-4 py-2 rounded-xl flex items-center gap-2 shadow-sm transition-colors">
-            <i class="fas fa-save"></i> Save Name
-          </button>
+          <div class="flex items-center gap-2 text-[11px] text-gray-400">
+            <i class="fas fa-circle-notch text-emerald-400"></i>
+            <span>50 m GPS geofence radius · Address auto-synced from Encircle</span>
+          </div>
         </div>
       </section>
     </div>
 
     <!-- Modal Footer -->
     <div class="border-t border-gray-100 px-6 py-4 flex items-center justify-between bg-gray-50">
-      <span class="text-xs text-gray-400">Last synced from Encircle · ${new Date().toLocaleDateString()}</span>
+      <div class="flex items-center gap-1.5 text-xs text-gray-400">
+        <i class="fas fa-sync-alt text-[10px]"></i>
+        <span>One-way sync from Encircle → ClockIn · ${new Date().toLocaleDateString()}</span>
+      </div>
       <button onclick="closeEncircleDetailModal()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors">
         Close
       </button>
