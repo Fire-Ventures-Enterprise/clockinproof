@@ -1741,10 +1741,14 @@ async function addWorker() {
 
   try {
     // 1. Register (creates worker record with name + phone)
+    // consent_given:true here means the admin is creating the record — the worker
+    // will give their own device consent when they first open their personal link.
+    // No device_id is sent from admin, so no device lock is set at this stage.
     const res = await fetch('/api/workers/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, phone, hourly_rate: rate, pin })
+      body: JSON.stringify({ name, phone, hourly_rate: rate, pin, consent_given: true })
+    })
     })
     const data = await res.json()
     if (!data.worker) { showAdminToast(data.error || 'Could not add worker', 'error'); return }

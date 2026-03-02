@@ -433,8 +433,9 @@ app.post('/api/workers/register', async (c) => {
   if (!name || !phone) {
     return c.json({ error: 'Name and phone are required' }, 400)
   }
-  // Consent is required before we store any device identifier (PIPEDA s.4.3 / CCPA)
-  if (!consent_given) {
+  // Consent is only required when a device_id is being registered (worker's own phone).
+  // Admin-side worker creation sends no device_id, so consent check is skipped.
+  if (device_id && !consent_given) {
     return c.json({ error: 'consent_required', message: 'Device consent is required to register.' }, 400)
   }
 
