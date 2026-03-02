@@ -2057,6 +2057,7 @@ function showTab(name) {
   if (name === 'quickbooks') initQbTabFull()
   if (name === 'job-sites') loadJobSites()
   if (name === 'encircle') loadEncircleStatus()
+  if (name === 'dispatch') loadDispatchTab()
   if (name === 'disputes') loadDisputes()
   if (name === 'support-tickets') loadTenantTickets()
   if (name === 'workers') loadDeviceResetRequests()
@@ -3564,6 +3565,10 @@ async function loadJobSites() {
               class="inline-flex items-center gap-1 text-xs bg-white border border-gray-200 hover:border-red-400 text-gray-600 hover:text-red-600 px-3 py-1.5 rounded-xl transition-colors font-medium">
               <i class="fas fa-trash-alt text-[11px]"></i>Remove
             </button>` : ''}
+            <button onclick="event.stopPropagation(); dispatchJobSite(${s.id})"
+              class="inline-flex items-center gap-1 text-xs bg-violet-500 hover:bg-violet-600 text-white px-3 py-1.5 rounded-xl transition-colors font-semibold shadow-sm">
+              <i class="fas fa-paper-plane text-[11px]"></i>Dispatch
+            </button>
             <i class="fas fa-chevron-right text-gray-300 text-xs transition-transform ml-0.5" id="site-chevron-${s.id}"></i>
           </div>
         </div>
@@ -5567,7 +5572,13 @@ function renderEncircleCards(jobs) {
       <!-- ── Card Footer ── -->
       <div class="px-4 py-2.5 bg-gray-50 flex items-center justify-between text-[11px] text-gray-400 border-t border-gray-100">
         <span class="flex items-center gap-1"><i class="fas fa-hashtag text-[9px]"></i>Claim ${j.encircle_claim_id}</span>
-        <span class="flex items-center gap-1">${created ? `<i class="fas fa-calendar text-[9px]"></i>Created ${created}` : ''}</span>
+        <div class="flex items-center gap-2">
+          <button onclick="event.stopPropagation(); dispatchEncircleJob('${claimKey}')"
+            class="inline-flex items-center gap-1 text-[11px] font-semibold text-white bg-violet-500 hover:bg-violet-600 px-2.5 py-1 rounded-lg transition-colors">
+            <i class="fas fa-paper-plane text-[10px]"></i>Dispatch
+          </button>
+          <span>${created ? `<i class="fas fa-calendar text-[9px]"></i>Created ${created}` : ''}</span>
+        </div>
       </div>
     </div>`
   }).join('')
@@ -5691,6 +5702,436 @@ async function encircleDisconnect() {
     if (typeof loadJobSites === 'function') loadJobSites()
   } catch (e) {
     showAdminToast('Disconnect failed: ' + e.message, 'error')
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── JOB DISPATCH ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _dispatchSource = 'encircle'   // 'encircle' | 'manual'
+let _dispatchJobs   = []           // cached job list for the picker
+let _dispatchWorkers = []          // cached workers list
+
+// ── Load Dispatch Tab ─────────────────────────────────────────────────────────
+async function loadDispatchTab() {
+  await Promise.all([loadDispatchStats(), loadDispatchList()])
+}
+
+async function loadDispatchStats() {
+  try {
+    const res  = await fetch('/api/dispatch/stats')
+    const data = await res.json()
+    const s = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ?? '0' }
+    s('dstat-sent',    data.sent    || 0)
+    s('dstat-replied', data.replied || 0)
+    s('dstat-arrived', data.arrived || 0)
+    s('dstat-total',   data.total   || 0)
+    // Update sidebar badge with "awaiting reply" count
+    const badge = document.getElementById('dispatch-badge')
+    const pending = (data.sent || 0)
+    if (badge) {
+      badge.textContent = pending
+      badge.classList.toggle('hidden', pending === 0)
+    }
+  } catch(e) { /* silent */ }
+}
+
+async function loadDispatchList() {
+  const el = document.getElementById('dispatch-list')
+  if (!el) return
+  try {
+    const res  = await fetch('/api/dispatch?limit=50')
+    const data = await res.json()
+    const rows = data.dispatches || []
+    if (rows.length === 0) {
+      el.innerHTML = `<p class="text-gray-400 text-sm text-center py-8">
+        <i class="fas fa-paper-plane text-3xl block text-gray-200 mb-3"></i>
+        No dispatches yet. Click "Dispatch a Job" to send the first one.</p>`
+      return
+    }
+    el.innerHTML = rows.map(d => renderDispatchRow(d)).join('')
+  } catch(e) {
+    el.innerHTML = '<p class="text-red-400 text-sm text-center py-4">Failed to load dispatches.</p>'
+  }
+}
+
+function renderDispatchRow(d) {
+  const statusConfig = {
+    sent:      { color: 'bg-violet-100 text-violet-700', icon: 'fa-paper-plane',    label: 'Sent – awaiting reply' },
+    replied:   { color: 'bg-sky-100 text-sky-700',       icon: 'fa-reply',          label: 'Replied – on the way' },
+    arrived:   { color: 'bg-emerald-100 text-emerald-700', icon: 'fa-map-marker-alt', label: 'Arrived & clocked in' },
+    cancelled: { color: 'bg-gray-100 text-gray-500',     icon: 'fa-ban',            label: 'Cancelled' },
+    failed:    { color: 'bg-red-100 text-red-600',       icon: 'fa-exclamation-triangle', label: 'SMS failed' },
+  }
+  const sc = statusConfig[d.status] || statusConfig.sent
+  const mapsUrl = `https://maps.google.com/?q=${encodeURIComponent(d.job_address || '')}`
+  const sentAt  = d.created_at ? new Date(d.created_at + 'Z').toLocaleString() : '—'
+  const replyAt = d.reply_at   ? new Date(d.reply_at   + 'Z').toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : null
+  const arrivedAt = d.arrived_at ? new Date(d.arrived_at + 'Z').toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : null
+
+  // Format phone for display
+  const phoneRaw   = (d.worker_phone || '').replace(/\D/g,'').slice(-10)
+  const phoneDisp  = phoneRaw.length === 10
+    ? `(${phoneRaw.slice(0,3)}) ${phoneRaw.slice(3,6)}-${phoneRaw.slice(6)}`
+    : d.worker_phone || ''
+
+  return `
+  <div class="bg-white border border-gray-100 rounded-2xl hover:border-violet-200 hover:shadow-sm transition-all overflow-hidden">
+    <!-- Top row -->
+    <div class="flex items-start gap-3 p-4 pb-3">
+      <!-- Status icon -->
+      <div class="w-10 h-10 rounded-xl ${sc.color} flex items-center justify-center flex-shrink-0 mt-0.5">
+        <i class="fas ${sc.icon} text-sm"></i>
+      </div>
+      <!-- Job info -->
+      <div class="flex-1 min-w-0">
+        <div class="flex items-start justify-between gap-2 flex-wrap">
+          <p class="font-bold text-gray-800 text-sm leading-tight">${escHtml(d.job_name || '—')}</p>
+          <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${sc.color} flex-shrink-0">${sc.label}</span>
+        </div>
+        <a href="${mapsUrl}" target="_blank"
+           class="inline-flex items-center gap-1 text-xs text-gray-600 hover:text-sky-600 hover:underline mt-0.5 transition-colors">
+          <i class="fas fa-map-marked-alt text-sky-400 text-[10px]"></i>
+          ${escHtml(d.job_address || '—')}
+        </a>
+      </div>
+    </div>
+
+    <!-- Middle row: worker + timeline -->
+    <div class="px-4 pb-3 grid grid-cols-2 gap-3 text-xs border-t border-gray-50 pt-3">
+      <div>
+        <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">👷 Worker</p>
+        <p class="font-semibold text-gray-800">${escHtml(d.worker_name || '—')}</p>
+        <p class="text-gray-400">${escHtml(phoneDisp)}</p>
+      </div>
+      <div>
+        <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">⏱ Timeline</p>
+        <div class="space-y-0.5">
+          <p class="text-gray-600"><span class="text-violet-500 font-semibold">Sent</span> ${sentAt}</p>
+          ${replyAt   ? `<p class="text-gray-600"><span class="text-sky-500 font-semibold">Replied</span> at ${replyAt}</p>` : ''}
+          ${arrivedAt ? `<p class="text-gray-600"><span class="text-emerald-500 font-semibold">Arrived</span> at ${arrivedAt}</p>` : ''}
+        </div>
+      </div>
+    </div>
+
+    <!-- Reply text if present -->
+    ${d.reply_text ? `
+    <div class="px-4 pb-3 border-t border-gray-50 pt-2">
+      <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-1">💬 Worker Reply</p>
+      <div class="bg-sky-50 border border-sky-100 rounded-xl px-3 py-2 text-xs text-gray-700 italic">
+        "${escHtml(d.reply_text)}"
+      </div>
+    </div>` : ''}
+
+    <!-- Notes if present -->
+    ${d.notes ? `
+    <div class="px-4 pb-3 border-t border-gray-50 pt-2">
+      <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-1">📋 Note</p>
+      <p class="text-xs text-gray-600">${escHtml(d.notes)}</p>
+    </div>` : ''}
+
+    <!-- Actions footer -->
+    <div class="px-4 py-2.5 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+      <span class="text-[11px] text-gray-400">#${d.id}</span>
+      <div class="flex items-center gap-2">
+        ${d.status === 'sent' ? `
+        <button onclick="resendDispatch(${d.id},'${d.worker_id}','${encodeURIComponent(d.job_name)}','${encodeURIComponent(d.job_address)}')"
+          class="text-[11px] text-violet-600 hover:text-violet-800 border border-violet-200 rounded-lg px-2.5 py-1 hover:bg-violet-50 transition-colors font-medium">
+          <i class="fas fa-redo-alt mr-1"></i>Resend
+        </button>
+        <button onclick="cancelDispatch(${d.id})"
+          class="text-[11px] text-gray-400 hover:text-red-500 border border-gray-200 rounded-lg px-2.5 py-1 hover:border-red-300 transition-colors">
+          <i class="fas fa-times mr-1"></i>Cancel
+        </button>` : ''}
+        <a href="${mapsUrl}" target="_blank"
+          class="text-[11px] text-sky-500 hover:text-sky-700 border border-sky-200 rounded-lg px-2.5 py-1 hover:bg-sky-50 transition-colors">
+          <i class="fas fa-map-marked-alt mr-1"></i>Map
+        </a>
+      </div>
+    </div>
+  </div>`
+}
+
+// ── Dispatch Modal ────────────────────────────────────────────────────────────
+async function openDispatchModal(prefillJobSiteId, prefillEncircleId, prefillName, prefillAddress) {
+  // Populate workers dropdown
+  try {
+    const res  = await fetch('/api/workers')
+    const data = await res.json()
+    _dispatchWorkers = (data.workers || []).filter(w => w.active && w.phone)
+  } catch(e) { _dispatchWorkers = [] }
+
+  // Populate Encircle jobs dropdown
+  try {
+    const res  = await fetch('/api/encircle/status')
+    const data = await res.json()
+    _dispatchJobs = data.synced_jobs || []
+  } catch(e) { _dispatchJobs = [] }
+
+  const modal = document.getElementById('dispatch-modal')
+  if (!modal) return
+
+  // Populate worker select
+  const wSel = document.getElementById('dispatch-worker-select')
+  if (wSel) {
+    wSel.innerHTML = '<option value="">— Select a worker —</option>' +
+      _dispatchWorkers.map(w => {
+        const phoneRaw = (w.phone || '').replace(/\D/g,'').slice(-10)
+        const phoneDisp = phoneRaw.length === 10
+          ? `(${phoneRaw.slice(0,3)}) ${phoneRaw.slice(3,6)}-${phoneRaw.slice(6)}`
+          : w.phone || ''
+        return `<option value="${w.id}" data-phone="${escHtml(w.phone||'')}">${escHtml(w.name)} · ${escHtml(phoneDisp)}</option>`
+      }).join('')
+    wSel.onchange = () => {
+      const opt = wSel.options[wSel.selectedIndex]
+      const phone = opt?.getAttribute('data-phone') || ''
+      const phoneRaw = phone.replace(/\D/g,'').slice(-10)
+      const phoneDisp = phoneRaw.length === 10
+        ? `(${phoneRaw.slice(0,3)}) ${phoneRaw.slice(3,6)}-${phoneRaw.slice(6)}`
+        : phone
+      const pp = document.getElementById('dispatch-worker-phone-preview')
+      const pv = document.getElementById('dispatch-worker-phone-val')
+      if (pp && pv) {
+        if (phone) { pv.textContent = phoneDisp; pp.classList.remove('hidden') }
+        else         { pp.classList.add('hidden') }
+      }
+      updateDispatchSmsPreview()
+    }
+  }
+
+  // Populate Encircle jobs select
+  const eSel = document.getElementById('dispatch-encircle-select')
+  if (eSel) {
+    if (_dispatchJobs.length === 0) {
+      eSel.innerHTML = '<option value="">— No Encircle jobs synced yet —</option>'
+    } else {
+      eSel.innerHTML = '<option value="">— Select an Encircle job —</option>' +
+        _dispatchJobs.map(j => `<option value="${j.encircle_claim_id}"
+          data-name="${escHtml(j.policyholder_name||'')}"
+          data-address="${escHtml(j.full_address||'')}"
+        >${escHtml(j.policyholder_name||'')} · ${escHtml((j.full_address||'').split(',')[0])}</option>`).join('')
+    }
+  }
+
+  // If prefill data passed (from Encircle card or Job Site card), auto-select
+  if (prefillEncircleId && eSel) {
+    eSel.value = prefillEncircleId
+    onDispatchEncircleSelect(prefillEncircleId)
+    setDispatchSource('encircle')
+  } else if (prefillName && prefillAddress) {
+    setDispatchSource('manual')
+    const mn = document.getElementById('dispatch-manual-name')
+    const ma = document.getElementById('dispatch-manual-address')
+    if (mn) mn.value = prefillName
+    if (ma) ma.value = prefillAddress
+    updateDispatchJobPreview(prefillName, prefillAddress)
+    updateDispatchSmsPreview()
+  } else {
+    setDispatchSource('encircle')
+  }
+
+  modal.classList.remove('hidden')
+  document.body.style.overflow = 'hidden'
+}
+
+function closeDispatchModal() {
+  const modal = document.getElementById('dispatch-modal')
+  if (modal) modal.classList.add('hidden')
+  document.body.style.overflow = ''
+}
+
+function setDispatchSource(src) {
+  _dispatchSource = src
+  const encDiv  = document.getElementById('dsrc-encircle')
+  const manDiv  = document.getElementById('dsrc-manual')
+  const encBtn  = document.getElementById('dsrc-encircle-btn')
+  const manBtn  = document.getElementById('dsrc-manual-btn')
+
+  if (src === 'encircle') {
+    encDiv?.classList.remove('hidden')
+    manDiv?.classList.add('hidden')
+    encBtn?.classList.replace('border-gray-200','border-sky-400')
+    encBtn?.classList.replace('bg-white','bg-sky-50')
+    encBtn?.classList.replace('text-gray-600','text-sky-700')
+    manBtn?.classList.replace('border-sky-400','border-gray-200')
+    manBtn?.classList.replace('bg-sky-50','bg-white')
+    manBtn?.classList.replace('text-sky-700','text-gray-600')
+  } else {
+    manDiv?.classList.remove('hidden')
+    encDiv?.classList.add('hidden')
+    manBtn?.classList.replace('border-gray-200','border-violet-400')
+    manBtn?.classList.replace('bg-white','bg-violet-50')
+    manBtn?.classList.replace('text-gray-600','text-violet-700')
+    encBtn?.classList.replace('border-sky-400','border-gray-200')
+    encBtn?.classList.replace('bg-sky-50','bg-white')
+    encBtn?.classList.replace('text-sky-700','text-gray-600')
+
+    // Wire manual inputs to preview
+    const mn = document.getElementById('dispatch-manual-name')
+    const ma = document.getElementById('dispatch-manual-address')
+    if (mn) mn.oninput = () => { updateDispatchJobPreview(mn.value, ma?.value||''); updateDispatchSmsPreview() }
+    if (ma) ma.oninput = () => { updateDispatchJobPreview(mn?.value||'', ma.value); updateDispatchSmsPreview() }
+  }
+  updateDispatchSmsPreview()
+}
+
+function onDispatchEncircleSelect(claimId) {
+  const eSel = document.getElementById('dispatch-encircle-select')
+  if (!eSel) return
+  const opt = eSel.querySelector(`option[value="${claimId}"]`)
+  const name    = opt?.getAttribute('data-name')    || ''
+  const address = opt?.getAttribute('data-address') || ''
+  updateDispatchJobPreview(name, address)
+  updateDispatchSmsPreview()
+}
+
+function updateDispatchJobPreview(name, address) {
+  const card = document.getElementById('dispatch-job-preview')
+  const nm   = document.getElementById('dispatch-preview-name')
+  const ad   = document.getElementById('dispatch-preview-address')
+  const mp   = document.getElementById('dispatch-preview-map')
+  if (!card) return
+  if (name || address) {
+    if (nm) nm.textContent = name || '—'
+    if (ad) ad.textContent = address || '—'
+    if (mp) mp.href = `https://maps.google.com/?q=${encodeURIComponent(address)}`
+    card.classList.remove('hidden')
+  } else {
+    card.classList.add('hidden')
+  }
+}
+
+function getDispatchJobData() {
+  if (_dispatchSource === 'encircle') {
+    const eSel = document.getElementById('dispatch-encircle-select')
+    const opt  = eSel?.options[eSel.selectedIndex]
+    return {
+      encircle_claim_id: eSel?.value || null,
+      name:    opt?.getAttribute('data-name')    || '',
+      address: opt?.getAttribute('data-address') || ''
+    }
+  } else {
+    return {
+      encircle_claim_id: null,
+      name:    document.getElementById('dispatch-manual-name')?.value.trim()    || '',
+      address: document.getElementById('dispatch-manual-address')?.value.trim() || ''
+    }
+  }
+}
+
+function updateDispatchSmsPreview() {
+  const pre  = document.getElementById('dispatch-sms-preview')
+  if (!pre) return
+  const job    = getDispatchJobData()
+  const notes  = document.getElementById('dispatch-notes')?.value.trim() || ''
+  const wSel   = document.getElementById('dispatch-worker-select')
+  const wName  = wSel?.options[wSel.selectedIndex]?.text?.split(' · ')[0] || ''
+  if (!job.name && !job.address) {
+    pre.textContent = 'Select a job and worker to preview the SMS…'
+    return
+  }
+  const mapsUrl  = `https://maps.google.com/?q=${encodeURIComponent(job.address)}`
+  const notesLine = notes ? `\nNote: ${notes}` : ''
+  pre.textContent = `🏠 New Job Assignment\n${job.name || '(job name)'}\n📍 ${job.address || '(address)'}\n\n👆 Tap for directions:\n${mapsUrl}${notesLine}\n\nReply "On my way" or any message when you're heading out. Clock in when you arrive.`
+}
+
+async function sendDispatch() {
+  const job    = getDispatchJobData()
+  const wSel   = document.getElementById('dispatch-worker-select')
+  const workerId = wSel?.value
+  const notes    = document.getElementById('dispatch-notes')?.value.trim() || ''
+
+  if (!job.name)    { showAdminToast('Please select or enter a job name', 'error'); return }
+  if (!job.address) { showAdminToast('Please select or enter a job address', 'error'); return }
+  if (!workerId)    { showAdminToast('Please select a worker', 'error'); return }
+
+  const btn = document.getElementById('dispatch-send-btn')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…' }
+
+  try {
+    const res  = await fetch('/api/dispatch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        encircle_claim_id: job.encircle_claim_id || null,
+        job_name:    job.name,
+        job_address: job.address,
+        worker_id:   parseInt(workerId),
+        notes
+      })
+    })
+    const data = await res.json()
+    if (data.success) {
+      showAdminToast(`✅ SMS sent to ${data.worker_name}`, 'success')
+      closeDispatchModal()
+      loadDispatchTab()
+    } else if (data.sms_sent === false) {
+      showAdminToast(`⚠️ Dispatch saved but SMS failed: ${data.error}`, 'error')
+      closeDispatchModal()
+      loadDispatchTab()
+    } else {
+      showAdminToast(data.error || 'Dispatch failed', 'error')
+    }
+  } catch(e) {
+    showAdminToast('Connection error: ' + e.message, 'error')
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i>Send via SMS' }
+  }
+}
+
+async function cancelDispatch(id) {
+  if (!confirm('Cancel this dispatch?')) return
+  try {
+    await fetch(`/api/dispatch/${id}`, { method: 'DELETE' })
+    showAdminToast('Dispatch cancelled', 'info')
+    loadDispatchTab()
+  } catch(e) {
+    showAdminToast('Failed to cancel', 'error')
+  }
+}
+
+async function resendDispatch(id, workerId, encodedName, encodedAddress) {
+  if (!confirm('Resend this job SMS to the worker?')) return
+  const name    = decodeURIComponent(encodedName)
+  const address = decodeURIComponent(encodedAddress)
+  try {
+    const res  = await fetch('/api/dispatch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_name: name, job_address: address, worker_id: parseInt(workerId) })
+    })
+    const data = await res.json()
+    if (data.success || data.dispatch_id) {
+      showAdminToast('✅ SMS resent', 'success')
+      loadDispatchTab()
+    } else {
+      showAdminToast(data.error || 'Resend failed', 'error')
+    }
+  } catch(e) {
+    showAdminToast('Connection error', 'error')
+  }
+}
+
+// ── Quick Dispatch button wired to Encircle cards ─────────────────────────────
+// Called from renderEncircleCards footer — opens modal pre-filled with this job
+function dispatchEncircleJob(claimId) {
+  const j = (_encircleJobsCache || []).find(x => String(x.encircle_claim_id) === String(claimId))
+  if (j) {
+    openDispatchModal(null, j.encircle_claim_id, j.policyholder_name, j.full_address)
+  } else {
+    openDispatchModal()
+  }
+}
+
+// ── Quick Dispatch from Job Sites tab ─────────────────────────────────────────
+function dispatchJobSite(siteId) {
+  const site = (_lastJobSites || []).find(s => s.id == siteId)
+  if (site) {
+    openDispatchModal(site.id, site.encircle_job_id || null, site.name, site.address)
+  } else {
+    openDispatchModal()
   }
 }
 

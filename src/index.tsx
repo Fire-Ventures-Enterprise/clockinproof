@@ -478,6 +478,34 @@ async function ensureSchema(db: D1Database) {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_encircle_jobs_claim ON encircle_jobs(encircle_claim_id)`,
     `CREATE INDEX IF NOT EXISTS idx_encircle_jobs_tenant ON encircle_jobs(tenant_id)`,
+
+    // ── Job Dispatch ──────────────────────────────────────────────────────────
+    // Tracks every job dispatched to a worker via SMS.
+    // status flow: sent → replied → arrived → cancelled
+    `CREATE TABLE IF NOT EXISTS job_dispatches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_site_id INTEGER,
+      encircle_claim_id TEXT,
+      job_name TEXT NOT NULL,
+      job_address TEXT NOT NULL,
+      maps_url TEXT,
+      worker_id INTEGER NOT NULL,
+      worker_name TEXT NOT NULL,
+      worker_phone TEXT NOT NULL,
+      dispatched_by TEXT DEFAULT 'Admin',
+      status TEXT DEFAULT 'sent',
+      sms_sid TEXT,
+      reply_text TEXT,
+      reply_at DATETIME,
+      arrived_at DATETIME,
+      session_id INTEGER,
+      notes TEXT,
+      tenant_id INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_dispatches_worker  ON job_dispatches(worker_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_dispatches_status  ON job_dispatches(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_dispatches_created ON job_dispatches(created_at)`,
   ]
   for (const sql of statements) {
     try {
@@ -1673,6 +1701,17 @@ app.post('/api/sessions/clock-in', async (c) => {
   ).bind(worker_id, now, latitude || null, longitude || null, address || null, notes || null, job_location.trim(), job_description.trim(), clockType).run()
 
   const session = await db.prepare('SELECT * FROM sessions WHERE id = ?').bind(result.meta.last_row_id).first()
+
+  // ── Mark any open dispatch for this worker as "arrived" ──────────────────
+  try {
+    await db.prepare(`
+      UPDATE job_dispatches
+      SET status='arrived', arrived_at=datetime('now'), session_id=?
+      WHERE worker_id=? AND status IN ('sent','replied')
+      AND date(created_at) >= date('now','-1 day')
+    `).bind(result.meta.last_row_id, worker_id).run()
+  } catch(_) { /* non-fatal */ }
+
   return c.json({ session, message: 'Clocked in successfully' }, 201)
 })
 
@@ -2647,6 +2686,167 @@ app.delete('/api/job-sites/:id', async (c) => {
   await ensureSchema(db)
   await db.prepare('UPDATE job_sites SET active = 0 WHERE id = ?').bind(c.req.param('id')).run()
   return c.json({ success: true })
+})
+
+// ─── JOB DISPATCH API ────────────────────────────────────────────────────────
+
+// POST /api/dispatch  — send a job to a worker via SMS
+app.post('/api/dispatch', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const body = await c.req.json() as any
+  const {
+    job_site_id,
+    encircle_claim_id,
+    job_name,
+    job_address,
+    worker_id,
+    notes
+  } = body
+
+  if (!worker_id)    return c.json({ error: 'worker_id required' }, 400)
+  if (!job_address)  return c.json({ error: 'job_address required' }, 400)
+  if (!job_name)     return c.json({ error: 'job_name required' }, 400)
+
+  // Fetch worker
+  const worker = await db.prepare('SELECT id, name, phone FROM workers WHERE id = ? AND active = 1').bind(worker_id).first() as any
+  if (!worker) return c.json({ error: 'Worker not found or inactive' }, 404)
+  if (!worker.phone) return c.json({ error: 'Worker has no phone number on file' }, 400)
+
+  // Build Google Maps URL using the address string
+  const mapsUrl = `https://maps.google.com/?q=${encodeURIComponent(job_address)}`
+
+  // Compose the SMS message
+  const notesLine = notes ? `\nNote: ${notes}` : ''
+  const smsText = `🏠 New Job Assignment\n${job_name}\n📍 ${job_address}\n\n👆 Tap for directions:\n${mapsUrl}${notesLine}\n\nReply "On my way" or any message when you're heading out. Clock in when you arrive.`
+
+  // Send via Twilio
+  const smsResult = await sendWorkerSms(c.env, worker.phone, smsText)
+
+  // Record the dispatch regardless of SMS result (so admin can see it)
+  const ins = await db.prepare(`
+    INSERT INTO job_dispatches
+      (job_site_id, encircle_claim_id, job_name, job_address, maps_url,
+       worker_id, worker_name, worker_phone, status, sms_sid, notes, tenant_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,1)
+  `).bind(
+    job_site_id || null,
+    encircle_claim_id || null,
+    job_name,
+    job_address,
+    mapsUrl,
+    worker.id,
+    worker.name,
+    worker.phone,
+    smsResult.sent ? 'sent' : 'failed',
+    null,
+    notes || null
+  ).run()
+
+  if (!smsResult.sent) {
+    return c.json({
+      success: false,
+      dispatch_id: ins.meta.last_row_id,
+      error: smsResult.error || 'SMS failed to send',
+      sms_sent: false
+    }, 200)
+  }
+
+  return c.json({
+    success: true,
+    dispatch_id: ins.meta.last_row_id,
+    sms_sent: true,
+    worker_name: worker.name,
+    worker_phone: worker.phone
+  })
+})
+
+// GET /api/dispatch  — list recent dispatches
+app.get('/api/dispatch', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const limit = parseInt(c.req.query('limit') || '50')
+  const rows = await db.prepare(`
+    SELECT d.*,
+      w.name  AS worker_name_live,
+      w.phone AS worker_phone_live
+    FROM job_dispatches d
+    LEFT JOIN workers w ON w.id = d.worker_id
+    ORDER BY d.created_at DESC
+    LIMIT ?
+  `).bind(limit).all()
+  return c.json({ dispatches: rows.results })
+})
+
+// GET /api/dispatch/stats  — summary counts by status
+app.get('/api/dispatch/stats', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const row = await db.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN status='sent'      THEN 1 ELSE 0 END) AS sent,
+      SUM(CASE WHEN status='replied'   THEN 1 ELSE 0 END) AS replied,
+      SUM(CASE WHEN status='arrived'   THEN 1 ELSE 0 END) AS arrived,
+      SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
+      SUM(CASE WHEN status='failed'    THEN 1 ELSE 0 END) AS failed
+    FROM job_dispatches
+    WHERE created_at >= datetime('now','-7 days')
+  `).first() as any
+  return c.json(row || {})
+})
+
+// DELETE /api/dispatch/:id  — cancel a dispatch
+app.delete('/api/dispatch/:id', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  await db.prepare(`UPDATE job_dispatches SET status='cancelled' WHERE id=?`).bind(c.req.param('id')).run()
+  return c.json({ success: true })
+})
+
+// POST /api/twilio/webhook  — inbound SMS from workers (Twilio calls this URL)
+// Configure in Twilio Console: Messaging → Phone Number → Incoming messages webhook
+// URL: https://admin.clockinproof.com/api/twilio/webhook  Method: POST
+app.post('/api/twilio/webhook', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+
+  // Twilio sends form-encoded body
+  const text = await c.req.text()
+  const params: Record<string, string> = {}
+  for (const [k, v] of new URLSearchParams(text)) params[k] = v
+
+  const fromRaw = (params['From'] || '').replace(/\D/g,'').replace(/^1/, '')
+  const body    = (params['Body'] || '').trim()
+  const smsSid  = params['SmsSid'] || params['MessageSid'] || ''
+
+  if (!fromRaw || !body) {
+    return new Response('<?xml version="1.0"?><Response></Response>', {
+      headers: { 'Content-Type': 'text/xml' }
+    })
+  }
+
+  // Find the most recent non-arrived dispatch for this worker phone number
+  const dispatch = await db.prepare(`
+    SELECT d.* FROM job_dispatches d
+    INNER JOIN workers w ON w.id = d.worker_id
+    WHERE (w.phone LIKE ? OR w.phone LIKE ?)
+      AND d.status IN ('sent','replied')
+    ORDER BY d.created_at DESC LIMIT 1
+  `).bind(`%${fromRaw}`, `%1${fromRaw}`).first() as any
+
+  if (dispatch) {
+    await db.prepare(`
+      UPDATE job_dispatches
+      SET status='replied', reply_text=?, reply_at=datetime('now')
+      WHERE id=?
+    `).bind(body, dispatch.id).run()
+  }
+
+  // Always return empty TwiML so Twilio doesn't auto-reply
+  return new Response('<?xml version="1.0"?><Response></Response>', {
+    headers: { 'Content-Type': 'text/xml' }
+  })
 })
 
 // ─── ENCIRCLE INTEGRATION API ────────────────────────────────────────────────
@@ -7500,6 +7700,15 @@ function getAdminHTML(): string {
           <span>Job Sites</span>
         </button>
 
+        <button onclick="showTab('dispatch')" data-tab="dispatch"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-violet-100 text-violet-600 flex-shrink-0">
+            <i class="fas fa-paper-plane text-sm"></i>
+          </span>
+          <span>Dispatch</span>
+          <span id="dispatch-badge" class="hidden ml-auto bg-violet-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center"></span>
+        </button>
+
         <button onclick="showTab('encircle')" data-tab="encircle"
           class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
           <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-sky-100 text-sky-600 flex-shrink-0">
@@ -8865,6 +9074,63 @@ function getAdminHTML(): string {
       </div>
     </div>
 
+    <!-- ── Tab: Job Dispatch ──────────────────────────────────────────────── -->
+    <div id="tab-dispatch" class="tab-content hidden space-y-5">
+
+      <!-- Header -->
+      <div class="bg-white rounded-2xl shadow-sm p-5">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h3 class="text-lg font-bold text-gray-800 flex items-center gap-2">
+              <i class="fas fa-paper-plane text-violet-500"></i>Job Dispatch
+            </h3>
+            <p class="text-xs text-gray-500 mt-0.5">Send a job to a worker via SMS. They get a Google Maps link and can reply when on the way.</p>
+          </div>
+          <button onclick="openDispatchModal()" class="bg-violet-600 hover:bg-violet-700 text-white text-sm font-bold px-4 py-2.5 rounded-xl flex items-center gap-2 shadow-sm transition-colors">
+            <i class="fas fa-paper-plane"></i> Dispatch a Job
+          </button>
+        </div>
+
+        <!-- Stats row -->
+        <div id="dispatch-stats-row" class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
+          <div class="bg-violet-50 rounded-xl p-3 text-center">
+            <p class="text-2xl font-black text-violet-600" id="dstat-sent">—</p>
+            <p class="text-[11px] text-gray-500 font-semibold mt-0.5">Sent (7d)</p>
+          </div>
+          <div class="bg-sky-50 rounded-xl p-3 text-center">
+            <p class="text-2xl font-black text-sky-600" id="dstat-replied">—</p>
+            <p class="text-[11px] text-gray-500 font-semibold mt-0.5">Replied</p>
+          </div>
+          <div class="bg-emerald-50 rounded-xl p-3 text-center">
+            <p class="text-2xl font-black text-emerald-600" id="dstat-arrived">—</p>
+            <p class="text-[11px] text-gray-500 font-semibold mt-0.5">Arrived</p>
+          </div>
+          <div class="bg-amber-50 rounded-xl p-3 text-center">
+            <p class="text-2xl font-black text-amber-600" id="dstat-total">—</p>
+            <p class="text-[11px] text-gray-500 font-semibold mt-0.5">Total (7d)</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Dispatch Board -->
+      <div class="bg-white rounded-2xl shadow-sm p-5">
+        <div class="flex items-center justify-between mb-4">
+          <h4 class="font-bold text-gray-700 flex items-center gap-2">
+            <i class="fas fa-list-ul text-violet-400"></i> Recent Dispatches
+          </h4>
+          <button onclick="loadDispatchTab()" class="text-xs text-gray-400 hover:text-violet-600 flex items-center gap-1 transition-colors">
+            <i class="fas fa-sync-alt text-[10px]"></i>Refresh
+          </button>
+        </div>
+        <div id="dispatch-list" class="space-y-3">
+          <p class="text-gray-400 text-sm text-center py-8">
+            <i class="fas fa-paper-plane text-3xl block text-gray-200 mb-3"></i>
+            No dispatches yet. Click "Dispatch a Job" to send the first one.
+          </p>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Tab: Encircle Integration ──────────────────────────────────────── -->
     <div id="tab-encircle" class="tab-content hidden space-y-4">
 
@@ -9093,6 +9359,119 @@ function getAdminHTML(): string {
     </main><!-- /main content -->
   </div><!-- /flex body -->
 </div><!-- /admin-dashboard -->
+
+<!-- ── Job Dispatch Modal ──────────────────────────────────────────────────── -->
+<div id="dispatch-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 z-[90] flex items-start justify-center p-4 overflow-y-auto" onclick="if(event.target===this)closeDispatchModal()">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg my-6 overflow-hidden">
+    <!-- Header -->
+    <div class="bg-gradient-to-r from-violet-600 to-indigo-600 px-6 py-5 text-white flex items-start justify-between gap-4">
+      <div>
+        <div class="flex items-center gap-2 mb-1">
+          <i class="fas fa-paper-plane text-violet-200"></i>
+          <span class="text-violet-200 text-xs font-semibold uppercase tracking-wide">Job Dispatch</span>
+        </div>
+        <h2 class="text-xl font-bold">Send Job to Worker</h2>
+        <p class="text-violet-200 text-sm mt-0.5">Worker receives an SMS with address &amp; Google Maps link</p>
+      </div>
+      <button onclick="closeDispatchModal()" class="w-9 h-9 flex items-center justify-center rounded-xl bg-white bg-opacity-20 hover:bg-opacity-30 text-white flex-shrink-0">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+
+    <!-- Body -->
+    <div class="p-6 space-y-4">
+
+      <!-- Job Source toggle -->
+      <div>
+        <p class="text-xs font-bold text-gray-600 mb-2 uppercase tracking-wide">Job Source</p>
+        <div class="flex gap-2">
+          <button id="dsrc-encircle-btn" onclick="setDispatchSource('encircle')"
+            class="flex-1 text-xs font-semibold py-2 px-3 rounded-xl border-2 border-sky-400 bg-sky-50 text-sky-700 transition-colors">
+            <i class="fas fa-sync-alt mr-1"></i>Encircle Job
+          </button>
+          <button id="dsrc-manual-btn" onclick="setDispatchSource('manual')"
+            class="flex-1 text-xs font-semibold py-2 px-3 rounded-xl border-2 border-gray-200 bg-white text-gray-600 hover:border-violet-300 hover:text-violet-600 transition-colors">
+            <i class="fas fa-keyboard mr-1"></i>Manual Entry
+          </button>
+        </div>
+      </div>
+
+      <!-- Encircle job picker (default) -->
+      <div id="dsrc-encircle">
+        <label class="block text-xs font-bold text-gray-600 mb-1.5">Select Encircle Job</label>
+        <select id="dispatch-encircle-select"
+          class="w-full px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:border-violet-500 transition-colors"
+          onchange="onDispatchEncircleSelect(this.value)">
+          <option value="">— Loading jobs… —</option>
+        </select>
+      </div>
+
+      <!-- Manual entry (hidden by default) -->
+      <div id="dsrc-manual" class="hidden space-y-3">
+        <div>
+          <label class="block text-xs font-bold text-gray-600 mb-1.5">Job Name / Description <span class="text-red-500">*</span></label>
+          <input id="dispatch-manual-name" type="text" placeholder="e.g. Water damage restoration"
+            class="w-full px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:border-violet-500 transition-colors"/>
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-gray-600 mb-1.5">Address <span class="text-red-500">*</span></label>
+          <input id="dispatch-manual-address" type="text" placeholder="Full property address"
+            class="w-full px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:border-violet-500 transition-colors"/>
+        </div>
+      </div>
+
+      <!-- Job preview card (shown after selection) -->
+      <div id="dispatch-job-preview" class="hidden bg-gray-50 rounded-xl p-3 border border-gray-200">
+        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-wide mb-1.5">Job Preview</p>
+        <p id="dispatch-preview-name" class="font-bold text-gray-800 text-sm"></p>
+        <p id="dispatch-preview-address" class="text-xs text-gray-600 mt-0.5"></p>
+        <a id="dispatch-preview-map" href="#" target="_blank"
+           class="inline-flex items-center gap-1 text-[11px] text-sky-500 hover:underline mt-1">
+          <i class="fas fa-map-marked-alt text-[10px]"></i>Preview in Google Maps
+        </a>
+      </div>
+
+      <!-- Worker picker -->
+      <div>
+        <label class="block text-xs font-bold text-gray-600 mb-1.5">Select Worker <span class="text-red-500">*</span></label>
+        <select id="dispatch-worker-select"
+          class="w-full px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:border-violet-500 transition-colors">
+          <option value="">— Loading workers… —</option>
+        </select>
+        <p id="dispatch-worker-phone-preview" class="text-[11px] text-gray-400 mt-1 hidden">
+          <i class="fas fa-mobile-alt mr-1"></i><span id="dispatch-worker-phone-val"></span>
+        </p>
+      </div>
+
+      <!-- Optional notes -->
+      <div>
+        <label class="block text-xs font-bold text-gray-600 mb-1.5">Note to Worker <span class="text-gray-400 font-normal">(optional)</span></label>
+        <input id="dispatch-notes" type="text" placeholder="e.g. Bring dehumidifier. Client name: John."
+          class="w-full px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:border-violet-500 transition-colors"/>
+      </div>
+
+      <!-- SMS Preview -->
+      <div class="bg-gray-900 rounded-xl p-4">
+        <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-2 flex items-center gap-1.5">
+          <i class="fas fa-comment-dots text-green-400"></i>SMS Preview
+        </p>
+        <pre id="dispatch-sms-preview" class="text-xs text-green-300 font-mono whitespace-pre-wrap leading-relaxed">Select a job and worker to preview the SMS…</pre>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="border-t border-gray-100 px-6 py-4 flex gap-3 bg-gray-50">
+      <button onclick="closeDispatchModal()"
+        class="flex-1 bg-white border-2 border-gray-200 hover:border-gray-400 text-gray-700 font-semibold py-3 rounded-xl text-sm transition-colors">
+        Cancel
+      </button>
+      <button id="dispatch-send-btn" onclick="sendDispatch()"
+        class="flex-1 bg-violet-600 hover:bg-violet-700 text-white font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2 shadow-sm transition-colors">
+        <i class="fas fa-paper-plane"></i>Send via SMS
+      </button>
+    </div>
+  </div>
+</div>
 
 <!-- ── Add / Edit Job Site Modal ─────────────────────────────────────────── -->
 <div id="site-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onclick="if(event.target===this)closeSiteModal()">
