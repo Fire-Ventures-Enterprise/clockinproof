@@ -3484,6 +3484,7 @@ async function confirmSessionEdit() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let editingSiteId = null
+let _lastJobSites = []  // cached sites for expand/detail lookups
 
 async function loadJobSites() {
   try {
@@ -3511,35 +3512,65 @@ async function loadJobSites() {
       return
     }
 
+    // Cache the full sites array for expand/detail lookups
+    _lastJobSites = sites
+
     el.innerHTML = sites.map(s => {
       const isEncircle = !!s.encircle_job_id
-      const encBadge = isEncircle
-        ? '<span class="bg-sky-100 text-sky-600 text-[9px] font-bold px-1.5 py-0.5 rounded ml-1">ENC</span>'
+      const encBadge   = isEncircle
+        ? '<span class="bg-sky-100 text-sky-600 text-[9px] font-bold px-1.5 py-0.5 rounded-full ml-1.5 align-middle">ENCIRCLE</span>'
         : ''
-      const iconClass = isEncircle ? 'bg-sky-100' : 'bg-emerald-100'
+      const iconBg    = isEncircle ? 'bg-sky-100' : 'bg-emerald-100'
       const iconColor = isEncircle ? 'text-sky-600' : 'text-emerald-600'
+      // Always use the full address string for Google Maps (human-readable, not raw coords)
+      const mapsUrl   = `https://maps.google.com/?q=${encodeURIComponent(s.address || '')}`
+      const hasGPS    = s.lat && s.lng
+      const gpsBadge  = hasGPS
+        ? `<span class="text-[10px] text-emerald-600 font-semibold flex items-center gap-0.5"><i class="fas fa-map-marker-alt text-[9px]"></i>GPS</span>`
+        : `<span class="text-[10px] text-amber-400 font-semibold flex items-center gap-0.5"><i class="fas fa-exclamation-triangle text-[9px]"></i>No GPS</span>`
+
       return `
-      <div class="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-2xl p-4 hover:border-emerald-300 transition-colors group">
-        <div class="flex items-center gap-3 min-w-0">
-          <div class="w-10 h-10 ${iconClass} rounded-xl flex items-center justify-center flex-shrink-0">
-            <i class="fas fa-map-marker-alt ${iconColor}"></i>
+      <div class="bg-white border border-gray-200 rounded-2xl hover:border-sky-300 hover:shadow-sm transition-all duration-200 overflow-hidden">
+        <!-- Main row: icon + info + actions -->
+        <div class="flex items-center gap-3 p-4 cursor-pointer" onclick="toggleSiteExpand(${s.id}, this)">
+          <!-- Icon -->
+          <div class="w-11 h-11 ${iconBg} rounded-xl flex items-center justify-center flex-shrink-0">
+            <i class="fas fa-map-marker-alt ${iconColor} text-lg"></i>
           </div>
-          <div class="min-w-0">
-            <p class="font-semibold text-gray-800 text-sm">${escHtml(s.name)}${encBadge}</p>
-            <p class="text-xs text-gray-500 truncate">${escHtml(s.address)}</p>
-            ${s.lat ? `<a href="https://maps.google.com/?q=${s.lat},${s.lng}" target="_blank" class="text-xs text-blue-500 hover:underline"><i class="fas fa-external-link-alt mr-1"></i>View on map</a>` : ''}
+          <!-- Name + address -->
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center flex-wrap gap-1 mb-0.5">
+              <p class="font-bold text-gray-800 text-sm leading-tight">${escHtml(s.name)}${encBadge}</p>
+            </div>
+            <p class="text-xs text-gray-500 truncate">${escHtml(s.address || '')}</p>
+            <div class="flex items-center gap-3 mt-1">
+              <a href="${mapsUrl}" target="_blank" onclick="event.stopPropagation()"
+                 class="inline-flex items-center gap-1 text-[11px] text-sky-500 hover:text-sky-700 hover:underline font-medium">
+                <i class="fas fa-map-marked-alt text-[10px]"></i>View on map
+              </a>
+              ${gpsBadge}
+            </div>
+          </div>
+          <!-- Actions -->
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <button onclick="event.stopPropagation(); ${isEncircle
+              ? `openEncircleSiteDetail(${s.id},'${s.encircle_job_id}')`
+              : `openEditSiteFullScreen(${s.id}, decodeURIComponent('${encodeURIComponent(s.name)}'), decodeURIComponent('${encodeURIComponent(s.address || '')}'))`
+            }"
+              class="inline-flex items-center gap-1 text-xs bg-white border border-gray-200 hover:border-sky-400 text-gray-600 hover:text-sky-600 px-3 py-1.5 rounded-xl transition-colors font-medium">
+              <i class="fas fa-edit text-[11px]"></i>Edit
+            </button>
+            ${!isEncircle ? `<button onclick="event.stopPropagation(); deleteSite(${s.id},'${s.name.replace(/'/g,"\\'")}') "
+              class="inline-flex items-center gap-1 text-xs bg-white border border-gray-200 hover:border-red-400 text-gray-600 hover:text-red-600 px-3 py-1.5 rounded-xl transition-colors font-medium">
+              <i class="fas fa-trash-alt text-[11px]"></i>Remove
+            </button>` : ''}
+            <i class="fas fa-chevron-right text-gray-300 text-xs transition-transform ml-0.5" id="site-chevron-${s.id}"></i>
           </div>
         </div>
-        <div class="flex gap-2 flex-shrink-0 ml-3">
-          <button onclick="openEditSiteModal(${s.id},'${encodeURIComponent(s.name)}','${encodeURIComponent(s.address)}')"
-            class="text-xs bg-white border border-gray-200 hover:border-amber-400 text-gray-600 hover:text-amber-600 px-3 py-1.5 rounded-lg transition-colors">
-            <i class="fas fa-edit mr-1"></i>Edit
-          </button>
-          ${!isEncircle ? `<button onclick="deleteSite(${s.id},'${s.name.replace(/'/g,"\\'")}') "
-            class="text-xs bg-white border border-gray-200 hover:border-red-400 text-gray-600 hover:text-red-600 px-3 py-1.5 rounded-lg transition-colors">
-            <i class="fas fa-trash-alt mr-1"></i>Remove
-          </button>` : ''}
-        </div>
+        <!-- Expandable detail panel (Encircle sites only) -->
+        ${isEncircle ? `<div id="site-detail-${s.id}" class="hidden border-t border-gray-100 bg-gray-50 px-4 py-3">
+          <p class="text-xs text-gray-400 italic text-center py-2"><i class="fas fa-spinner fa-spin mr-1"></i>Loading claim details…</p>
+        </div>` : ''}
       </div>`
     }).join('')
   } catch(e) {
@@ -3547,25 +3578,619 @@ async function loadJobSites() {
   }
 }
 
-function openAddSiteModal() {
-  editingSiteId = null
-  document.getElementById('site-modal-title').textContent = 'Add Job Site'
-  document.getElementById('site-name').value    = ''
-  document.getElementById('site-address').value = ''
-  document.getElementById('site-save-btn').innerHTML = '<i class="fas fa-save mr-1.5"></i>Save Site'
-  document.getElementById('site-modal').classList.remove('hidden')
+  } catch(e) {
+    showAdminToast('Failed to load job sites', 'error')
+  }
+}
+
+// ── Mask sensitive string: show first char + ████ + last 2 ───────────────────
+function maskSensitive(val) {
+  if (!val || val.length < 4) return val || '—'
+  return val[0] + '••••••' + val.slice(-2)
+}
+
+// ── Toggle expand/collapse for Encircle job cards in Job Sites tab ────────────
+let _siteDetailCache = {}  // cache claim data so we don't re-fetch
+
+async function toggleSiteExpand(siteId, headerEl) {
+  const panel   = document.getElementById('site-detail-' + siteId)
+  const chevron = document.getElementById('site-chevron-' + siteId)
+  if (!panel) return  // non-Encircle site, nothing to expand
+
+  const isOpen = !panel.classList.contains('hidden')
+  if (isOpen) {
+    panel.classList.add('hidden')
+    if (chevron) chevron.style.transform = ''
+    return
+  }
+  panel.classList.remove('hidden')
+  if (chevron) chevron.style.transform = 'rotate(90deg)'
+
+  // If already loaded, skip re-fetch
+  if (_siteDetailCache[siteId]) {
+    renderSiteDetailPanel(siteId, _siteDetailCache[siteId])
+    return
+  }
+
+  // Find the encircle_job_id from the site list data (_lastJobSites cache)
+  const site = (_lastJobSites || []).find(s => s.id == siteId)
+  if (!site?.encircle_job_id) return
+  await loadSiteDetailFromEncircle(siteId, site.encircle_job_id)
+}
+
+async function loadSiteDetailFromEncircle(siteId, encircleClaimId) {
+  try {
+    const res  = await fetch('/api/encircle/status')
+    const data = await res.json()
+    const job  = (data.synced_jobs || []).find(j => String(j.encircle_claim_id) === String(encircleClaimId))
+    if (job) {
+      _siteDetailCache[siteId] = job
+      renderSiteDetailPanel(siteId, job)
+    } else {
+      const panel = document.getElementById('site-detail-' + siteId)
+      if (panel) panel.innerHTML = '<p class="text-xs text-gray-400 text-center py-2">No claim details found.</p>'
+    }
+  } catch(e) {
+    const panel = document.getElementById('site-detail-' + siteId)
+    if (panel) panel.innerHTML = '<p class="text-xs text-red-400 text-center py-2">Failed to load details.</p>'
+  }
+}
+
+function renderSiteDetailPanel(siteId, job) {
+  const panel = document.getElementById('site-detail-' + siteId)
+  if (!panel) return
+
+  const typeColor = lossColor ? lossColor(job.type_of_loss) : 'bg-gray-100 text-gray-600'
+  const typeLabel = job.type_of_loss || '—'
+  const mapsUrl   = `https://maps.google.com/?q=${encodeURIComponent(job.full_address || '')}`
+  const phoneRaw  = job.policyholder_phone || ''
+  const phoneClean = phoneRaw.replace(/\D/g,'')
+  const phoneLink  = phoneClean
+    ? `<a href="tel:+${phoneClean}" class="text-sky-600 hover:underline font-medium">${phoneRaw}</a>`
+    : '<span class="text-gray-300 text-xs">Not provided</span>'
+  const emailLink  = job.policyholder_email
+    ? `<a href="mailto:${escHtml(job.policyholder_email)}" class="text-sky-600 hover:underline text-xs">${escHtml(job.policyholder_email)}</a>`
+    : '<span class="text-gray-300 text-xs">Not provided</span>'
+  const encLink = job.permalink_url
+    ? `<a href="${job.permalink_url}" target="_blank" class="text-indigo-500 hover:underline text-xs inline-flex items-center gap-1"><i class="fas fa-external-link-alt text-[10px]"></i>Open in Encircle</a>`
+    : ''
+  const notesHtml = job.loss_details
+    ? `<div class="sm:col-span-2">
+         <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Loss Notes</span>
+         <p class="mt-1 text-xs text-gray-600 leading-relaxed bg-amber-50 border border-amber-100 rounded-lg p-2 italic">${escHtml(job.loss_details)}</p>
+       </div>`
+    : ''
+
+  panel.innerHTML = `
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-xs pb-1">
+      <!-- Policyholder -->
+      <div class="sm:col-span-2 flex items-start justify-between gap-3">
+        <div>
+          <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Policyholder</span>
+          <p class="mt-0.5 font-bold text-gray-800 text-sm">${escHtml(job.policyholder_name || '—')}</p>
+        </div>
+        <div class="flex items-center gap-2 mt-1">
+          <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${typeColor}">${escHtml(typeLabel)}</span>
+          ${encLink}
+        </div>
+      </div>
+      <!-- Address -->
+      <div class="sm:col-span-2">
+        <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Address</span>
+        <div class="mt-0.5">
+          <a href="${mapsUrl}" target="_blank" class="text-gray-700 hover:text-sky-600 hover:underline inline-flex items-center gap-1">
+            <i class="fas fa-map-marked-alt text-sky-400 text-[10px]"></i>${escHtml(job.full_address || '—')}
+          </a>
+        </div>
+      </div>
+      <!-- Phone -->
+      <div>
+        <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Phone</span>
+        <div class="mt-0.5">${phoneLink}</div>
+      </div>
+      <!-- Email -->
+      <div>
+        <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Email</span>
+        <div class="mt-0.5 truncate">${emailLink}</div>
+      </div>
+      <!-- Date of Loss -->
+      ${job.date_of_loss ? `<div>
+        <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Date of Loss</span>
+        <p class="mt-0.5 text-gray-700">${new Date(job.date_of_loss).toLocaleDateString('en-CA',{month:'short',day:'numeric',year:'numeric'})}</p>
+      </div>` : ''}
+      <!-- Project Manager -->
+      ${job.project_manager_name ? `<div>
+        <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Project Manager</span>
+        <p class="mt-0.5 text-gray-700 font-semibold">${escHtml(job.project_manager_name)}</p>
+      </div>` : ''}
+      <!-- Adjuster -->
+      ${job.adjuster_name ? `<div>
+        <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Adjuster</span>
+        <p class="mt-0.5 text-gray-700">${escHtml(job.adjuster_name)}</p>
+      </div>` : ''}
+      <!-- Insurance Company -->
+      ${job.insurance_company_name ? `<div>
+        <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Insurance Company</span>
+        <p class="mt-0.5 text-gray-700">${escHtml(job.insurance_company_name)}</p>
+      </div>` : ''}
+      <!-- Policy # (masked) -->
+      ${job.policy_number ? `<div>
+        <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Policy #</span>
+        <p class="mt-0.5 font-mono text-gray-500 flex items-center gap-1">
+          ${maskSensitive(job.policy_number)}
+          <button onclick="revealField(this,'${escHtml(job.policy_number)}')" class="text-[9px] text-sky-500 hover:text-sky-700 border border-sky-200 rounded px-1 py-0.5 ml-1">Show</button>
+        </p>
+      </div>` : ''}
+      <!-- Insurer Ref (masked) -->
+      ${job.insurer_identifier ? `<div>
+        <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Insurer Ref</span>
+        <p class="mt-0.5 font-mono text-gray-500 flex items-center gap-1">
+          ${maskSensitive(job.insurer_identifier)}
+          <button onclick="revealField(this,'${escHtml(job.insurer_identifier)}')" class="text-[9px] text-sky-500 hover:text-sky-700 border border-sky-200 rounded px-1 py-0.5 ml-1">Show</button>
+        </p>
+      </div>` : ''}
+      <!-- Estimate -->
+      ${job.emergency_estimate ? `<div>
+        <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Emergency Estimate</span>
+        <p class="mt-0.5 text-gray-700 font-semibold">$${(job.emergency_estimate/100).toLocaleString('en-CA',{minimumFractionDigits:2})}</p>
+      </div>` : ''}
+      ${job.repair_estimate ? `<div>
+        <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Repair Estimate</span>
+        <p class="mt-0.5 text-gray-700 font-semibold">$${(job.repair_estimate/100).toLocaleString('en-CA',{minimumFractionDigits:2})}</p>
+      </div>` : ''}
+      ${notesHtml}
+    </div>
+    <div class="pt-2 mt-2 border-t border-gray-100 flex items-center gap-3">
+      <button onclick="openEncircleSiteDetail(${siteId},'${job.encircle_claim_id}')"
+        class="text-xs bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 transition-colors">
+        <i class="fas fa-expand-alt text-[10px]"></i> Full Edit
+      </button>
+      <span class="text-[10px] text-gray-300">Claim #${job.encircle_claim_id}</span>
+    </div>`
+}
+
+function revealField(btn, val) {
+  const p = btn.parentElement
+  p.innerHTML = `<span class="font-mono text-gray-800 select-all">${escHtml(val)}</span>
+    <button onclick="this.parentElement.innerHTML='${maskSensitive(val).replace(/'/g,"&#39;")} <button onclick=\\'revealField(this,\\&quot;${val.replace(/"/g,'&quot;')}\\&quot;)\\' class=\\'text-[9px] text-sky-500 hover:text-sky-700 border border-sky-200 rounded px-1 py-0.5 ml-1\\'>Show</button>'" class="text-[9px] text-gray-400 border border-gray-200 rounded px-1 py-0.5 ml-1">Hide</button>`
+}
+
+// ── Full-screen Encircle site detail / edit modal ─────────────────────────────
+function openEncircleSiteDetail(siteId, encircleClaimId) {
+  // Try cache first, else fetch
+  const cached = _siteDetailCache[siteId]
+  if (cached) {
+    _showEncircleDetailModal(siteId, cached)
+    return
+  }
+  // Fetch and show
+  fetch('/api/encircle/status').then(r => r.json()).then(data => {
+    const job = (data.synced_jobs || []).find(j => String(j.encircle_claim_id) === String(encircleClaimId))
+    if (job) {
+      _siteDetailCache[siteId] = job
+      _showEncircleDetailModal(siteId, job)
+    }
+  }).catch(() => showAdminToast('Could not load claim details', 'error'))
+}
+
+function _showEncircleDetailModal(siteId, job) {
+  let modal = document.getElementById('enc-detail-modal')
+  if (!modal) {
+    modal = document.createElement('div')
+    modal.id = 'enc-detail-modal'
+    modal.className = 'fixed inset-0 bg-black bg-opacity-60 z-[100] flex items-start justify-center p-4 overflow-y-auto'
+    modal.onclick = (e) => { if (e.target === modal) closeEncircleDetailModal() }
+    document.body.appendChild(modal)
+  }
+
+  const typeColor = lossColor ? lossColor(job.type_of_loss) : 'bg-gray-100 text-gray-600'
+  const typeLabel = job.type_of_loss || 'Unknown'
+  const mapsUrl = `https://maps.google.com/?q=${encodeURIComponent(job.full_address || '')}`
+  const phoneRaw = job.policyholder_phone || ''
+  const phoneClean = phoneRaw.replace(/\D/g,'')
+  const encLink = job.permalink_url
+    ? `<a href="${job.permalink_url}" target="_blank" class="inline-flex items-center gap-1.5 text-sm text-indigo-600 hover:text-indigo-800 font-medium">
+        <i class="fas fa-external-link-alt text-xs"></i>Open in Encircle
+       </a>`
+    : ''
+  const policyMasked = job.policy_number ? maskSensitive(job.policy_number) : null
+  const insurerMasked = job.insurer_identifier ? maskSensitive(job.insurer_identifier) : null
+  const date = job.date_of_loss ? new Date(job.date_of_loss).toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric',year:'numeric'}) : null
+  const created = job.date_claim_created ? new Date(job.date_claim_created).toLocaleDateString('en-CA',{month:'long',day:'numeric',year:'numeric'}) : null
+
+  modal.innerHTML = `
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl my-4 overflow-hidden">
+    <!-- Modal Header -->
+    <div class="bg-gradient-to-r from-sky-600 to-indigo-600 px-6 py-5 text-white">
+      <div class="flex items-start justify-between gap-4">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="bg-white bg-opacity-20 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">ENCIRCLE</span>
+            <span class="text-sky-200 text-xs">Claim #${job.encircle_claim_id}</span>
+          </div>
+          <h2 class="text-xl font-bold leading-tight">${escHtml(job.policyholder_name || 'Unknown Policyholder')}</h2>
+          <p class="text-sky-200 text-sm mt-1">${escHtml(job.full_address || '')}</p>
+        </div>
+        <button onclick="closeEncircleDetailModal()" class="w-9 h-9 flex items-center justify-center rounded-xl bg-white bg-opacity-20 hover:bg-opacity-30 text-white flex-shrink-0">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="flex items-center gap-3 mt-3 flex-wrap">
+        <span class="text-xs font-bold px-2.5 py-1 rounded-full bg-white bg-opacity-20 flex items-center gap-1.5">
+          <i class="fas ${typeLabel.includes('Water') ? 'fa-tint' : typeLabel.includes('Fire') ? 'fa-fire' : typeLabel.includes('Mold') ? 'fa-leaf' : typeLabel.includes('Wind') ? 'fa-wind' : 'fa-home'}"></i>
+          ${escHtml(typeLabel)}
+        </span>
+        ${date ? `<span class="text-sky-200 text-xs">Loss: ${date}</span>` : ''}
+        ${encLink}
+      </div>
+    </div>
+
+    <!-- Modal Body -->
+    <div class="p-6 space-y-6 overflow-y-auto max-h-[70vh]">
+
+      <!-- Contact Information -->
+      <section>
+        <h3 class="text-xs font-bold text-sky-700 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <i class="fas fa-address-card"></i> Contact Information
+        </h3>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div class="bg-gray-50 rounded-xl p-3">
+            <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Full Name</p>
+            <p class="text-sm font-bold text-gray-800">${escHtml(job.policyholder_name || '—')}</p>
+          </div>
+          <div class="bg-gray-50 rounded-xl p-3">
+            <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Phone</p>
+            ${phoneClean
+              ? `<a href="tel:+${phoneClean}" class="text-sky-600 hover:underline font-semibold text-sm">${phoneRaw}</a>`
+              : '<p class="text-gray-400 text-sm">Not provided</p>'}
+          </div>
+          <div class="bg-gray-50 rounded-xl p-3 sm:col-span-2">
+            <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Email</p>
+            ${job.policyholder_email
+              ? `<a href="mailto:${escHtml(job.policyholder_email)}" class="text-sky-600 hover:underline text-sm">${escHtml(job.policyholder_email)}</a>`
+              : '<p class="text-gray-400 text-sm">Not provided</p>'}
+          </div>
+          <div class="bg-gray-50 rounded-xl p-3 sm:col-span-2">
+            <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Property Address</p>
+            <a href="${mapsUrl}" target="_blank" class="text-sm text-gray-800 hover:text-sky-600 hover:underline inline-flex items-center gap-2">
+              <i class="fas fa-map-marked-alt text-sky-400"></i>${escHtml(job.full_address || '—')}
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <!-- Claim Details -->
+      <section>
+        <h3 class="text-xs font-bold text-indigo-700 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <i class="fas fa-file-contract"></i> Claim Details
+        </h3>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          ${job.project_manager_name ? `<div class="bg-gray-50 rounded-xl p-3">
+            <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Project Manager</p>
+            <p class="text-sm font-semibold text-gray-800">${escHtml(job.project_manager_name)}</p>
+          </div>` : ''}
+          ${job.adjuster_name ? `<div class="bg-gray-50 rounded-xl p-3">
+            <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Adjuster</p>
+            <p class="text-sm text-gray-700">${escHtml(job.adjuster_name)}</p>
+          </div>` : ''}
+          ${date ? `<div class="bg-gray-50 rounded-xl p-3">
+            <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Date of Loss</p>
+            <p class="text-sm text-gray-700">${date}</p>
+          </div>` : ''}
+          ${created ? `<div class="bg-gray-50 rounded-xl p-3">
+            <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Claim Created</p>
+            <p class="text-sm text-gray-700">${created}</p>
+          </div>` : ''}
+        </div>
+      </section>
+
+      <!-- Insurance (sensitive fields masked) -->
+      <section>
+        <h3 class="text-xs font-bold text-amber-700 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <i class="fas fa-shield-alt"></i> Insurance Details
+          <span class="text-[9px] text-gray-400 font-normal normal-case">Tap "Show" to reveal full values</span>
+        </h3>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          ${job.insurance_company_name ? `<div class="bg-gray-50 rounded-xl p-3">
+            <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Insurance Company</p>
+            <p class="text-sm font-semibold text-gray-800">${escHtml(job.insurance_company_name)}</p>
+          </div>` : ''}
+          ${policyMasked ? `<div class="bg-amber-50 border border-amber-100 rounded-xl p-3">
+            <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Policy Number</p>
+            <p id="modal-policy-${siteId}" class="text-sm font-mono text-gray-600">${policyMasked}</p>
+            <button onclick="revealModalField('modal-policy-${siteId}','${escHtml(job.policy_number)}')" class="text-[10px] text-sky-500 hover:text-sky-700 mt-1 underline">Show full number</button>
+          </div>` : ''}
+          ${insurerMasked ? `<div class="bg-amber-50 border border-amber-100 rounded-xl p-3">
+            <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Insurer Reference</p>
+            <p id="modal-insurer-${siteId}" class="text-sm font-mono text-gray-600">${insurerMasked}</p>
+            <button onclick="revealModalField('modal-insurer-${siteId}','${escHtml(job.insurer_identifier)}')" class="text-[10px] text-sky-500 hover:text-sky-700 mt-1 underline">Show full reference</button>
+          </div>` : ''}
+          ${job.emergency_estimate ? `<div class="bg-gray-50 rounded-xl p-3">
+            <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Emergency Estimate</p>
+            <p class="text-sm font-bold text-emerald-700">$${(job.emergency_estimate/100).toLocaleString('en-CA',{minimumFractionDigits:2})}</p>
+          </div>` : ''}
+          ${job.repair_estimate ? `<div class="bg-gray-50 rounded-xl p-3">
+            <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Repair Estimate</p>
+            <p class="text-sm font-bold text-emerald-700">$${(job.repair_estimate/100).toLocaleString('en-CA',{minimumFractionDigits:2})}</p>
+          </div>` : ''}
+        </div>
+      </section>
+
+      <!-- Loss Notes -->
+      ${job.loss_details ? `<section>
+        <h3 class="text-xs font-bold text-rose-700 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <i class="fas fa-clipboard-list"></i> Loss / Site Notes
+        </h3>
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-line">${escHtml(job.loss_details)}</div>
+      </section>` : ''}
+
+      <!-- Edit geofence name/address -->
+      <section>
+        <h3 class="text-xs font-bold text-emerald-700 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <i class="fas fa-map-marker-alt"></i> GPS Geofence Settings
+        </h3>
+        <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-4 space-y-3">
+          <p class="text-xs text-emerald-700">These settings control how workers clock in. The address is synced from Encircle automatically.</p>
+          <div>
+            <label class="text-xs font-semibold text-gray-600 block mb-1">Display Name for Workers</label>
+            <input id="enc-edit-name-${siteId}" type="text" value="${escHtml(job.policyholder_name || '')}"
+              class="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-emerald-400" />
+          </div>
+          <button onclick="saveEncircleSiteName(${siteId})"
+            class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold px-4 py-2 rounded-xl flex items-center gap-2 shadow-sm transition-colors">
+            <i class="fas fa-save"></i> Save Name
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Modal Footer -->
+    <div class="border-t border-gray-100 px-6 py-4 flex items-center justify-between bg-gray-50">
+      <span class="text-xs text-gray-400">Last synced from Encircle · ${new Date().toLocaleDateString()}</span>
+      <button onclick="closeEncircleDetailModal()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors">
+        Close
+      </button>
+    </div>
+  </div>`
+
   document.body.style.overflow = 'hidden'
-  setTimeout(() => document.getElementById('site-name').focus(), 200)
+}
+
+function revealModalField(elemId, val) {
+  const el = document.getElementById(elemId)
+  if (el) {
+    el.textContent = val
+    el.classList.add('text-gray-800', 'font-semibold')
+    const btn = el.nextElementSibling
+    if (btn) btn.textContent = 'Hide'
+    if (btn) btn.onclick = () => {
+      el.textContent = maskSensitive(val)
+      el.classList.remove('text-gray-800', 'font-semibold')
+      btn.textContent = 'Show full number'
+      btn.onclick = () => revealModalField(elemId, val)
+    }
+  }
+}
+
+function closeEncircleDetailModal() {
+  const modal = document.getElementById('enc-detail-modal')
+  if (modal) modal.remove()
+  document.body.style.overflow = ''
+}
+
+async function saveEncircleSiteName(siteId) {
+  const input = document.getElementById('enc-edit-name-' + siteId)
+  if (!input) return
+  const newName = input.value.trim()
+  if (!newName) { showAdminToast('Name cannot be empty', 'error'); return }
+  try {
+    const res = await fetch(`/api/job-sites/${siteId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName })
+    })
+    if (!res.ok) throw new Error('Save failed')
+    showAdminToast('✅ Site name updated', 'success')
+    closeEncircleDetailModal()
+    _siteDetailCache = {}  // clear cache so names refresh
+    loadJobSites()
+  } catch(e) {
+    showAdminToast('Failed to save: ' + e.message, 'error')
+  }
+}
+
+function openAddSiteModal() {
+  openEditSiteFullScreen(null, '', '')
 }
 
 function openEditSiteModal(id, name, address) {
+  // Kept for backward compat — route to full-screen editor
+  openEditSiteFullScreen(id, typeof name === 'string' ? decodeURIComponent(name) : name, typeof address === 'string' ? decodeURIComponent(address) : address)
+}
+
+// ── Full-screen Edit panel for manual (non-Encircle) job sites ────────────────
+function openEditSiteFullScreen(id, name, address) {
   editingSiteId = id
-  document.getElementById('site-modal-title').textContent = 'Edit Job Site'
-  document.getElementById('site-name').value    = decodeURIComponent(name)
-  document.getElementById('site-address').value = decodeURIComponent(address)
-  document.getElementById('site-save-btn').innerHTML = '<i class="fas fa-save mr-1.5"></i>Update Site'
-  document.getElementById('site-modal').classList.remove('hidden')
+  let modal = document.getElementById('site-edit-fs-modal')
+  if (!modal) {
+    modal = document.createElement('div')
+    modal.id = 'site-edit-fs-modal'
+    modal.className = 'fixed inset-0 bg-black bg-opacity-60 z-[100] flex items-start justify-center p-4 overflow-y-auto'
+    modal.onclick = e => { if (e.target === modal) closeSiteEditFSModal() }
+    document.body.appendChild(modal)
+  }
+
+  const isNew = !id
+  const mapsUrl = address ? `https://maps.google.com/?q=${encodeURIComponent(address)}` : null
+
+  modal.innerHTML = `
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg my-6 overflow-hidden">
+    <!-- Header -->
+    <div class="bg-gradient-to-r from-emerald-600 to-teal-600 px-6 py-5 text-white flex items-start justify-between gap-4">
+      <div>
+        <div class="flex items-center gap-2 mb-1">
+          <i class="fas fa-map-marker-alt text-emerald-200"></i>
+          <span class="text-emerald-200 text-xs font-semibold uppercase tracking-wide">Job Site</span>
+        </div>
+        <h2 class="text-xl font-bold">${isNew ? 'Add New Site' : 'Edit Job Site'}</h2>
+        <p class="text-emerald-200 text-sm mt-0.5">${isNew ? 'Create a new geofenced location' : 'Update this site\'s name and address'}</p>
+      </div>
+      <button onclick="closeSiteEditFSModal()" class="w-9 h-9 flex items-center justify-center rounded-xl bg-white bg-opacity-20 hover:bg-opacity-30 text-white flex-shrink-0">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+
+    <!-- Body -->
+    <div class="p-6 space-y-5">
+
+      <!-- Site Name -->
+      <div>
+        <label class="block text-sm font-bold text-gray-700 mb-1.5">
+          <i class="fas fa-tag text-emerald-500 mr-1.5"></i>Site Name <span class="text-red-500">*</span>
+        </label>
+        <input id="fs-site-name" type="text"
+          placeholder="e.g. Downtown Office, Warehouse A"
+          value="${escHtml(name || '')}"
+          class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm transition-colors"
+          oninput="document.getElementById('fs-site-name-preview').textContent=this.value||'Site name'"/>
+      </div>
+
+      <!-- Address -->
+      <div>
+        <label class="block text-sm font-bold text-gray-700 mb-1.5">
+          <i class="fas fa-map-marked-alt text-sky-500 mr-1.5"></i>Address <span class="text-red-500">*</span>
+        </label>
+        <input id="fs-site-address" type="text"
+          placeholder="Start typing an address…"
+          value="${escHtml(address || '')}"
+          autocomplete="off"
+          class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm transition-colors"
+          oninput="filterSiteAddressSuggestions_fs(this.value)"
+          onblur="setTimeout(()=>document.getElementById('fs-site-addr-suggest').classList.add('hidden'),200)"/>
+        <div id="fs-site-addr-suggest" class="hidden mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-50 max-h-48 overflow-y-auto"></div>
+        <p class="text-xs text-gray-400 mt-1.5 flex items-center gap-1">
+          <i class="fas fa-info-circle"></i>
+          Pick from suggestions for precise GPS geofence matching.
+        </p>
+      </div>
+
+      <!-- Live preview -->
+      <div class="bg-gray-50 border border-gray-200 rounded-xl p-4">
+        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-wide mb-2">Preview</p>
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 bg-emerald-100 rounded-xl flex items-center justify-center flex-shrink-0">
+            <i class="fas fa-map-marker-alt text-emerald-600"></i>
+          </div>
+          <div class="min-w-0 flex-1">
+            <p id="fs-site-name-preview" class="font-bold text-gray-800 text-sm truncate">${escHtml(name || 'Site name')}</p>
+            <p id="fs-site-addr-preview" class="text-xs text-gray-500 truncate mt-0.5">${escHtml(address || 'Address will appear here')}</p>
+          </div>
+        </div>
+        ${mapsUrl ? `<a href="${mapsUrl}" target="_blank" class="inline-flex items-center gap-1 text-xs text-sky-500 hover:underline mt-2"><i class="fas fa-map-marked-alt text-[10px]"></i>View current address on map</a>` : ''}
+      </div>
+
+      <!-- Geofence info -->
+      <div class="bg-sky-50 border border-sky-200 rounded-xl px-4 py-3 flex items-start gap-3">
+        <i class="fas fa-circle-notch text-sky-400 mt-0.5"></i>
+        <div>
+          <p class="text-xs font-semibold text-sky-700">GPS Geofence – 50 m radius</p>
+          <p class="text-xs text-sky-600 mt-0.5">Workers must be within 50 metres of this address to clock in.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="border-t border-gray-100 px-6 py-4 flex items-center gap-3 bg-gray-50">
+      <button onclick="closeSiteEditFSModal()"
+        class="flex-1 bg-white border-2 border-gray-200 hover:border-gray-400 text-gray-700 font-semibold py-3 rounded-xl text-sm transition-colors">
+        Cancel
+      </button>
+      <button id="fs-site-save-btn" onclick="saveSiteFS()"
+        class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2 shadow-sm transition-colors">
+        <i class="fas fa-save"></i>${isNew ? 'Add Site' : 'Save Changes'}
+      </button>
+    </div>
+  </div>`
+
+  // Live preview sync for address field
+  const addrInput = modal.querySelector('#fs-site-address')
+  if (addrInput) {
+    addrInput.addEventListener('input', () => {
+      const prev = document.getElementById('fs-site-addr-preview')
+      if (prev) prev.textContent = addrInput.value || 'Address will appear here'
+    })
+  }
+
   document.body.style.overflow = 'hidden'
+  setTimeout(() => modal.querySelector('#fs-site-name')?.focus(), 200)
+}
+
+function closeSiteEditFSModal() {
+  const modal = document.getElementById('site-edit-fs-modal')
+  if (modal) modal.remove()
+  document.body.style.overflow = ''
+  editingSiteId = null
+}
+
+// Address autocomplete for the full-screen modal (mirrors filterSiteAddressSuggestions)
+async function filterSiteAddressSuggestions_fs(query) {
+  const box = document.getElementById('fs-site-addr-suggest')
+  if (!box) return
+  if (!query || query.length < 3) { box.classList.add('hidden'); return }
+  try {
+    const lat = _adminSearchLat || 45.42
+    const lng = _adminSearchLng || -75.70
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=6&addressdetails=1&viewbox=${lng-0.5},${lat+0.3},${lng+0.5},${lat-0.3}&bounded=0&accept-language=en`
+    const res  = await fetch(url, { headers: { 'User-Agent': 'ClockInProof-Admin/1.0' } })
+    const data = await res.json()
+    if (!data.length) { box.classList.add('hidden'); return }
+    box.innerHTML = data.map(p => `
+      <button type="button" onclick="pickFSAddressSuggestion(${JSON.stringify(p.display_name).replace(/</g,'&lt;')}, ${p.lat}, ${p.lon})"
+        class="w-full text-left px-3 py-2 text-xs hover:bg-sky-50 border-b border-gray-100 last:border-0 transition-colors">
+        <i class="fas fa-map-pin text-sky-400 mr-1.5"></i>${escHtml(p.display_name)}
+      </button>`).join('')
+    box.classList.remove('hidden')
+  } catch(e) { box.classList.add('hidden') }
+}
+
+function pickFSAddressSuggestion(displayName, lat, lng) {
+  const input   = document.getElementById('fs-site-address')
+  const preview = document.getElementById('fs-site-addr-preview')
+  const box     = document.getElementById('fs-site-addr-suggest')
+  if (input)   input.value = displayName
+  if (preview) preview.textContent = displayName
+  if (box)     box.classList.add('hidden')
+}
+
+async function saveSiteFS() {
+  const name    = (document.getElementById('fs-site-name')?.value    || '').trim()
+  const address = (document.getElementById('fs-site-address')?.value || '').trim()
+  if (!name)    { showAdminToast('Site name is required', 'error'); return }
+  if (!address) { showAdminToast('Address is required', 'error'); return }
+
+  const btn = document.getElementById('fs-site-save-btn')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…' }
+
+  try {
+    const url    = editingSiteId ? `/api/job-sites/${editingSiteId}` : '/api/job-sites'
+    const method = editingSiteId ? 'PUT' : 'POST'
+    const res    = await fetch(url, {
+      method, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, address })
+    })
+    const data = await res.json()
+    if (data.success || data.id) {
+      showAdminToast(editingSiteId ? '✅ Site updated' : '✅ Site added', 'success')
+      closeSiteEditFSModal()
+      loadJobSites()
+    } else {
+      showAdminToast(data.error || 'Save failed', 'error')
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save"></i> Save Changes' }
+    }
+  } catch(e) {
+    showAdminToast('Connection error', 'error')
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save"></i> Save Changes' }
+  }
 }
 
 function closeSiteModal() {
@@ -4803,118 +5428,153 @@ function renderEncircleCards(jobs) {
   }
   if (empty) empty.classList.add('hidden')
 
+  // Store for detail lookups
+  _encircleJobsCache = jobs
+
   container.innerHTML = jobs.map(j => {
-    const hasGPS = j.lat && j.lng
+    const hasGPS    = j.lat && j.lng
     const typeColor = lossColor(j.type_of_loss)
-    const typeLabel = j.type_of_loss || 'Unknown'
-    const date = j.date_of_loss ? new Date(j.date_of_loss).toLocaleDateString('en-CA', {month:'short', day:'numeric', year:'numeric'}) : null
-    const created = j.date_claim_created ? new Date(j.date_claim_created).toLocaleDateString('en-CA', {month:'short', day:'numeric', year:'numeric'}) : null
-    const mapsUrl = hasGPS ? `https://maps.google.com/?q=${j.lat},${j.lng}` : `https://maps.google.com/?q=${encodeURIComponent(j.full_address || '')}`
+    const typeLabel = (j.type_of_loss || 'Unknown').replace('type_of_loss_','').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())
+    const typeIcon  = typeLabel.toLowerCase().includes('water') ? 'fa-tint' : typeLabel.toLowerCase().includes('fire') ? 'fa-fire' : typeLabel.toLowerCase().includes('mold') ? 'fa-leaf' : typeLabel.toLowerCase().includes('wind') ? 'fa-wind' : 'fa-home'
+    const date      = j.date_of_loss    ? new Date(j.date_of_loss).toLocaleDateString('en-CA', {month:'short', day:'numeric', year:'numeric'}) : null
+    const created   = j.date_claim_created ? new Date(j.date_claim_created).toLocaleDateString('en-CA', {month:'short', day:'numeric', year:'numeric'}) : null
+    // Always use the human-readable address for map links (opens address search in Google Maps)
+    const mapsUrl   = `https://maps.google.com/?q=${encodeURIComponent(j.full_address || '')}`
 
-    // Format phone as clickable
-    const phoneRaw = j.policyholder_phone || ''
+    const phoneRaw   = j.policyholder_phone || ''
     const phoneClean = phoneRaw.replace(/\D/g,'')
-    const phoneLink = phoneClean ? `<a href="tel:+${phoneClean}" class="text-sky-600 hover:underline font-medium">${phoneRaw}</a>` : '<span class="text-gray-300">—</span>'
+    const phoneLink  = phoneClean
+      ? `<a href="tel:+${phoneClean}" class="text-sky-600 hover:underline font-semibold">${phoneRaw}</a>`
+      : '<span class="text-gray-300 italic text-[11px]">Not provided</span>'
 
-    // Format email
     const emailLink = j.policyholder_email
-      ? `<a href="mailto:${escHtml(j.policyholder_email)}" class="text-sky-600 hover:underline">${escHtml(j.policyholder_email)}</a>`
-      : '<span class="text-gray-300">—</span>'
+      ? `<a href="mailto:${escHtml(j.policyholder_email)}" class="text-sky-600 hover:underline break-all">${escHtml(j.policyholder_email)}</a>`
+      : '<span class="text-gray-300 italic text-[11px]">Not provided</span>'
 
-    // Encircle deep link
     const encLink = j.permalink_url
-      ? `<a href="${j.permalink_url}" target="_blank" class="text-indigo-500 hover:underline text-[11px]"><i class="fas fa-external-link-alt mr-1"></i>Open in Encircle</a>`
+      ? `<a href="${j.permalink_url}" target="_blank" class="inline-flex items-center gap-1 text-[11px] text-indigo-500 hover:text-indigo-700 font-medium border border-indigo-200 rounded-lg px-2 py-0.5 hover:bg-indigo-50 transition-colors"><i class="fas fa-external-link-alt"></i>Encircle</a>`
       : ''
 
-    // Loss notes snippet
-    const notesSnippet = j.loss_details
-      ? `<p class="text-xs text-gray-500 mt-2 line-clamp-2 leading-relaxed italic">${escHtml(j.loss_details.substring(0,180))}${j.loss_details.length > 180 ? '…' : ''}</p>`
+    // Masked sensitive fields with card-scoped reveal IDs
+    const claimKey = j.encircle_claim_id || Math.random()
+    const policyMasked = j.policy_number
+      ? `<span class="font-mono text-gray-600" id="enc-policy-${claimKey}">${maskSensitive(j.policy_number)}</span>
+         <button onclick="revealEncircleCardField('enc-policy-${claimKey}','${j.policy_number.replace(/'/g,'\\\'')}')" class="ml-1 text-[9px] text-sky-500 border border-sky-200 rounded px-1 py-0.5 hover:bg-sky-50">Show</button>`
+      : '<span class="text-gray-300 italic text-[11px]">—</span>'
+
+    const insurerRefMasked = j.insurer_identifier
+      ? `<span class="font-mono text-gray-600 text-[11px]" id="enc-insurer-${claimKey}">${maskSensitive(j.insurer_identifier)}</span>
+         <button onclick="revealEncircleCardField('enc-insurer-${claimKey}','${j.insurer_identifier.replace(/'/g,'\\\'')}')" class="ml-1 text-[9px] text-sky-500 border border-sky-200 rounded px-1 py-0.5 hover:bg-sky-50">Show</button>`
+      : '<span class="text-gray-300 italic text-[11px]">—</span>'
+
+    const notesHtml = j.loss_details
+      ? `<div class="bg-amber-50 border border-amber-100 rounded-xl p-3 mt-1">
+           <p class="text-[10px] font-bold text-amber-700 uppercase tracking-wide mb-1 flex items-center gap-1"><i class="fas fa-clipboard-list"></i> Loss Notes</p>
+           <p class="text-xs text-gray-600 leading-relaxed italic">${escHtml(j.loss_details.substring(0,220))}${j.loss_details.length > 220 ? '…' : ''}</p>
+         </div>`
       : ''
 
     return `
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 hover:border-sky-200 transition-all overflow-hidden">
-      <!-- Card Header -->
-      <div class="flex items-start justify-between p-4 pb-3 gap-3">
-        <div class="flex items-start gap-3 min-w-0 flex-1">
-          <div class="w-9 h-9 rounded-xl ${typeColor.split(' ')[0]} flex items-center justify-center flex-shrink-0 mt-0.5">
-            <i class="fas ${typeLabel.includes('Water') ? 'fa-tint' : typeLabel.includes('Fire') ? 'fa-fire' : typeLabel.includes('Mold') ? 'fa-leaf' : typeLabel.includes('Wind') ? 'fa-wind' : 'fa-home'} text-sm ${typeColor.split(' ')[1]}"></i>
-          </div>
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2 flex-wrap">
-              <p class="font-bold text-gray-800 text-sm leading-tight">${escHtml(j.policyholder_name || 'Unknown')}</p>
-              <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${typeColor}">${escHtml(typeLabel)}</span>
-            </div>
-            <p class="text-xs text-gray-500 mt-0.5 truncate">${escHtml(j.insurer_identifier || '')}</p>
-          </div>
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 hover:shadow-md hover:border-sky-200 transition-all duration-200 overflow-hidden cursor-pointer" onclick="openEncircleCardDetail('${claimKey}')">
+
+      <!-- ── Card Top Bar ── -->
+      <div class="flex items-center gap-3 px-4 pt-4 pb-3">
+        <!-- Type icon -->
+        <div class="w-10 h-10 rounded-xl ${typeColor.split(' ')[0]} flex items-center justify-center flex-shrink-0">
+          <i class="fas ${typeIcon} text-base ${typeColor.split(' ')[1]}"></i>
         </div>
-        <div class="flex-shrink-0 flex flex-col items-end gap-1">
+        <!-- Name + type badge -->
+        <div class="flex-1 min-w-0">
+          <p class="font-bold text-gray-900 text-sm leading-tight truncate">${escHtml(j.policyholder_name || 'Unknown Policyholder')}</p>
+          <span class="inline-block mt-0.5 text-[10px] font-bold px-2 py-0.5 rounded-full ${typeColor}">${escHtml(typeLabel)}</span>
+        </div>
+        <!-- GPS + Encircle link -->
+        <div class="flex flex-col items-end gap-1.5 flex-shrink-0 ml-1">
           ${hasGPS
-            ? `<span class="text-[10px] text-green-600 font-medium flex items-center gap-1"><i class="fas fa-map-marker-alt"></i> GPS</span>`
-            : `<span class="text-[10px] text-amber-500 font-medium flex items-center gap-1"><i class="fas fa-exclamation-triangle"></i> No GPS</span>`
+            ? `<span class="text-[10px] text-emerald-600 font-bold flex items-center gap-1 bg-emerald-50 px-1.5 py-0.5 rounded-full"><i class="fas fa-map-marker-alt"></i>GPS ✓</span>`
+            : `<span class="text-[10px] text-amber-500 font-bold flex items-center gap-1 bg-amber-50 px-1.5 py-0.5 rounded-full"><i class="fas fa-map-marker-alt"></i>No GPS</span>`
           }
           ${encLink}
         </div>
       </div>
 
-      <!-- Divider -->
-      <div class="border-t border-gray-50 mx-4"></div>
+      <!-- ── Address row ── -->
+      <div class="px-4 pb-3 border-b border-gray-50">
+        <a href="${mapsUrl}" target="_blank" onclick="event.stopPropagation()"
+           class="inline-flex items-center gap-2 text-xs text-gray-700 hover:text-sky-600 hover:underline transition-colors leading-snug">
+          <i class="fas fa-map-marked-alt text-sky-400 flex-shrink-0"></i>
+          <span class="leading-snug">${escHtml(j.full_address || '—')}</span>
+        </a>
+      </div>
 
-      <!-- Contact + Details grid -->
-      <div class="p-4 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-xs">
-        <!-- Address -->
-        <div class="sm:col-span-2">
-          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Address</span>
-          <div class="flex items-center gap-2 mt-0.5">
-            <a href="${mapsUrl}" target="_blank" class="text-gray-700 hover:text-sky-600 hover:underline transition-colors leading-snug">${escHtml(j.full_address || '—')}</a>
-          </div>
-        </div>
-        <!-- Phone -->
+      <!-- ── Contact grid ── -->
+      <div class="px-4 py-3 grid grid-cols-2 gap-x-4 gap-y-2.5 text-xs border-b border-gray-50">
         <div>
-          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Phone</span>
-          <div class="mt-0.5">${phoneLink}</div>
+          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">📞 Phone</p>
+          ${phoneLink}
         </div>
-        <!-- Email -->
-        <div>
-          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Email</span>
-          <div class="mt-0.5 truncate">${emailLink}</div>
+        <div class="min-w-0">
+          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">✉️ Email</p>
+          <div class="truncate">${emailLink}</div>
         </div>
-        <!-- Date of Loss -->
         ${date ? `<div>
-          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Date of Loss</span>
-          <div class="mt-0.5 text-gray-700">${date}</div>
+          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">📅 Date of Loss</p>
+          <p class="text-gray-700 font-medium">${date}</p>
         </div>` : ''}
-        <!-- Project Manager -->
         ${j.project_manager_name ? `<div>
-          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Project Manager</span>
-          <div class="mt-0.5 text-gray-700 font-medium">${escHtml(j.project_manager_name)}</div>
-        </div>` : ''}
-        <!-- Adjuster -->
-        ${j.adjuster_name ? `<div>
-          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Adjuster</span>
-          <div class="mt-0.5 text-gray-700">${escHtml(j.adjuster_name)}</div>
-        </div>` : ''}
-        <!-- Insurance -->
-        ${j.insurance_company_name ? `<div>
-          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Insurer</span>
-          <div class="mt-0.5 text-gray-700">${escHtml(j.insurance_company_name)}</div>
-        </div>` : ''}
-        <!-- Policy # -->
-        ${j.policy_number ? `<div>
-          <span class="text-gray-400 font-semibold uppercase tracking-wide text-[10px]">Policy #</span>
-          <div class="mt-0.5 text-gray-600 font-mono">${escHtml(j.policy_number)}</div>
+          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">👤 Project Manager</p>
+          <p class="text-gray-800 font-semibold truncate">${escHtml(j.project_manager_name)}</p>
         </div>` : ''}
       </div>
 
-      <!-- Notes -->
-      ${notesSnippet ? `<div class="px-4 pb-3">${notesSnippet}</div>` : ''}
+      <!-- ── Insurance (masked) ── -->
+      ${(j.insurance_company_name || j.policy_number || j.insurer_identifier) ? `
+      <div class="px-4 py-3 bg-amber-50/40 border-b border-amber-100/60 grid grid-cols-1 gap-2 text-xs">
+        <p class="text-[10px] font-bold text-amber-700 uppercase tracking-wide flex items-center gap-1 mb-0.5"><i class="fas fa-shield-alt"></i> Insurance</p>
+        ${j.insurance_company_name ? `<div class="flex items-center gap-2"><span class="text-gray-500 w-24 flex-shrink-0">Company</span><span class="font-semibold text-gray-800">${escHtml(j.insurance_company_name)}</span></div>` : ''}
+        ${j.policy_number ? `<div class="flex items-center gap-2"><span class="text-gray-500 w-24 flex-shrink-0">Policy #</span><span class="flex items-center gap-0.5">${policyMasked}</span></div>` : ''}
+        ${j.insurer_identifier ? `<div class="flex items-center gap-2"><span class="text-gray-500 w-24 flex-shrink-0">Insurer Ref</span><span class="flex items-center gap-0.5">${insurerRefMasked}</span></div>` : ''}
+      </div>` : ''}
 
-      <!-- Footer -->
-      <div class="bg-gray-50 px-4 py-2 flex items-center justify-between text-[11px] text-gray-400 border-t border-gray-100">
-        <span>Claim #${j.encircle_claim_id}</span>
-        <span>${created ? 'Created ' + created : ''}</span>
+      <!-- ── Loss Notes ── -->
+      ${notesHtml ? `<div class="px-4 pb-3 pt-2">${notesHtml}</div>` : ''}
+
+      <!-- ── Card Footer ── -->
+      <div class="px-4 py-2.5 bg-gray-50 flex items-center justify-between text-[11px] text-gray-400 border-t border-gray-100">
+        <span class="flex items-center gap-1"><i class="fas fa-hashtag text-[9px]"></i>Claim ${j.encircle_claim_id}</span>
+        <span class="flex items-center gap-1">${created ? `<i class="fas fa-calendar text-[9px]"></i>Created ${created}` : ''}</span>
       </div>
     </div>`
   }).join('')
+}
+
+// Cache for Encircle tab cards (populated by renderEncircleCards)
+let _encircleJobsCache = []
+
+// Reveal a masked field inside an Encircle card
+function revealEncircleCardField(elemId, val) {
+  const el = document.getElementById(elemId)
+  if (!el) return
+  el.textContent = val
+  el.classList.add('text-gray-800', 'font-semibold')
+  const btn = el.nextElementSibling
+  if (btn) {
+    btn.textContent = 'Hide'
+    btn.onclick = () => {
+      el.textContent = maskSensitive(val)
+      el.classList.remove('text-gray-800', 'font-semibold')
+      btn.textContent = 'Show'
+      btn.onclick = () => revealEncircleCardField(elemId, val)
+    }
+  }
+}
+
+// Open full-screen detail modal from Encircle tab card click
+function openEncircleCardDetail(claimKey) {
+  const j = _encircleJobsCache.find(x => String(x.encircle_claim_id) === String(claimKey))
+  if (!j) return
+  // Reuse the same full-screen modal used in Job Sites tab
+  _showEncircleDetailModal('encircle-tab-' + claimKey, j)
 }
 
 function renderEncircleLog(logs) {
