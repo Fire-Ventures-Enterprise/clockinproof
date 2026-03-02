@@ -6801,7 +6801,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260302f"></script>
+<script src="/static/worker.js?v=20260302g"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -6887,7 +6887,7 @@ if (isIOS && !isInStandalone) {
       banner.style.display = 'flex';
       btn.textContent = 'How to Install';
       btn.onclick = () => {
-        alert('Add ClockInProof to your Home Screen:\n\n1. Tap the Share button (⬆️ box with arrow) at the bottom of Safari\n2. Scroll down and tap "Add to Home Screen"\n3. Tap "Add" — done!\n\nYou can then open the app anytime from your home screen.');
+        console.log('iOS install hint shown');
       };
     }
   }, 4000);

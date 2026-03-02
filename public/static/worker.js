@@ -379,7 +379,7 @@ async function submitForgotPin() {
     } else {
       // Success — show confirmation and close after delay
       msg.style.cssText = 'display:block;margin-bottom:12px;padding:12px;border-radius:10px;font-size:13px;line-height:1.5;background:#f0fdf4;border:1px solid #bbf7d0;color:#166534'
-      msg.innerHTML = '<i class="fas fa-check-circle mr-1"></i>Check your email! A temporary PIN has been sent. Use it to log in, then you'll be prompted to set a new PIN.'
+      msg.innerHTML = '<i class="fas fa-check-circle mr-1"></i>Check your email! A temporary PIN has been sent. Use it to log in, then you will be prompted to set a new PIN.'
       btn.innerHTML = '<i class="fas fa-check mr-2"></i>Email Sent!'
       // Auto-close after 4 seconds
       setTimeout(() => {
