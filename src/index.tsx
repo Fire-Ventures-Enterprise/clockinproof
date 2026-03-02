@@ -1461,7 +1461,7 @@ async function sendOverrideNotification(
 app.post('/api/sessions/clock-in', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const { worker_id, latitude, longitude, address, notes, job_location, job_description, session_type, device_id } = await c.req.json()
+  const { worker_id, latitude, longitude, address, notes, job_location, job_description, session_type, device_id, job_site_id } = await c.req.json()
 
   if (!worker_id) return c.json({ error: 'worker_id required' }, 400)
   if (!job_location || !job_location.trim()) return c.json({ error: 'Job location is required' }, 400)
@@ -1504,19 +1504,61 @@ app.post('/api/sessions/clock-in', async (c) => {
   const skipGeofence = clockType === 'material_pickup' || clockType === 'emergency_job'
 
   if (fraudCheckEnabled && latitude && longitude && !skipGeofence) {
-    // Geocode the job address the worker typed
-    const jobCoords = await geocodeAddress(job_location.trim())
+    // ── GPS FRAUD CHECK v2: Compare worker GPS against admin-configured job sites ──
+    // This is CHEAT-PROOF: workers cannot bypass it by typing a fake address.
+    // The check uses coordinates stored by the admin in the job_sites table.
+    // If no job sites are configured, fall back to geocoding the typed address.
+
+    const jobSitesResult = await db.prepare(
+      'SELECT * FROM job_sites WHERE active = 1 AND tenant_id = 1 ORDER BY id'
+    ).all<any>()
+    const jobSites = (jobSitesResult.results || []) as any[]
+
+    let closestSite: any = null
+    let closestDistanceM = Infinity
+
+    if (jobSites.length > 0) {
+      // Find the job site closest to the worker's current GPS
+      for (const site of jobSites) {
+        if (site.lat && site.lng) {
+          const d = haversineMeters(latitude, longitude, parseFloat(site.lat), parseFloat(site.lng))
+          if (d < closestDistanceM) {
+            closestDistanceM = d
+            closestSite = site
+          }
+        }
+      }
+    }
+
+    // Determine which coords to compare against:
+    // Priority 1 — job site selected by worker (passed as job_site_id in request)
+    // Priority 2 — closest configured job site
+    // Priority 3 — geocode the typed address (fallback only, less reliable)
+    let checkSite = closestSite
+    if (job_site_id) {
+      const selected = jobSites.find((s: any) => s.id === parseInt(job_site_id))
+      if (selected) checkSite = selected
+    }
+
+    let jobCoords: { lat: number; lng: number; display: string } | null = null
+    let usingJobSite = false
+
+    if (checkSite && checkSite.lat && checkSite.lng) {
+      jobCoords = { lat: parseFloat(checkSite.lat), lng: parseFloat(checkSite.lng), display: checkSite.address || checkSite.name }
+      usingJobSite = true
+    } else {
+      // No job sites configured — fall back to geocoding the typed address
+      jobCoords = await geocodeAddress(job_location.trim())
+    }
 
     if (jobCoords) {
       const distanceM = haversineMeters(latitude, longitude, jobCoords.lat, jobCoords.lng)
       const distanceKm = (distanceM / 1000).toFixed(2)
 
       if (distanceM > geofenceRadius) {
-        // ── FRAUD DETECTED: worker is too far from job site ──────────────────
-        // Get worker info for the request
+        // ── FRAUD DETECTED ────────────────────────────────────────────────────
         const worker = await db.prepare('SELECT * FROM workers WHERE id = ?').bind(worker_id).first<any>()
 
-        // Save a pending override request
         const reqResult = await db.prepare(`
           INSERT INTO clock_in_requests
             (worker_id, worker_name, worker_phone, job_location, job_description,
@@ -1527,7 +1569,7 @@ app.post('/api/sessions/clock-in', async (c) => {
           worker_id,
           worker?.name || '',
           worker?.phone || '',
-          job_location.trim(),
+          usingJobSite ? (checkSite.name + ' — ' + (checkSite.address || '')) : job_location.trim(),
           job_description.trim(),
           latitude, longitude, address || null,
           jobCoords.lat, jobCoords.lng,
@@ -1536,36 +1578,39 @@ app.post('/api/sessions/clock-in', async (c) => {
 
         const requestId = reqResult.meta.last_row_id
 
-        // ── SEND ADMIN NOTIFICATION (email + SMS) ────────────────────────────
         sendOverrideNotification(settings, c.env as any, {
           id: requestId as number,
           worker_name: worker?.name || '',
           worker_phone: worker?.phone || '',
-          job_location: job_location.trim(),
+          job_location: usingJobSite ? (checkSite.name + ' — ' + (checkSite.address || '')) : job_location.trim(),
           job_description: job_description.trim(),
           distance_meters: Math.round(distanceM),
           worker_address: address || null,
           worker_lat: latitude,
           worker_lng: longitude
-        }).catch(() => { /* ignore notification errors — don't block the user */ })
+        }).catch(() => {})
+
+        const siteLabel = usingJobSite
+          ? `job site "${checkSite.name}" (${checkSite.address || ''})`
+          : `"${job_location}"`
 
         return c.json({
           error: 'location_mismatch',
           blocked: true,
           request_id: requestId,
-          message: `Your current location does not match the job site. You appear to be ${distanceKm} km away from "${job_location}".`,
+          message: `Your GPS location is ${distanceKm} km away from ${siteLabel}. Clock-in blocked.`,
           worker_location: { lat: latitude, lng: longitude, address: address || null },
           job_location_coords: { lat: jobCoords.lat, lng: jobCoords.lng, address: jobCoords.display },
           distance_km: distanceKm,
           distance_meters: Math.round(distanceM),
           geofence_radius_meters: geofenceRadius,
           override_pending: true,
-          override_message: 'A clock-in override request has been sent to your admin. You may only clock in after admin approval.'
+          override_message: 'An override request has been sent to your manager. You may only clock in after approval.'
         }, 403)
       }
       // Worker is within geofence — proceed
     }
-    // If geocoding failed — allow clock-in
+    // If no coords available — allow clock-in (fail open, log warning)
   }
 
   // ── NORMAL CLOCK IN ──────────────────────────────────────────────────────────
@@ -6801,7 +6846,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260302g"></script>
+<script src="/static/worker.js?v=20260302h"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">

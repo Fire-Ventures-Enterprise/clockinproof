@@ -637,6 +637,7 @@ function openJobModal() {
   modal.classList.remove('hidden')
   // Reset session type to regular on every open
   modal.dataset.sessionType = 'regular'
+  modal.dataset.jobSiteId = ''
   hideSessionTypeBanner()
   document.getElementById('job-location-input').value = ''
   document.getElementById('job-location-input').placeholder = 'Start typing an address...'
@@ -678,7 +679,7 @@ async function loadSavedSitesDropdown() {
       '</optgroup>' +
       (sites.length > 0
         ? '<optgroup label="─── Saved Job Sites ───">' +
-          sites.map(s => '<option value="' + s.address + '">' + s.name + ' — ' + s.address + '</option>').join('') +
+          sites.map(s => '<option value="' + s.address + '" data-site-id="' + s.id + '">' + s.name + ' — ' + s.address + '</option>').join('') +
           '</optgroup>'
         : '')
     row.classList.remove('hidden')
@@ -715,11 +716,15 @@ function pickSavedSite(value) {
     return
   }
 
-  // Normal saved site — fill address as before
+  // Normal saved site — fill address AND store site id for GPS check
   locInput.value = value
   locInput.placeholder = 'Start typing an address...'
   document.getElementById('location-suggestions').classList.add('hidden')
   document.getElementById('job-modal').dataset.sessionType = 'regular'
+  // Store the site id so backend can verify GPS against exact coordinates
+  const sel = document.getElementById('saved-sites-select')
+  const selectedOption = sel ? sel.options[sel.selectedIndex] : null
+  document.getElementById('job-modal').dataset.jobSiteId = selectedOption ? (selectedOption.dataset.siteId || '') : ''
   hideSessionTypeBanner()
 }
 
@@ -899,7 +904,9 @@ async function confirmClockIn() {
         address: currentAddress,
         job_location: jobLocation,
         job_description: jobDescription,
-        session_type: sessionType
+        session_type: sessionType,
+        device_id: getDeviceId(),
+        job_site_id: document.getElementById('job-modal').dataset.jobSiteId || null
       })
     })
     const data = await res.json()
