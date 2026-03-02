@@ -2572,6 +2572,198 @@ app.get('/api/tenants/:id/stats', async (c) => {
   return c.json({ tenant, worker_count: (workers as any)?.count || 0, session_count: (sessions as any)?.count || 0 })
 })
 
+// ─── SUPER ADMIN API ROUTES ───────────────────────────────────────────────────
+// POST /api/super/login — authenticate with SUPER_ADMIN_PIN
+app.post('/api/super/login', async (c) => {
+  const body = await c.req.json()
+  const pin = (body.pin || '').toString().trim()
+  const superPin = (c.env.SUPER_ADMIN_PIN || 'superadmin1965').toString().trim()
+  if (pin !== superPin) {
+    return c.json({ error: 'Invalid PIN' }, 401)
+  }
+  // Return a simple session token (PIN hash for stateless auth)
+  const token = btoa(`super:${superPin}:${Date.now()}`)
+  return c.json({ success: true, token })
+})
+
+// Middleware helper — verify super admin token
+function verifySuperToken(c: any): boolean {
+  const auth = c.req.header('X-Super-Token') || ''
+  const superPin = (c.env.SUPER_ADMIN_PIN || 'superadmin1965').toString().trim()
+  if (!auth) return false
+  try {
+    const decoded = atob(auth)
+    return decoded.startsWith(`super:${superPin}:`)
+  } catch { return false }
+}
+
+// GET /api/super/dashboard — overview stats
+app.get('/api/super/dashboard', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  try {
+    const [tenants, workers, sessions, activeSessions] = await Promise.all([
+      db.prepare(`SELECT COUNT(*) as count FROM tenants WHERE status != 'deleted'`).first(),
+      db.prepare(`SELECT COUNT(*) as count FROM workers WHERE active = 1`).first(),
+      db.prepare(`SELECT COUNT(*) as count FROM sessions`).first(),
+      db.prepare(`SELECT COUNT(*) as count FROM sessions WHERE clock_out_time IS NULL`).first(),
+    ])
+    const planBreakdown = await db.prepare(
+      `SELECT plan, COUNT(*) as count FROM tenants WHERE status != 'deleted' GROUP BY plan`
+    ).all()
+    return c.json({
+      total_tenants: (tenants as any)?.count || 0,
+      total_workers: (workers as any)?.count || 0,
+      total_sessions: (sessions as any)?.count || 0,
+      active_sessions: (activeSessions as any)?.count || 0,
+      plan_breakdown: planBreakdown.results
+    })
+  } catch(err: any) {
+    return c.json({ error: 'Dashboard query failed', detail: err?.message || String(err) }, 500)
+  }
+})
+
+// GET /api/super/tenants — full tenant list with stats
+app.get('/api/super/tenants', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  try {
+    const tenants = await db.prepare(`
+      SELECT t.*,
+        (SELECT COUNT(*) FROM workers w WHERE w.tenant_id = t.id AND w.active = 1) as worker_count,
+        (SELECT COUNT(*) FROM sessions s WHERE s.tenant_id = t.id) as session_count,
+        (SELECT MAX(s.clock_in_time) FROM sessions s WHERE s.tenant_id = t.id) as last_active
+      FROM tenants t
+      WHERE t.status != 'deleted'
+      ORDER BY t.created_at DESC
+    `).all()
+    return c.json({ tenants: tenants.results })
+  } catch(err: any) {
+    return c.json({ error: 'Tenants query failed', detail: err?.message || String(err) }, 500)
+  }
+})
+
+// POST /api/super/tenants — create new tenant manually
+app.post('/api/super/tenants', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const body = await c.req.json()
+  const { slug, company_name, company_address, admin_email, admin_pin, plan } = body
+  if (!slug || !company_name || !admin_email) {
+    return c.json({ error: 'slug, company_name and admin_email are required' }, 400)
+  }
+  const cleanSlug = slug.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-')
+  const reserved = ['admin', 'app', 'www', 'superadmin', 'super', 'api', 'mail', 'staging', 'clockinproof', 'support']
+  if (reserved.includes(cleanSlug)) return c.json({ error: 'Reserved subdomain' }, 400)
+  const existing = await db.prepare(`SELECT id FROM tenants WHERE slug = ?`).bind(cleanSlug).first()
+  if (existing) return c.json({ error: `Subdomain "${cleanSlug}" is already taken` }, 409)
+  const planLimits: Record<string, number> = { starter: 10, growth: 25, pro: 999 }
+  const maxWorkers = planLimits[plan || 'starter'] || 10
+  const result = await db.prepare(
+    `INSERT INTO tenants (slug, company_name, company_address, admin_email, admin_pin, plan, status, max_workers)
+     VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`
+  ).bind(cleanSlug, company_name, company_address || '', admin_email, admin_pin || '1234', plan || 'starter', maxWorkers).run()
+  const tenantId = (result.meta as any).last_row_id
+  const defaults = [
+    ['app_name', company_name], ['country_code', 'CA'], ['province_code', 'ON'],
+    ['timezone', 'America/Toronto'], ['work_start', '08:00'], ['work_end', '16:00'],
+    ['break_morning_min', '15'], ['break_lunch_min', '30'], ['break_afternoon_min', '15'],
+    ['paid_hours_per_day', '7.5'], ['work_days', '1,2,3,4,5'], ['stat_pay_multiplier', '1.5'],
+    ['pay_frequency', 'biweekly'], ['pay_period_anchor', '2026-03-06'],
+    ['show_pay_to_workers', '1'], ['geofence_radius_meters', '300'],
+    ['gps_fraud_check', '1'], ['auto_clockout_enabled', '1'],
+    ['max_shift_hours', '10'], ['away_warning_min', '30'],
+    ['company_name', company_name], ['admin_email', admin_email]
+  ]
+  for (const [key, value] of defaults) {
+    await db.prepare(`INSERT OR IGNORE INTO tenant_settings (tenant_id, key, value) VALUES (?, ?, ?)`)
+      .bind(tenantId, key, value).run()
+  }
+  // Send welcome email to new tenant admin
+  const resendKey = (c.env.RESEND_API_KEY || '').trim()
+  if (resendKey && admin_email) {
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: 'ClockInProof <alerts@clockinproof.com>',
+        to: [admin_email],
+        subject: `Welcome to ClockInProof — Your account is ready`,
+        html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto">
+          <h2 style="color:#4F46E5">Welcome to ClockInProof! 🎉</h2>
+          <p>Your company <strong>${company_name}</strong> has been set up successfully.</p>
+          <p><strong>Your login details:</strong></p>
+          <ul>
+            <li><strong>Admin dashboard:</strong> <a href="https://admin.clockinproof.com">admin.clockinproof.com</a></li>
+            <li><strong>Worker app:</strong> <a href="https://${cleanSlug}.clockinproof.com">${cleanSlug}.clockinproof.com</a></li>
+            <li><strong>Admin PIN:</strong> ${admin_pin || '1234'}</li>
+            <li><strong>Plan:</strong> ${(plan || 'starter').charAt(0).toUpperCase() + (plan || 'starter').slice(1)}</li>
+          </ul>
+          <p>If you have any questions, reply to this email.</p>
+          <p style="color:#888;font-size:12px">— ClockInProof Team</p>
+        </div>`
+      })
+    })
+  }
+  return c.json({ success: true, tenant_id: tenantId, slug: cleanSlug, url: `https://${cleanSlug}.clockinproof.com` })
+})
+
+// PUT /api/super/tenants/:id — update plan, status, limits
+app.put('/api/super/tenants/:id', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const body = await c.req.json()
+  const allowed = ['company_name', 'company_address', 'admin_email', 'admin_pin', 'plan', 'status', 'max_workers', 'logo_url', 'primary_color']
+  for (const key of allowed) {
+    if (body[key] !== undefined) {
+      await db.prepare(`UPDATE tenants SET ${key} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .bind(body[key], id).run()
+    }
+  }
+  // Update max_workers based on plan if plan changed
+  if (body.plan) {
+    const planLimits: Record<string, number> = { starter: 10, growth: 25, pro: 999 }
+    const maxW = planLimits[body.plan]
+    if (maxW && !body.max_workers) {
+      await db.prepare(`UPDATE tenants SET max_workers = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .bind(maxW, id).run()
+    }
+  }
+  return c.json({ success: true })
+})
+
+// DELETE /api/super/tenants/:id — soft delete (set status = deleted)
+app.delete('/api/super/tenants/:id', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  if (id === '1') return c.json({ error: 'Cannot delete the primary tenant' }, 403)
+  await db.prepare(`UPDATE tenants SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(id).run()
+  return c.json({ success: true })
+})
+
+// POST /api/super/tenants/:id/impersonate — get admin URL for tenant
+app.get('/api/super/tenants/:id/impersonate', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const tenant = await db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(id).first() as any
+  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+  return c.json({
+    admin_url: `https://admin.clockinproof.com/?tenant=${tenant.slug}`,
+    app_url: `https://${tenant.slug}.clockinproof.com`,
+    slug: tenant.slug,
+    admin_pin: tenant.admin_pin
+  })
+})
+
 // ─── STAT PAY RULES (province/state minimums) ─────────────────────────────────
 const STAT_PAY_RULES: Record<string, { multiplier: number; name: string }> = {
   // Canadian Provinces
@@ -4290,7 +4482,7 @@ function getSubdomain(c: any): string {
   // Only treat as subdomain if it's a real domain (ends in .com/.io/.ai etc)
   // e.g. app.clockinproof.com → ['app','clockinproof','com'] → 'app'
   // e.g. 3000-xxxxx.sandbox.novita.ai → NOT a real subdomain → return ''
-  const knownSubs = ['app', 'admin', 'www', 'superadmin']
+  const knownSubs = ['app', 'admin', 'www', 'superadmin', 'super']
   if (parts.length >= 3 && knownSubs.includes(parts[0].toLowerCase())) {
     return parts[0].toLowerCase()
   }
@@ -4308,8 +4500,9 @@ app.get('/', async (c) => {
   const sub = getSubdomain(c)
   if (sub === 'admin') return c.html(getAdminHTML())
   if (sub === 'app')   return c.html(getWorkerHTML())
+  if (sub === 'super' || sub === 'superadmin') return c.html(getSuperAdminHTML())
   // Tenant subdomain — e.g. acme.clockinproof.com → worker app for that tenant
-  const reserved = ['admin', 'app', 'www', 'superadmin', 'api', 'mail', '']
+  const reserved = ['admin', 'app', 'www', 'superadmin', 'super', 'api', 'mail', '']
   if (sub && !reserved.includes(sub)) {
     const db = c.env.DB
     await ensureSchema(db)
@@ -4335,6 +4528,11 @@ app.get('/app', (c) => {
 // Admin dashboard — accessible via /admin path OR admin.* subdomain
 app.get('/admin', (c) => {
   return c.html(getAdminHTML())
+})
+
+// Super Admin portal — accessible via /super path OR super.clockinproof.com
+app.get('/super', (c) => {
+  return c.html(getSuperAdminHTML())
 })
 
 // Marketing landing page — accessible via root / OR /landing
@@ -8346,6 +8544,575 @@ app.get('/terms', (c) => {
 app.get('/legal/privacy', (c) => c.redirect('/privacy', 301))
 app.get('/legal/eula',    (c) => c.redirect('/terms', 301))
 app.get('/legal/terms',   (c) => c.redirect('/terms', 301))
+
+// ─── SUPER ADMIN HTML ─────────────────────────────────────────────────────────
+function getSuperAdminHTML(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClockInProof — Super Admin</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
+<style>
+  body { background: #0f172a; color: #e2e8f0; font-family: 'Inter', sans-serif; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; }
+  .badge-active   { background:#065f46;color:#6ee7b7; }
+  .badge-trial    { background:#78350f;color:#fcd34d; }
+  .badge-suspended{ background:#7f1d1d;color:#fca5a5; }
+  .badge-starter  { background:#1e3a5f;color:#93c5fd; }
+  .badge-growth   { background:#3b1f6b;color:#c4b5fd; }
+  .badge-pro      { background:#14532d;color:#86efac; }
+  .btn-primary { background:#4f46e5;color:#fff;border-radius:8px;padding:8px 18px;font-weight:600;cursor:pointer;border:none;transition:background .2s; }
+  .btn-primary:hover { background:#4338ca; }
+  .btn-danger { background:#dc2626;color:#fff;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;border:none; }
+  .btn-success { background:#059669;color:#fff;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;border:none; }
+  .btn-ghost { background:#334155;color:#cbd5e1;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;border:none; }
+  .input { background:#0f172a;border:1px solid #475569;color:#e2e8f0;border-radius:8px;padding:8px 12px;width:100%;outline:none; }
+  .input:focus { border-color:#4f46e5; }
+  .stat-card { background:linear-gradient(135deg,#1e293b,#0f172a);border:1px solid #334155;border-radius:12px;padding:20px; }
+  .toast { position:fixed;bottom:24px;right:24px;background:#1e293b;border:1px solid #4f46e5;color:#e2e8f0;padding:12px 20px;border-radius:10px;z-index:9999;font-size:14px;box-shadow:0 4px 24px rgba(0,0,0,.5); }
+  #login-screen { min-height:100vh;display:flex;align-items:center;justify-content:center; }
+  #main-screen { display:none; }
+  .tab-btn { padding:10px 20px;border-radius:8px;font-weight:600;font-size:14px;cursor:pointer;background:transparent;border:none;color:#94a3b8;transition:all .2s; }
+  .tab-btn.active { background:#4f46e5;color:#fff; }
+  .table-row:hover { background:#1e293b; }
+  .pill { display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase; }
+</style>
+</head>
+<body>
+
+<!-- LOGIN SCREEN -->
+<div id="login-screen">
+  <div class="card p-8 w-full max-w-sm mx-4">
+    <div class="text-center mb-8">
+      <div class="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+        <i class="fas fa-shield-halved text-white text-2xl"></i>
+      </div>
+      <h1 class="text-2xl font-bold text-white">Super Admin</h1>
+      <p class="text-slate-400 text-sm mt-1">ClockInProof Platform</p>
+    </div>
+    <div id="login-error" class="hidden bg-red-900/40 border border-red-700 text-red-300 rounded-lg p-3 text-sm mb-4"></div>
+    <input type="password" id="super-pin" class="input text-center text-2xl tracking-widest mb-4" placeholder="Enter PIN" maxlength="20">
+    <button class="btn-primary w-full" onclick="doSuperLogin()">
+      <i class="fas fa-unlock-keyhole mr-2"></i>Access Portal
+    </button>
+  </div>
+</div>
+
+<!-- MAIN SCREEN -->
+<div id="main-screen">
+  <!-- Top Nav -->
+  <nav class="border-b border-slate-700 px-6 py-3 flex items-center justify-between sticky top-0 z-40" style="background:#0f172a">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
+        <i class="fas fa-shield-halved text-white text-sm"></i>
+      </div>
+      <span class="font-bold text-white text-lg">ClockInProof</span>
+      <span class="pill bg-indigo-900 text-indigo-300 ml-1">SUPER ADMIN</span>
+    </div>
+    <div class="flex items-center gap-4">
+      <span class="text-slate-400 text-sm hidden md:block">Last refresh: <span id="last-refresh">—</span></span>
+      <button class="btn-ghost" onclick="refreshAll()"><i class="fas fa-rotate-right mr-1"></i>Refresh</button>
+      <button class="btn-danger" onclick="doLogout()"><i class="fas fa-sign-out-alt mr-1"></i>Logout</button>
+    </div>
+  </nav>
+
+  <!-- Tabs -->
+  <div class="border-b border-slate-700 px-6 flex gap-1 overflow-x-auto" style="background:#0f172a">
+    <button class="tab-btn active" id="tab-overview" onclick="showTab('overview')"><i class="fas fa-chart-line mr-1"></i>Overview</button>
+    <button class="tab-btn" id="tab-tenants" onclick="showTab('tenants')"><i class="fas fa-building mr-1"></i>Tenants</button>
+    <button class="tab-btn" id="tab-new-tenant" onclick="showTab('new-tenant')"><i class="fas fa-plus-circle mr-1"></i>Add Tenant</button>
+  </div>
+
+  <div class="p-6 max-w-7xl mx-auto">
+
+    <!-- OVERVIEW TAB -->
+    <div id="tab-content-overview">
+      <h2 class="text-xl font-bold text-white mb-6">Platform Overview</h2>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <div class="stat-card">
+          <div class="text-slate-400 text-xs font-semibold uppercase mb-1">Total Tenants</div>
+          <div class="text-3xl font-bold text-white" id="stat-tenants">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="text-slate-400 text-xs font-semibold uppercase mb-1">Total Workers</div>
+          <div class="text-3xl font-bold text-emerald-400" id="stat-workers">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="text-slate-400 text-xs font-semibold uppercase mb-1">Active Now</div>
+          <div class="text-3xl font-bold text-yellow-400" id="stat-active">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="text-slate-400 text-xs font-semibold uppercase mb-1">Total Sessions</div>
+          <div class="text-3xl font-bold text-indigo-400" id="stat-sessions">—</div>
+        </div>
+      </div>
+
+      <!-- Plan Breakdown -->
+      <div class="card p-5 mb-6">
+        <h3 class="font-bold text-white mb-4"><i class="fas fa-layer-group mr-2 text-indigo-400"></i>Plan Breakdown</h3>
+        <div id="plan-breakdown" class="flex flex-wrap gap-3">
+          <span class="text-slate-400 text-sm">Loading...</span>
+        </div>
+      </div>
+
+      <!-- Recent Tenants -->
+      <div class="card p-5">
+        <h3 class="font-bold text-white mb-4"><i class="fas fa-clock mr-2 text-indigo-400"></i>Recent Tenants</h3>
+        <div id="recent-tenants" class="space-y-2">
+          <span class="text-slate-400 text-sm">Loading...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- TENANTS TAB -->
+    <div id="tab-content-tenants" class="hidden">
+      <div class="flex items-center justify-between mb-6">
+        <h2 class="text-xl font-bold text-white">All Tenants</h2>
+        <div class="flex gap-2">
+          <input type="text" id="tenant-search" class="input w-52" placeholder="Search..." oninput="filterTenants()">
+          <select id="tenant-filter-status" class="input w-36" onchange="filterTenants()">
+            <option value="">All Status</option>
+            <option value="active">Active</option>
+            <option value="trial">Trial</option>
+            <option value="suspended">Suspended</option>
+          </select>
+          <select id="tenant-filter-plan" class="input w-36" onchange="filterTenants()">
+            <option value="">All Plans</option>
+            <option value="starter">Starter</option>
+            <option value="growth">Growth</option>
+            <option value="pro">Pro</option>
+          </select>
+        </div>
+      </div>
+      <div class="card overflow-hidden">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-slate-700 text-slate-400 text-xs uppercase">
+              <th class="text-left p-4">Company</th>
+              <th class="text-left p-4 hidden md:table-cell">Subdomain</th>
+              <th class="text-left p-4 hidden md:table-cell">Plan</th>
+              <th class="text-left p-4 hidden md:table-cell">Status</th>
+              <th class="text-left p-4 hidden lg:table-cell">Workers</th>
+              <th class="text-left p-4 hidden lg:table-cell">Sessions</th>
+              <th class="text-left p-4 hidden lg:table-cell">Last Active</th>
+              <th class="text-right p-4">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="tenants-table-body">
+            <tr><td colspan="8" class="p-8 text-center text-slate-400">Loading tenants...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="mt-3 text-slate-500 text-xs" id="tenant-count-label"></div>
+    </div>
+
+    <!-- ADD TENANT TAB -->
+    <div id="tab-content-new-tenant" class="hidden">
+      <div class="max-w-2xl mx-auto">
+        <h2 class="text-xl font-bold text-white mb-6">Create New Tenant</h2>
+        <div class="card p-6 space-y-5">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Company Name *</label>
+              <input type="text" id="new-company" class="input" placeholder="Acme Cleaning Co.">
+            </div>
+            <div>
+              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Subdomain * <span class="text-indigo-400 lowercase">.clockinproof.com</span></label>
+              <div class="flex items-center gap-2">
+                <input type="text" id="new-slug" class="input" placeholder="acme-cleaning" oninput="checkSlug()">
+                <span id="slug-check" class="text-xs w-6"></span>
+              </div>
+            </div>
+            <div>
+              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Admin Email *</label>
+              <input type="email" id="new-email" class="input" placeholder="owner@company.com">
+            </div>
+            <div>
+              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Admin PIN</label>
+              <input type="text" id="new-pin" class="input" placeholder="1234" maxlength="8">
+            </div>
+            <div>
+              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Plan</label>
+              <select id="new-plan" class="input">
+                <option value="starter">Starter — $29/mo (10 workers)</option>
+                <option value="growth" selected>Growth — $59/mo (25 workers)</option>
+                <option value="pro">Pro — $99/mo (Unlimited)</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Company Address</label>
+              <input type="text" id="new-address" class="input" placeholder="123 Main St, City, Province">
+            </div>
+          </div>
+          <div class="pt-2">
+            <label class="flex items-center gap-2 text-slate-300 text-sm cursor-pointer">
+              <input type="checkbox" id="new-send-welcome" checked class="w-4 h-4">
+              Send welcome email to admin with login details
+            </label>
+          </div>
+          <div id="create-result" class="hidden"></div>
+          <div class="flex gap-3 pt-2">
+            <button class="btn-primary flex-1" onclick="createTenant()">
+              <i class="fas fa-plus-circle mr-2"></i>Create Tenant
+            </button>
+            <button class="btn-ghost" onclick="showTab('tenants')">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- EDIT TENANT MODAL -->
+<div id="edit-modal" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onclick="if(event.target===this)closeEditModal()">
+  <div class="card p-6 w-full max-w-lg max-h-screen overflow-y-auto">
+    <div class="flex items-center justify-between mb-5">
+      <h3 class="font-bold text-white text-lg">Edit Tenant</h3>
+      <button onclick="closeEditModal()" class="text-slate-400 hover:text-white text-xl">&times;</button>
+    </div>
+    <input type="hidden" id="edit-tenant-id">
+    <div class="space-y-4">
+      <div>
+        <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Company Name</label>
+        <input type="text" id="edit-company" class="input">
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Admin Email</label>
+        <input type="email" id="edit-email" class="input">
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Admin PIN</label>
+        <input type="text" id="edit-pin" class="input" maxlength="8">
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Plan</label>
+          <select id="edit-plan" class="input">
+            <option value="starter">Starter (10 workers)</option>
+            <option value="growth">Growth (25 workers)</option>
+            <option value="pro">Pro (Unlimited)</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Status</label>
+          <select id="edit-status" class="input">
+            <option value="active">Active</option>
+            <option value="trial">Trial</option>
+            <option value="suspended">Suspended</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Max Workers (override)</label>
+        <input type="number" id="edit-max-workers" class="input" min="1">
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs font-semibold uppercase block mb-1">Brand Color</label>
+        <input type="color" id="edit-color" class="input h-10 cursor-pointer p-1">
+      </div>
+    </div>
+    <div class="flex gap-3 mt-6">
+      <button class="btn-primary flex-1" onclick="saveTenant()"><i class="fas fa-save mr-2"></i>Save Changes</button>
+      <button class="btn-ghost" onclick="closeEditModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div id="toast" class="toast hidden"></div>
+
+<script>
+let superToken = localStorage.getItem('super_token') || ''
+let allTenants = []
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+async function doSuperLogin() {
+  const pin = document.getElementById('super-pin').value.trim()
+  if (!pin) return
+  try {
+    const r = await fetch('/api/super/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin })
+    })
+    const d = await r.json()
+    if (!r.ok || d.error) {
+      document.getElementById('login-error').textContent = d.error || 'Invalid PIN'
+      document.getElementById('login-error').classList.remove('hidden')
+      return
+    }
+    superToken = d.token
+    localStorage.setItem('super_token', superToken)
+    showMain()
+  } catch(e) {
+    document.getElementById('login-error').textContent = 'Connection error'
+    document.getElementById('login-error').classList.remove('hidden')
+  }
+}
+
+document.getElementById('super-pin').addEventListener('keydown', e => { if(e.key==='Enter') doSuperLogin() })
+
+function doLogout() {
+  localStorage.removeItem('super_token')
+  superToken = ''
+  document.getElementById('main-screen').style.display = 'none'
+  document.getElementById('login-screen').style.display = 'flex'
+}
+
+function showMain() {
+  document.getElementById('login-screen').style.display = 'none'
+  document.getElementById('main-screen').style.display = 'block'
+  refreshAll()
+}
+
+// Auto-login if token exists
+if (superToken) showMain()
+
+// ── API helper ────────────────────────────────────────────────────────────────
+async function api(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json', 'X-Super-Token': superToken, ...(opts.headers || {}) }
+  const r = await fetch(path, { ...opts, headers })
+  if (r.status === 401) { doLogout(); throw new Error('Unauthorized') }
+  return r.json()
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('[id^="tab-content-"]').forEach(el => el.classList.add('hidden'))
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'))
+  document.getElementById('tab-content-' + name)?.classList.remove('hidden')
+  document.getElementById('tab-' + name)?.classList.add('active')
+  if (name === 'tenants') loadTenants()
+  if (name === 'overview') loadDashboard()
+}
+
+// ── Refresh ───────────────────────────────────────────────────────────────────
+async function refreshAll() {
+  document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString()
+  await loadDashboard()
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+async function loadDashboard() {
+  try {
+    const d = await api('/api/super/dashboard')
+    document.getElementById('stat-tenants').textContent = d.total_tenants
+    document.getElementById('stat-workers').textContent = d.total_workers
+    document.getElementById('stat-active').textContent = d.active_sessions
+    document.getElementById('stat-sessions').textContent = d.total_sessions
+
+    // Plan breakdown
+    const planColors = { starter: 'badge-starter', growth: 'badge-growth', pro: 'badge-pro' }
+    const pb = document.getElementById('plan-breakdown')
+    pb.innerHTML = (d.plan_breakdown || []).map(p =>
+      '<span class="pill ' + (planColors[p.plan] || 'bg-slate-700 text-slate-300') + ' text-sm px-4 py-1">' +
+      (p.plan || 'unknown').toUpperCase() + ': <strong>' + p.count + '</strong></span>'
+    ).join('') || '<span class="text-slate-400 text-sm">No tenants yet</span>'
+
+    // Recent tenants (load from tenants list)
+    const td = await api('/api/super/tenants')
+    allTenants = td.tenants || []
+    const recent = allTenants.slice(0, 5)
+    const rt = document.getElementById('recent-tenants')
+    rt.innerHTML = recent.length ? recent.map(t => \`
+      <div class="flex items-center justify-between p-3 rounded-lg bg-slate-800/50 table-row">
+        <div>
+          <span class="font-semibold text-white">\${t.company_name}</span>
+          <span class="text-slate-400 text-xs ml-2">\${t.slug}.clockinproof.com</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="pill \${t.plan === 'pro' ? 'badge-pro' : t.plan === 'growth' ? 'badge-growth' : 'badge-starter'}">\${t.plan || 'starter'}</span>
+          <span class="pill \${t.status === 'active' ? 'badge-active' : t.status === 'trial' ? 'badge-trial' : 'badge-suspended'}">\${t.status}</span>
+          <span class="text-slate-400 text-xs">\${t.worker_count || 0} workers</span>
+        </div>
+      </div>
+    \`).join('') : '<p class="text-slate-400 text-sm">No tenants yet. <button onclick="showTab(\'new-tenant\')" class="text-indigo-400 hover:underline">Add your first tenant →</button></p>'
+  } catch(e) { console.error(e) }
+}
+
+// ── Tenants list ──────────────────────────────────────────────────────────────
+async function loadTenants() {
+  const tbody = document.getElementById('tenants-table-body')
+  tbody.innerHTML = '<tr><td colspan="8" class="p-8 text-center text-slate-400"><i class="fas fa-spinner fa-spin mr-2"></i>Loading...</td></tr>'
+  try {
+    const d = await api('/api/super/tenants')
+    allTenants = d.tenants || []
+    renderTenants(allTenants)
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="8" class="p-8 text-center text-red-400">Failed to load tenants</td></tr>'
+  }
+}
+
+function filterTenants() {
+  const q = document.getElementById('tenant-search').value.toLowerCase()
+  const fStatus = document.getElementById('tenant-filter-status').value
+  const fPlan = document.getElementById('tenant-filter-plan').value
+  const filtered = allTenants.filter(t =>
+    (!q || t.company_name.toLowerCase().includes(q) || t.slug.includes(q) || (t.admin_email||'').toLowerCase().includes(q)) &&
+    (!fStatus || t.status === fStatus) &&
+    (!fPlan || t.plan === fPlan)
+  )
+  renderTenants(filtered)
+}
+
+function renderTenants(tenants) {
+  const tbody = document.getElementById('tenants-table-body')
+  document.getElementById('tenant-count-label').textContent = tenants.length + ' tenant' + (tenants.length !== 1 ? 's' : '')
+  if (!tenants.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="p-8 text-center text-slate-400">No tenants found</td></tr>'
+    return
+  }
+  tbody.innerHTML = tenants.map(t => {
+    const statusClass = t.status === 'active' ? 'badge-active' : t.status === 'trial' ? 'badge-trial' : 'badge-suspended'
+    const planClass = t.plan === 'pro' ? 'badge-pro' : t.plan === 'growth' ? 'badge-growth' : 'badge-starter'
+    const lastActive = t.last_active ? new Date(t.last_active).toLocaleDateString() : 'Never'
+    const created = t.created_at ? new Date(t.created_at).toLocaleDateString() : '—'
+    return \`<tr class="border-b border-slate-800 table-row">
+      <td class="p-4">
+        <div class="font-semibold text-white">\${t.company_name}</div>
+        <div class="text-slate-400 text-xs">\${t.admin_email || '—'}</div>
+        <div class="text-slate-500 text-xs">Created \${created}</div>
+      </td>
+      <td class="p-4 hidden md:table-cell">
+        <a href="https://\${t.slug}.clockinproof.com" target="_blank" class="text-indigo-400 hover:underline text-xs">\${t.slug}</a>
+      </td>
+      <td class="p-4 hidden md:table-cell"><span class="pill \${planClass}">\${t.plan || 'starter'}</span></td>
+      <td class="p-4 hidden md:table-cell"><span class="pill \${statusClass}">\${t.status}</span></td>
+      <td class="p-4 hidden lg:table-cell text-slate-300">\${t.worker_count || 0} / \${t.max_workers || '?'}</td>
+      <td class="p-4 hidden lg:table-cell text-slate-300">\${t.session_count || 0}</td>
+      <td class="p-4 hidden lg:table-cell text-slate-400 text-xs">\${lastActive}</td>
+      <td class="p-4 text-right">
+        <div class="flex justify-end gap-1 flex-wrap">
+          <button class="btn-ghost" onclick="openEditModal(\${JSON.stringify(t).replace(/"/g,'&quot;')})"><i class="fas fa-edit"></i></button>
+          <a href="https://admin.clockinproof.com" target="_blank" class="btn-ghost" title="Open Admin"><i class="fas fa-external-link-alt"></i></a>
+          \${t.status === 'active'
+            ? '<button class="btn-danger" onclick="suspendTenant(' + t.id + ')"><i class="fas fa-pause"></i></button>'
+            : '<button class="btn-success" onclick="activateTenant(' + t.id + ')"><i class="fas fa-play"></i></button>'
+          }
+        </div>
+      </td>
+    </tr>\`
+  }).join('')
+}
+
+// ── Edit Modal ────────────────────────────────────────────────────────────────
+function openEditModal(t) {
+  document.getElementById('edit-tenant-id').value = t.id
+  document.getElementById('edit-company').value = t.company_name || ''
+  document.getElementById('edit-email').value = t.admin_email || ''
+  document.getElementById('edit-pin').value = t.admin_pin || ''
+  document.getElementById('edit-plan').value = t.plan || 'starter'
+  document.getElementById('edit-status').value = t.status || 'active'
+  document.getElementById('edit-max-workers').value = t.max_workers || ''
+  document.getElementById('edit-color').value = t.primary_color || '#4F46E5'
+  document.getElementById('edit-modal').classList.remove('hidden')
+}
+function closeEditModal() { document.getElementById('edit-modal').classList.add('hidden') }
+
+async function saveTenant() {
+  const id = document.getElementById('edit-tenant-id').value
+  const body = {
+    company_name: document.getElementById('edit-company').value,
+    admin_email: document.getElementById('edit-email').value,
+    admin_pin: document.getElementById('edit-pin').value,
+    plan: document.getElementById('edit-plan').value,
+    status: document.getElementById('edit-status').value,
+    max_workers: parseInt(document.getElementById('edit-max-workers').value) || undefined,
+    primary_color: document.getElementById('edit-color').value
+  }
+  try {
+    await api('/api/super/tenants/' + id, { method: 'PUT', body: JSON.stringify(body) })
+    closeEditModal()
+    showToast('✅ Tenant updated')
+    loadTenants()
+  } catch(e) { showToast('❌ Update failed', true) }
+}
+
+async function suspendTenant(id) {
+  if (!confirm('Suspend this tenant? Workers will not be able to clock in.')) return
+  await api('/api/super/tenants/' + id, { method: 'PUT', body: JSON.stringify({ status: 'suspended' }) })
+  showToast('⏸ Tenant suspended')
+  loadTenants()
+}
+async function activateTenant(id) {
+  await api('/api/super/tenants/' + id, { method: 'PUT', body: JSON.stringify({ status: 'active' }) })
+  showToast('▶ Tenant activated')
+  loadTenants()
+}
+
+// ── Create Tenant ─────────────────────────────────────────────────────────────
+let slugCheckTimer = null
+async function checkSlug() {
+  clearTimeout(slugCheckTimer)
+  const slugEl = document.getElementById('new-slug')
+  const check = document.getElementById('slug-check')
+  const val = slugEl.value.trim()
+  if (!val) { check.textContent = ''; return }
+  check.textContent = '⏳'
+  slugCheckTimer = setTimeout(async () => {
+    try {
+      const d = await fetch('/api/tenants/check-slug?slug=' + encodeURIComponent(val)).then(r => r.json())
+      check.textContent = d.available ? '✅' : '❌'
+      check.title = d.available ? 'Available' : (d.error || 'Already taken')
+    } catch { check.textContent = '?' }
+  }, 500)
+}
+
+async function createTenant() {
+  const company = document.getElementById('new-company').value.trim()
+  const slug = document.getElementById('new-slug').value.trim()
+  const email = document.getElementById('new-email').value.trim()
+  const pin = document.getElementById('new-pin').value.trim()
+  const plan = document.getElementById('new-plan').value
+  const address = document.getElementById('new-address').value.trim()
+  if (!company || !slug || !email) { showToast('❌ Company, subdomain and email are required', true); return }
+  const resultEl = document.getElementById('create-result')
+  resultEl.className = 'p-3 rounded-lg bg-slate-800 text-slate-300 text-sm'
+  resultEl.textContent = 'Creating tenant...'
+  resultEl.classList.remove('hidden')
+  try {
+    const d = await api('/api/super/tenants', {
+      method: 'POST',
+      body: JSON.stringify({ slug, company_name: company, admin_email: email, admin_pin: pin || '1234', plan, company_address: address })
+    })
+    if (d.error) {
+      resultEl.className = 'p-3 rounded-lg bg-red-900/40 border border-red-700 text-red-300 text-sm'
+      resultEl.textContent = '❌ ' + d.error
+      return
+    }
+    resultEl.className = 'p-3 rounded-lg bg-emerald-900/40 border border-emerald-700 text-emerald-300 text-sm'
+    resultEl.innerHTML = \`✅ <strong>Tenant created!</strong><br>
+      Admin: <a href="https://admin.clockinproof.com" target="_blank" class="underline">admin.clockinproof.com</a><br>
+      Workers: <a href="https://\${d.slug}.clockinproof.com" target="_blank" class="underline">\${d.slug}.clockinproof.com</a><br>
+      Welcome email sent to \${email}\`
+    // Reset form
+    ['new-company','new-slug','new-email','new-pin','new-address'].forEach(id => document.getElementById(id).value = '')
+    document.getElementById('new-plan').value = 'growth'
+    document.getElementById('slug-check').textContent = ''
+    showToast('🎉 Tenant created!')
+    allTenants = [] // force reload
+  } catch(e) {
+    resultEl.className = 'p-3 rounded-lg bg-red-900/40 border border-red-700 text-red-300 text-sm'
+    resultEl.textContent = '❌ Failed to create tenant'
+  }
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function showToast(msg, isError = false) {
+  const t = document.getElementById('toast')
+  t.textContent = msg
+  t.style.borderColor = isError ? '#dc2626' : '#4f46e5'
+  t.classList.remove('hidden')
+  setTimeout(() => t.classList.add('hidden'), 3500)
+}
+</script>
+</body>
+</html>`
+}
 
 // ─── CLOUDFLARE SCHEDULED TRIGGER ────────────────────────────────────────────
 // Fires every Friday at 23:59 UTC  →  cron: "59 23 * * 5"
