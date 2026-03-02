@@ -5421,12 +5421,17 @@ async function loadEncircleStatus() {
 }
 
 function filterEncircleJobs() {
-  const search   = (document.getElementById('encircle-search')?.value || '').toLowerCase()
-  const typeVal  = (document.getElementById('encircle-filter-type')?.value || '').toLowerCase()
-  const pmVal    = (document.getElementById('encircle-filter-pm')?.value || '').toLowerCase()
+  const search        = (document.getElementById('encircle-search')?.value || '').toLowerCase()
+  const typeVal       = (document.getElementById('encircle-filter-type')?.value || '').toLowerCase()
+  const pmVal         = (document.getElementById('encircle-filter-pm')?.value || '').toLowerCase()
+  const showClosed    = document.getElementById('encircle-show-closed')?.checked || false
 
-  let filtered = _encircleAllJobs.filter(j => {
-    if (j.status === 'closed') return false  // Only show active by default
+  const activeJobs  = _encircleAllJobs.filter(j => j.status !== 'closed')
+  const closedJobs  = _encircleAllJobs.filter(j => j.status === 'closed')
+
+  let pool = showClosed ? _encircleAllJobs : activeJobs
+
+  let filtered = pool.filter(j => {
     const hay = [j.policyholder_name, j.full_address, j.policyholder_phone, j.project_manager_name,
                  j.insurer_identifier, j.loss_details, j.type_of_loss].join(' ').toLowerCase()
     const matchSearch = !search || hay.includes(search)
@@ -5436,7 +5441,16 @@ function filterEncircleJobs() {
   })
 
   const countEl = document.getElementById('encircle-showing-count')
-  if (countEl) countEl.textContent = `Showing ${filtered.length} of ${_encircleAllJobs.filter(j => j.status !== 'closed').length} active jobs`
+  if (countEl) {
+    const closedLabel = closedJobs.length > 0
+      ? ` · <span class="text-gray-400">${closedJobs.length} closed hidden</span>`
+      : ''
+    const closedLabelActive = closedJobs.length > 0
+      ? ` · <span class="text-amber-600">${closedJobs.length} closed shown</span>`
+      : ''
+    countEl.innerHTML = `Showing <strong>${filtered.length}</strong> of <strong>${activeJobs.length}</strong> active jobs`
+      + (showClosed ? closedLabelActive : closedLabel)
+  }
 
   renderEncircleCards(filtered)
 }
@@ -5500,17 +5514,24 @@ function renderEncircleCards(jobs) {
       : ''
 
     return `
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 hover:shadow-md hover:border-sky-200 transition-all duration-200 overflow-hidden cursor-pointer" onclick="openEncircleCardDetail('${claimKey}')">
+    <div class="bg-white rounded-2xl shadow-sm border ${j.status === 'closed' ? 'border-gray-200 opacity-70' : 'border-gray-100 hover:shadow-md hover:border-sky-200'} transition-all duration-200 overflow-hidden cursor-pointer" onclick="openEncircleCardDetail('${claimKey}')">
+
+      ${j.status === 'closed' ? `
+      <!-- Closed banner -->
+      <div class="flex items-center gap-2 px-4 py-1.5 bg-gray-100 border-b border-gray-200">
+        <i class="fas fa-archive text-gray-400 text-xs"></i>
+        <span class="text-xs font-bold text-gray-500 uppercase tracking-wide">Closed / Archived</span>
+      </div>` : ''}
 
       <!-- ── Card Top Bar ── -->
       <div class="flex items-center gap-3 px-4 pt-4 pb-3">
         <!-- Type icon -->
-        <div class="w-10 h-10 rounded-xl ${typeColor.split(' ')[0]} flex items-center justify-center flex-shrink-0">
+        <div class="w-10 h-10 rounded-xl ${typeColor.split(' ')[0]} flex items-center justify-center flex-shrink-0 ${j.status === 'closed' ? 'opacity-50' : ''}">
           <i class="fas ${typeIcon} text-base ${typeColor.split(' ')[1]}"></i>
         </div>
         <!-- Name + type badge -->
         <div class="flex-1 min-w-0">
-          <p class="font-bold text-gray-900 text-sm leading-tight truncate">${escHtml(j.policyholder_name || 'Unknown Policyholder')}</p>
+          <p class="font-bold text-gray-900 text-sm leading-tight truncate ${j.status === 'closed' ? 'line-through text-gray-400' : ''}">${escHtml(j.policyholder_name || 'Unknown Policyholder')}</p>
           <span class="inline-block mt-0.5 text-[10px] font-bold px-2 py-0.5 rounded-full ${typeColor}">${escHtml(typeLabel)}</span>
         </div>
         <!-- GPS + Encircle link -->
@@ -5674,7 +5695,10 @@ async function encircleSync(silent = false) {
     const res  = await fetch('/api/encircle/sync', { method: 'POST' })
     const data = await res.json()
     if (data.status === 'success') {
-      if (!silent) showAdminToast(`✅ Sync complete — ${data.jobs_added} added, ${data.jobs_updated} updated`, 'success', 6000)
+      if (!silent) {
+        const skippedNote = data.jobs_skipped > 0 ? `, ${data.jobs_skipped} closed skipped` : ''
+        showAdminToast(`✅ Sync complete — ${data.jobs_added} added, ${data.jobs_updated} updated${skippedNote}`, 'success', 6000)
+      }
     } else {
       showAdminToast('⚠️ Sync error: ' + (data.error_message || 'Unknown error'), 'error', 7000)
     }

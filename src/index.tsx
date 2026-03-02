@@ -2853,7 +2853,7 @@ app.post('/api/twilio/webhook', async (c) => {
 
 // Helper: run full Encircle sync (used by manual trigger and cron)
 async function runEncircleSync(db: D1Database): Promise<{
-  jobs_added: number; jobs_updated: number; jobs_closed: number;
+  jobs_added: number; jobs_updated: number; jobs_closed: number; jobs_skipped?: number;
   status: string; error_message?: string
 }> {
   const settings = await db.prepare('SELECT * FROM encircle_settings WHERE id = 1').first() as any
@@ -2876,7 +2876,16 @@ async function runEncircleSync(db: D1Database): Promise<{
       return { jobs_added: 0, jobs_updated: 0, jobs_closed: 0, status: 'error', error_message: msg }
     }
     const data = await resp.json() as any
-    const claims = data.list || []
+    const allClaims = data.list || []
+
+    // ── Filter out closed/archived jobs — we only import active claims ──────
+    const CLOSED_STATUSES = ['closed', 'archived', 'cancelled', 'canceled', 'complete', 'completed']
+    const claims = allClaims.filter((c: any) => {
+      const s = (c.status || c.claim_status || c.project_status || '').toLowerCase()
+      return !CLOSED_STATUSES.includes(s)
+    })
+    const skippedClosed = allClaims.length - claims.length
+
     let added = 0, updated = 0, closed = 0
     const encircleIds: string[] = []
 
@@ -2975,7 +2984,7 @@ async function runEncircleSync(db: D1Database): Promise<{
       }
     }
 
-    // ── Deactivate jobs no longer in Encircle ────────────────────────────────
+    // ── Deactivate jobs no longer in Encircle (removed or closed) ────────────
     if (encircleIds.length > 0) {
       const ph = encircleIds.map(() => '?').join(',')
       const deactivateResult = await db.prepare(
@@ -2984,12 +2993,14 @@ async function runEncircleSync(db: D1Database): Promise<{
       await db.prepare(
         `UPDATE encircle_jobs SET status='closed' WHERE encircle_claim_id NOT IN (${ph})`
       ).bind(...encircleIds).run()
-      closed = deactivateResult.meta?.changes || 0
+      closed = (deactivateResult.meta?.changes || 0) + skippedClosed
+    } else {
+      closed = skippedClosed
     }
 
     await db.prepare(`UPDATE encircle_settings SET last_sync_at=CURRENT_TIMESTAMP WHERE id=1`).run()
     await db.prepare(`INSERT INTO encircle_sync_log (jobs_added,jobs_updated,jobs_closed,status) VALUES (?,?,?,'success')`).bind(added, updated, closed).run()
-    return { jobs_added: added, jobs_updated: updated, jobs_closed: closed, status: 'success' }
+    return { jobs_added: added, jobs_updated: updated, jobs_closed: closed, jobs_skipped: skippedClosed, status: 'success' }
   } catch (e: any) {
     const msg = e?.message || 'Unknown error during sync'
     await db.prepare(`INSERT INTO encircle_sync_log (jobs_added,jobs_updated,jobs_closed,status,error_message) VALUES (0,0,0,'error',?)`).bind(msg).run()
@@ -9202,8 +9213,8 @@ function getAdminHTML(): string {
       </div>
 
       <!-- Search + filter bar (visible when connected) -->
-      <div id="encircle-filter-bar" class="hidden bg-white rounded-2xl shadow-sm p-4 flex flex-col sm:flex-row gap-3 items-center">
-        <div class="relative flex-1 w-full">
+      <div id="encircle-filter-bar" class="hidden bg-white rounded-2xl shadow-sm p-4 flex flex-col sm:flex-row gap-3 items-center flex-wrap">
+        <div class="relative flex-1 w-full min-w-[180px]">
           <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
           <input id="encircle-search" type="text" placeholder="Search by name, address, phone, PM..."
             oninput="filterEncircleJobs()"
@@ -9221,6 +9232,12 @@ function getAdminHTML(): string {
           class="px-3 py-2 rounded-xl border border-gray-200 text-sm text-gray-600 bg-gray-50 focus:ring-2 focus:ring-sky-300">
           <option value="">All Project Managers</option>
         </select>
+        <!-- Show closed toggle -->
+        <label class="flex items-center gap-2 cursor-pointer select-none shrink-0 px-1">
+          <input id="encircle-show-closed" type="checkbox" onchange="filterEncircleJobs()"
+            class="w-4 h-4 rounded accent-amber-500 cursor-pointer" />
+          <span class="text-xs text-gray-500 font-medium">Show closed</span>
+        </label>
       </div>
 
       <!-- Job cards grid -->
@@ -9229,7 +9246,7 @@ function getAdminHTML(): string {
         <div id="encircle-cards-container" class="space-y-3"></div>
         <p id="encircle-jobs-empty" class="hidden text-gray-400 text-sm text-center py-10 bg-white rounded-2xl">
           <i class="fas fa-inbox text-3xl block mb-3 text-gray-300"></i>
-          No jobs found. Click <strong>Sync Now</strong> to import from Encircle.
+          No active jobs found. <span class="text-amber-600 cursor-pointer underline" onclick="document.getElementById('encircle-show-closed').checked=true;filterEncircleJobs()">Show closed jobs</span> or click <strong>Sync Now</strong> to import from Encircle.
         </p>
       </div>
 
@@ -10281,7 +10298,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260302d"></script>
+<script src="/static/admin.js?v=20260302e"></script>
 
 </body>
 </html>`
