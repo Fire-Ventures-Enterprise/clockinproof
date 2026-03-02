@@ -3674,14 +3674,37 @@ async function filterSiteAddressSuggestions(val) {
   const box = document.getElementById('site-address-suggestions')
   if (!box) return
   clearTimeout(siteAcTimer)
-  if (!val || val.length < 4) { box.classList.add('hidden'); return }
+  if (!val || val.length < 3) { box.classList.add('hidden'); return }
 
   box.innerHTML = '<div class="px-4 py-3 text-xs text-gray-400"><i class="fas fa-circle-notch fa-spin mr-2"></i>Searching addresses...</div>'
   box.classList.remove('hidden')
 
   siteAcTimer = setTimeout(async () => {
     try {
-      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(val)}&format=json&limit=6&addressdetails=1&accept-language=en`
+      // Build location-biased search using admin settings (country + city)
+      const country = (currentSettings?.country_code || 'CA').toLowerCase()
+      const city    = currentSettings?.city || ''
+      const lat     = parseFloat(currentSettings?.lat || 0)
+      const lng     = parseFloat(currentSettings?.lng || 0)
+
+      let query = val
+      let params = `format=json&limit=8&addressdetails=1&accept-language=en&countrycodes=${country}`
+
+      // If we have a stored job-site lat/lng from a previous geocode, use it as viewbox
+      const firstSiteEl = document.querySelector('#job-sites-list [data-lat]')
+      const refLat = firstSiteEl ? parseFloat(firstSiteEl.dataset.lat) : null
+      const refLng = firstSiteEl ? parseFloat(firstSiteEl.dataset.lng) : null
+
+      if (refLat && refLng) {
+        const d = 0.5
+        const viewbox = `${(refLng - d).toFixed(4)},${(refLat + d).toFixed(4)},${(refLng + d).toFixed(4)},${(refLat - d).toFixed(4)}`
+        params += `&viewbox=${viewbox}&bounded=0`
+      } else if (city && !val.toLowerCase().includes(city.toLowerCase())) {
+        // Append city to steer results without showing it in the input
+        query = val + ', ' + city
+      }
+
+      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&${params}`
       const res  = await fetch(url, { headers: { 'Accept-Language': 'en' } })
       const data = await res.json()
 
@@ -3695,14 +3718,14 @@ async function filterSiteAddressSuggestions(val) {
         const short = [
           addr.house_number, addr.road,
           addr.city || addr.town || addr.village || addr.municipality,
-          addr.state,
-          addr.country_code?.toUpperCase()
+          addr.state_code || addr.province || addr.state,
+          addr.postcode
         ].filter(Boolean).join(', ')
 
         return `<button
           class="w-full text-left px-4 py-3 hover:bg-emerald-50 text-sm text-gray-700 border-b border-gray-100 last:border-0 flex items-start gap-3"
           onmousedown="event.preventDefault()"
-          onclick="selectSiteAddress('${short.replace(/'/g,"\\'").replace(/"/g,'&quot;')}')">
+          onclick="selectSiteAddress('${short.replace(/'/g,"\\'").replace(/"/g,'&quot;')}', ${r.lat}, ${r.lon})">
           <i class="fas fa-map-marker-alt text-red-400 mt-0.5 flex-shrink-0 text-xs"></i>
           <span>${short}</span>
         </button>`
@@ -3713,9 +3736,14 @@ async function filterSiteAddressSuggestions(val) {
   }, 350)
 }
 
-function selectSiteAddress(address) {
+function selectSiteAddress(address, lat, lng) {
   const input = document.getElementById('site-address')
   if (input) input.value = address
+  // Auto-fill hidden lat/lng fields if the form has them
+  const latEl = document.getElementById('site-lat')
+  const lngEl = document.getElementById('site-lng')
+  if (latEl && lat) latEl.value = parseFloat(lat).toFixed(7)
+  if (lngEl && lng) lngEl.value = parseFloat(lng).toFixed(7)
   const box = document.getElementById('site-address-suggestions')
   if (box) box.classList.add('hidden')
 }

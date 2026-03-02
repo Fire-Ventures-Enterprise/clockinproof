@@ -6,6 +6,9 @@ let currentAddress = null
 let map = null
 let marker = null
 let durationTimer = null
+// Location bias for address search — populated from settings on initMain
+let _searchCountry = 'ca'   // ISO 2-letter country code (lowercase)
+let _searchCity    = ''     // city name for query boost
 let pingInterval = null
 let recentLocations = []
 // GPS fraud override state
@@ -111,6 +114,14 @@ async function initMain() {
   document.getElementById('worker-name-display').textContent = currentWorker.name
   document.getElementById('worker-phone-display').textContent = currentWorker.phone
   document.getElementById('worker-rate-display').textContent = '$' + (currentWorker.hourly_rate || 0).toFixed(2) + '/hr'
+  // Load settings for address-search location bias (country + city)
+  try {
+    const sr = await fetch('/api/settings')
+    const sd = await sr.json()
+    const ss = sd.settings || {}
+    if (ss.country_code) _searchCountry = ss.country_code.toLowerCase()
+    if (ss.city)         _searchCity    = ss.city
+  } catch(_) {}
   await checkStatus()
   await loadStats()
   await loadWorkLog()
@@ -378,14 +389,33 @@ function addChip(task) {
 let acTimer = null   // debounce handle
 
 async function fetchAddressSuggestions(query) {
-  if (!query || query.length < 4) return []
+  if (!query || query.length < 3) return []
   try {
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=6&addressdetails=1&accept-language=en`
+    // Build biased query:
+    // 1. If worker GPS is available → use viewbox (±0.5° around worker) + countrycode
+    // 2. If no GPS yet → use countrycode + prepend city to query for local results
+    let params = `format=json&limit=8&addressdetails=1&accept-language=en`
+
+    if (currentLat && currentLng) {
+      // Tight viewbox around worker's current location — roughly 50 km radius
+      const d = 0.5  // ~55 km
+      const viewbox = `${(currentLng - d).toFixed(4)},${(currentLat + d).toFixed(4)},${(currentLng + d).toFixed(4)},${(currentLat - d).toFixed(4)}`
+      params += `&viewbox=${viewbox}&bounded=0&countrycodes=${_searchCountry}`
+    } else {
+      // No GPS — use country code and bias toward known city
+      params += `&countrycodes=${_searchCountry}`
+      if (_searchCity && !query.toLowerCase().includes(_searchCity.toLowerCase())) {
+        // Append city name to steer results without polluting user's typed text
+        query = query + ', ' + _searchCity
+      }
+    }
+
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&${params}`
     const res  = await fetch(url, { headers: { 'Accept-Language': 'en' } })
     const data = await res.json()
     return data.map(r => ({
       display: r.display_name,
-      short:   [r.address?.road, r.address?.house_number, r.address?.city || r.address?.town || r.address?.village, r.address?.state, r.address?.country_code?.toUpperCase()].filter(Boolean).join(', '),
+      short:   [r.address?.house_number, r.address?.road, r.address?.city || r.address?.town || r.address?.village, r.address?.state_code || r.address?.state, r.address?.postcode].filter(Boolean).join(', '),
       lat: parseFloat(r.lat),
       lng: parseFloat(r.lon)
     }))
@@ -412,7 +442,7 @@ function renderSuggestions(suggestions, inputId, boxId, onSelect) {
 function filterLocationSuggestions(val) {
   const box = document.getElementById('location-suggestions')
   clearTimeout(acTimer)
-  if (!val || val.length < 4) {
+  if (!val || val.length < 3) {
     // Fall back to recent locations while typing short strings
     if (recentLocations.length > 0 && val.length > 0) {
       const filtered = recentLocations.filter(l => l.toLowerCase().includes(val.toLowerCase()))
