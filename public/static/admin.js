@@ -1749,9 +1749,19 @@ async function addWorker() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, phone, hourly_rate: rate, pin, consent_given: true })
     })
-    })
     const data = await res.json()
-    if (!data.worker) { showAdminToast(data.error || 'Could not add worker', 'error'); return }
+
+    // Backend now returns 409 + duplicate_phone error for duplicate phones
+    if (!res.ok && data.error === 'duplicate_phone') {
+      showAdminToast(`⚠️ ${data.message}`, 'error')
+      return
+    }
+    // Legacy fallback: if backend returns isNew:false (shouldn't happen now, but just in case)
+    if (data.worker && data.isNew === false) {
+      showAdminToast(`⚠️ Phone ${phone} is already registered to worker "${data.worker.name}". Each worker must have a unique phone number.`, 'error')
+      return
+    }
+    if (!data.worker) { showAdminToast(data.message || data.error || 'Could not add worker', 'error'); return }
 
     // 2. Update with full profile data
     await fetch('/api/workers/' + data.worker.id, {
@@ -4318,26 +4328,44 @@ async function adminResetWorkerDevice() {
 
 // ── Device Reset Requests panel (Workers tab notification badge) ──────────────
 async function loadDeviceResetRequests() {
+  const listEl = document.getElementById('device-reset-list')
+  const banner = document.getElementById('device-reset-banner')
   try {
-    const d = await tktFetch('/api/device-reset-requests')
+    const res = await fetch('/api/device-reset-requests')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const d = await res.json()
     const pending = (d.requests || []).filter(r => r.status === 'pending')
+    // Badge count
     const badge = document.getElementById('device-reset-badge')
     if (badge) {
       if (pending.length > 0) { badge.textContent = pending.length; badge.classList.remove('hidden') }
       else badge.classList.add('hidden')
     }
+    // Hide the entire banner if no pending requests
+    if (banner) {
+      if (pending.length === 0) banner.classList.add('hidden')
+      else banner.classList.remove('hidden')
+    }
     renderDeviceResetRequests(d.requests || [])
-  } catch (e) { /* silent */ }
+  } catch (e) {
+    // On error: hide the banner so it doesn't sit on 'Loading...'
+    if (banner) banner.classList.add('hidden')
+    if (listEl) listEl.innerHTML = ''
+    console.warn('Device reset requests unavailable:', e.message)
+  }
 }
 
 function renderDeviceResetRequests(requests) {
   const el = document.getElementById('device-reset-list')
+  const banner = document.getElementById('device-reset-banner')
   if (!el) return
   const pending = requests.filter(r => r.status === 'pending')
   if (!pending.length) {
-    el.innerHTML = '<p class="text-xs text-gray-400 text-center py-4">No pending device reset requests.</p>'
+    if (banner) banner.classList.add('hidden')
+    el.innerHTML = ''
     return
   }
+  if (banner) banner.classList.remove('hidden')
   el.innerHTML = pending.map(r => `
 <div class="flex items-center justify-between gap-3 bg-amber-50 border border-amber-200 rounded-xl p-3">
   <div>

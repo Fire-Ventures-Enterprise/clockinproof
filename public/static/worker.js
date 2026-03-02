@@ -23,8 +23,17 @@ window.onload = async () => {
   const saved = localStorage.getItem('wt_worker')
   recentLocations = JSON.parse(localStorage.getItem('wt_recent_locations') || '[]')
   if (saved) {
-    currentWorker = JSON.parse(saved)
-    await initMain()
+    // Even for returning workers (auto-login), consent must be confirmed on THIS device.
+    // If they cleared storage or this is a new browser/device, show consent first.
+    if (!hasDeviceConsent()) {
+      showConsentModal(async () => {
+        currentWorker = JSON.parse(saved)
+        await initMain()
+      })
+    } else {
+      currentWorker = JSON.parse(saved)
+      await initMain()
+    }
   } else {
     showScreen('register')
   }
@@ -129,13 +138,13 @@ async function registerWorker() {
   const phone = document.getElementById('reg-phone').value.trim()
   const pin = document.getElementById('reg-pin').value.trim()
   if (!name || !phone) { showToast('Please enter name and phone', 'error'); return }
-  if (pin && pin.length !== 4) { showToast('PIN must be 4 digits', 'error'); return }
+  if (pin && (pin.length < 4 || pin.length > 8 || !/^\d+$/.test(pin))) { showToast('PIN must be 4–8 numeric digits', 'error'); return }
   const btn = document.getElementById('reg-btn')
   btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch spinner mr-2"></i>Please wait...'
   try {
     const res = await fetch('/api/workers/register', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, phone, pin: pin || '0000', device_id: getDeviceId(), consent_given: true })
+      body: JSON.stringify({ name, phone, pin: pin || '0000', device_id: getDeviceId(), consent_given: true, device_consent_at: new Date().toISOString() })
     })
     const data = await res.json()
     if (data.worker) {
@@ -154,6 +163,10 @@ async function registerWorker() {
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 async function loginWorker() {
+  // Show consent screen first if not yet given on this device
+  // (returning workers logging in on a new/fresh browser also need to consent)
+  if (!hasDeviceConsent()) { showConsentModal(loginWorker); return }
+
   const phone = document.getElementById('login-phone').value.trim()
   if (!phone) { showToast('Enter your phone number', 'error'); return }
   const btn = document.getElementById('login-btn')

@@ -445,8 +445,18 @@ app.post('/api/workers/register', async (c) => {
   ).bind(phone).first<any>()
 
   if (existing) {
+    // ── Admin path: no device_id sent → admin is trying to create a duplicate ──
+    // Block it explicitly so the admin UI can show a clear error.
+    if (!device_id) {
+      return c.json({
+        error: 'duplicate_phone',
+        message: `Phone number ${phone} is already registered to worker "${existing.name}". Each worker must have a unique phone number.`
+      }, 409)
+    }
+
+    // ── Worker self-registration path: device_id is present ──
     // Worker exists: if they have no device locked yet, lock this one now (consent already given)
-    if (!existing.device_id && device_id) {
+    if (!existing.device_id) {
       await db.prepare(
         `UPDATE workers SET device_id = ?, device_consent_given = 1, device_consent_at = CURRENT_TIMESTAMP WHERE id = ?`
       ).bind(device_id, existing.id).run()
@@ -454,12 +464,13 @@ app.post('/api/workers/register', async (c) => {
       return c.json({ worker: updated, isNew: false })
     }
     // Device is already locked — verify it matches
-    if (existing.device_id && existing.device_id !== device_id) {
+    if (existing.device_id !== device_id) {
       return c.json({
         error: 'device_mismatch',
         message: 'This phone number is registered to a different device. If you have a new phone, please contact your manager to reset your device.'
       }, 403)
     }
+    // Same device returning — all good
     return c.json({ worker: existing, isNew: false })
   }
 
@@ -5986,8 +5997,9 @@ function getWorkerHTML(tenant?: any): string {
           class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800"/>
       </div>
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">4-Digit PIN</label>
-        <input id="reg-pin" type="password" placeholder="Create a PIN" maxlength="4"
+        <label class="block text-sm font-medium text-gray-700 mb-1">PIN (4–8 digits)</label>
+        <input id="reg-pin" type="password" placeholder="Create a 4–8 digit PIN" maxlength="8"
+          inputmode="numeric" pattern="[0-9]{4,8}"
           class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800"/>
       </div>
       <button onclick="registerWorker()" id="reg-btn"
@@ -6019,7 +6031,8 @@ function getWorkerHTML(tenant?: any): string {
       </div>
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">PIN</label>
-        <input id="login-pin" type="password" placeholder="Enter your PIN" maxlength="4"
+        <input id="login-pin" type="password" placeholder="Enter your PIN" maxlength="8"
+          inputmode="numeric" pattern="[0-9]{4,8}"
           class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"/>
       </div>
       <button onclick="loginWorker()" id="login-btn"
@@ -6568,7 +6581,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260302"></script>
+<script src="/static/worker.js?v=20260302b"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -7056,7 +7069,7 @@ function getAdminHTML(): string {
       </div>
 
       <!-- Device Reset Requests Alert Banner -->
-      <div id="device-reset-banner" class="mb-4">
+      <div id="device-reset-banner" class="mb-4 hidden">
         <div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
           <div class="flex items-center justify-between mb-3">
             <div class="flex items-center gap-2">
