@@ -3583,11 +3583,6 @@ async function loadJobSites() {
   }
 }
 
-  } catch(e) {
-    showAdminToast('Failed to load job sites', 'error')
-  }
-}
-
 // ── Mask sensitive string: show first char + ████ + last 2 ───────────────────
 function maskSensitive(val) {
   if (!val || val.length < 4) return val || '—'
