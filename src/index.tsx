@@ -7482,7 +7482,7 @@ function getAdminHTML(): string {
       </button>
     </div>
     <div id="admin-login-error" class="hidden mt-3 text-red-500 text-sm text-center"></div>
-    <p class="text-center text-xs text-gray-400 mt-4">Default PIN: 1234</p>
+    <p class="text-center text-xs text-gray-400 mt-4">Contact your administrator for the PIN</p>
   </div>
 </div>
 
@@ -10281,7 +10281,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260302c"></script>
+<script src="/static/admin.js?v=20260302d"></script>
 
 </body>
 </html>`

@@ -87,7 +87,7 @@ async function adminLogin() {
     refreshAll().catch(() => {})
     // Deep-link navigation
     const hash = window.location.hash.replace('#', '')
-    if (hash && ['live','workers','sessions','map','calendar','settings','export','overrides'].includes(hash)) {
+    if (hash && ['live','workers','sessions','map','calendar','settings','export','overrides','job-sites','encircle','dispatch','disputes','support-tickets','payroll','accountant','quickbooks'].includes(hash)) {
       showTab(hash)
     }
   } else {
