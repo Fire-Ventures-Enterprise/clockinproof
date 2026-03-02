@@ -207,6 +207,7 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('work_days', '1,2,3,4,5')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('stat_pay_multiplier', '1.5')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_email', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('reply_to_email', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('last_weekly_email_sent', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('geofence_radius_meters', '300')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('gps_fraud_check', '1')`,
@@ -3160,6 +3161,7 @@ app.post('/api/export/email', async (c) => {
   ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
 
   const adminEmail = settings.admin_email || ''
+  const replyTo    = settings.reply_to_email || adminEmail
   if (!adminEmail) {
     return c.json({ error: 'No admin email configured. Go to Settings → General and add your email.' }, 400)
   }
@@ -3226,6 +3228,7 @@ app.post('/api/export/email', async (c) => {
         },
         body: JSON.stringify({
           from: `${appName} <reports@clockinproof.com>`,
+          reply_to: replyTo || undefined,
           to: [adminEmail],
           subject,
           html: htmlBody
@@ -3611,11 +3614,12 @@ app.post('/api/export/email-accountant', async (c) => {
     return c.json({ error: 'Email not configured — add RESEND_API_KEY as a Cloudflare secret' }, 400)
   }
 
-  const settingsRaw = await db.prepare('SELECT key,value FROM settings').all()
-  const settings: Record<string,string> = {}
-  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
-  const companyName = settings.company_name || settings.app_name || 'ClockInProof'
-  const adminEmail  = settings.admin_email || ''
+  const settingsRaw2 = await db.prepare('SELECT key,value FROM settings').all()
+  const settings2: Record<string,string> = {}
+  ;(settingsRaw2.results as any[]).forEach((s: any) => { settings2[s.key] = s.value })
+  const companyName = settings2.company_name || settings2.app_name || 'ClockInProof'
+  const adminEmail  = settings2.admin_email || ''
+  const replyTo2    = settings2.reply_to_email || adminEmail
 
   // Fetch all sessions for the period
   const sessions = await db.prepare(`
@@ -3785,6 +3789,7 @@ app.post('/api/export/email-accountant', async (c) => {
       },
       body: JSON.stringify({
         from: `${companyName} Payroll <payroll@clockinproof.com>`,
+        reply_to: replyTo2 || undefined,
         to:   toList,
         subject: `Payroll Report: ${start} to ${end} — ${companyName}`,
         html: emailHtml,
@@ -4198,6 +4203,8 @@ async function runWeeklyEmailJob(db: D1Database, env: any) {
   ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
 
   const adminEmail = settings.admin_email || ''
+  const replyTo    = settings.reply_to_email || adminEmail
+  const appName = settings.app_name || 'ClockInProof'
   if (!adminEmail || !env.RESEND_API_KEY) return  // silently skip if not configured
 
   const bounds  = getWeekBounds()  // current week
@@ -4234,7 +4241,6 @@ async function runWeeklyEmailJob(db: D1Database, env: any) {
   })
 
   const htmlBody = buildWeeklyReportHTML(bounds, settings, Object.values(byWorker))
-  const appName  = settings.app_name || 'ClockInProof'
   const subject  = `${appName} — Weekly Report: ${bounds.label}`
 
   await fetch('https://api.resend.com/emails', {
@@ -4242,6 +4248,7 @@ async function runWeeklyEmailJob(db: D1Database, env: any) {
     headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       from: `${appName} <reports@clockinproof.com>`,
+      reply_to: replyTo || undefined,
       to: [adminEmail],
       subject,
       html: htmlBody
@@ -6480,6 +6487,14 @@ function getAdminHTML(): string {
             <input id="s-admin-email" type="email" placeholder="admin@example.com"
               class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
             <p class="text-xs text-gray-400 mt-1">Reports auto-emailed every Friday night when Resend key is set</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">
+              Reply-To Email <span class="text-xs text-indigo-600 font-normal">(your real inbox — tenants reply here)</span>
+            </label>
+            <input id="s-reply-to-email" type="email" placeholder="Noweis2020@gmail.com"
+              class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+            <p class="text-xs text-gray-400 mt-1">All outbound emails (alerts, reports, payroll) will have this as reply-to. Keeps your Google Workspace inbox intact.</p>
           </div>
         </div>
 

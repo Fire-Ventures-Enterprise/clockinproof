@@ -2315,6 +2315,7 @@ async function loadSettings() {
     document.getElementById('s-hourly-rate').value = currentSettings.default_hourly_rate || '15.00'
     document.getElementById('s-admin-pin').value = currentSettings.admin_pin || '1234'
     document.getElementById('s-admin-email').value = currentSettings.admin_email || ''
+    document.getElementById('s-reply-to-email').value = currentSettings.reply_to_email || ''
     document.getElementById('s-city').value = currentSettings.city || ''
     document.getElementById('s-work-start').value = currentSettings.work_start || '08:00'
     document.getElementById('s-work-end').value = currentSettings.work_end || '16:00'
@@ -2460,6 +2461,7 @@ async function saveSettings() {
     default_hourly_rate: document.getElementById('s-hourly-rate').value,
     admin_pin: document.getElementById('s-admin-pin').value.trim(),
     admin_email: document.getElementById('s-admin-email').value.trim(),
+    reply_to_email: document.getElementById('s-reply-to-email').value.trim(),
     country_code: country,
     province_code: province,
     city: document.getElementById('s-city').value.trim(),
