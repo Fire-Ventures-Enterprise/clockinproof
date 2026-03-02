@@ -678,8 +678,15 @@ async function loadSavedSitesDropdown() {
       '<option value="__emergency_job__">🚨 Emergency Job (urgent call-out to another site)</option>' +
       '</optgroup>' +
       (sites.length > 0
-        ? '<optgroup label="─── Saved Job Sites ───">' +
-          sites.map(s => '<option value="' + s.address + '" data-site-id="' + s.id + '">' + s.name + ' — ' + s.address + '</option>').join('') +
+        ? '<optgroup label="─── Job Sites ───">' +
+          sites.map(s => {
+            // Strip [Encircle] prefix for clean display
+            const displayName = s.name.replace(/^\[Encircle\]\s*/i, '').trim()
+            // Show city only (first two parts of address) to keep option short
+            const addrParts = (s.address || '').split(',')
+            const shortAddr = addrParts.slice(0, 2).join(',').trim()
+            return '<option value="' + s.address + '" data-site-id="' + s.id + '">' + displayName + '  ·  ' + shortAddr + '</option>'
+          }).join('') +
           '</optgroup>'
         : '')
     row.classList.remove('hidden')
