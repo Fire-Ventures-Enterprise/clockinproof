@@ -15,6 +15,14 @@ const app = new Hono<{ Bindings: Bindings }>()
 app.use('/api/*', cors())
 
 // ─── Static files ─────────────────────────────────────────────────────────────
+// Cache static assets aggressively — files are cache-busted via ?v= query param
+app.use('/static/*', async (c, next) => {
+  await next()
+  // Set long cache for versioned static files (admin.js?v=xxx, worker.js?v=xxx)
+  if (c.res.status === 200) {
+    c.res.headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+  }
+})
 app.use('/static/*', serveStatic({ root: './' }))
 
 // ─── Tenant Helper ────────────────────────────────────────────────────────────
@@ -49,7 +57,15 @@ async function getTenantSettings(db: D1Database, tenantId: number): Promise<Reco
 
 
 // ─── DB Helper ────────────────────────────────────────────────────────────────
+// Cache flag: schema only needs to run once per Worker instance (not every request)
+// Cloudflare Workers reuse instances across requests — this cuts 40+ SQL statements
+// from every API call down to just once on cold start. Massive latency improvement.
+let _schemaInitialized = false
+
 async function ensureSchema(db: D1Database) {
+  if (_schemaInitialized) return  // ← skip entirely after first run
+  _schemaInitialized = true
+
   // Run each statement individually (D1 exec doesn't support multi-statement)
   const statements = [
     // ── TENANTS (multi-tenant SaaS foundation) ────────────────────────────────
