@@ -1135,16 +1135,21 @@ app.get('/join/:workerId', async (c) => {
     }
 
     const w = data.worker
-    // Save worker data using the EXACT same key the app reads (wt_worker)
-    const workerObj = { id: w.id, name: w.name, phone: w.phone, hourly_rate: w.hourly_rate || 0, role: w.role || 'worker' }
-    localStorage.setItem('wt_worker', JSON.stringify(workerObj))
+    // ── DO NOT auto-login here ──
+    // Just store the worker ID as a hint for the app, then send them to /app
+    // The app will handle: consent → register/login → temp PIN change
+    // This prevents bypassing the PIN and consent flows
+    localStorage.setItem('wt_join_worker_id', String(w.id))
+    localStorage.setItem('wt_join_phone', w.phone || '')
+    // Clear any stale wt_worker so the app shows the login screen fresh
+    localStorage.removeItem('wt_worker')
 
-    // Show success
+    // Show success + open app button
     spinner.style.display = 'none'
     msg.style.display = 'block'
     msg.innerHTML = \`
       <p class="name">👋 Hi, \${w.name}!</p>
-      <p class="sub">You're all set. Tap below to open the app.</p>
+      <p class="sub">Tap below to open your clock-in app and get started.</p>
       <a href="/app" class="btn">📲 Open ClockInProof</a>
       <div class="install-box" id="install-hint">
         <strong>📌 Save to your Home Screen</strong><br>
@@ -1152,9 +1157,8 @@ app.get('/join/:workerId', async (c) => {
         After that, just tap the ClockInProof icon — no link needed!
       </div>
     \`
-    // Auto-redirect in 1.5s
-    setTimeout(() => { window.location.href = '/app' }, 1500)
-    if (window.showPwaInstall) window.showPwaInstall()
+    // Auto-redirect in 2s
+    setTimeout(() => { window.location.href = '/app' }, 2000)
 
   } catch(e) {
     spinner.style.display = 'none'
@@ -6764,7 +6768,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260302d"></script>
+<script src="/static/worker.js?v=20260302e"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">

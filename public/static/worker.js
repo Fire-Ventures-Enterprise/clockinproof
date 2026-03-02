@@ -35,7 +35,22 @@ window.onload = async () => {
       await initMain()
     }
   } else {
-    showScreen('register')
+    // Check if we arrived here from a join link (admin invited this worker)
+    const joinPhone = localStorage.getItem('wt_join_phone')
+    if (joinPhone) {
+      // Admin-created worker → send them to LOGIN screen with phone pre-filled
+      // They must enter their temp PIN (sent by SMS/email) then set a personal PIN
+      showScreen('login')
+      const lp = document.getElementById('login-phone')
+      if (lp) lp.value = joinPhone
+      // Clean up join hints (used once)
+      localStorage.removeItem('wt_join_phone')
+      localStorage.removeItem('wt_join_worker_id')
+      // Show a friendly banner so they know what to do
+      showToast('Enter your phone + the temporary PIN from your invite SMS/email.', 'info', 7000)
+    } else {
+      showScreen('register')
+    }
   }
   getLocation()
 
@@ -150,8 +165,13 @@ async function registerWorker() {
     if (data.worker) {
       currentWorker = data.worker
       localStorage.setItem('wt_worker', JSON.stringify(data.worker))
-      showToast(data.isNew ? 'Registered! Welcome 🎉' : 'Welcome back!', 'success')
-      await initMain()
+      // If admin set a temp PIN → force worker to choose their own PIN before proceeding
+      if (data.worker.is_temp_pin) {
+        showChangePinScreen(data.worker, true)
+      } else {
+        showToast(data.isNew ? 'Registered! Welcome 🎉' : 'Welcome back!', 'success')
+        await initMain()
+      }
     } else if (data.error === 'device_mismatch') {
       showDeviceMismatchScreen(phone)
     } else {
@@ -1689,13 +1709,13 @@ function getDeviceId() {
 
 // ── Feature 3: Report an Issue — handled below ────────────────────────────────
 
-function showToast(msg, type = 'info') {
+function showToast(msg, type = 'info', duration = 4000) {
   const t = document.getElementById('toast')
   t.textContent = msg
   t.className = `fixed bottom-6 left-1/2 transform -translate-x-1/2 px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium text-white max-w-xs text-center
     ${type === 'error' ? 'bg-red-600' : type === 'success' ? 'bg-green-600' : 'bg-gray-800'}`
   t.classList.remove('hidden')
-  setTimeout(() => t.classList.add('hidden'), 4000)
+  setTimeout(() => t.classList.add('hidden'), duration)
 }
 
 // ── Add to Home Screen banner ────────────────────────────────────────────────
