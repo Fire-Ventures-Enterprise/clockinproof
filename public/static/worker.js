@@ -9,6 +9,8 @@ let durationTimer = null
 // Location bias for address search — populated from settings on initMain
 let _searchCountry = 'ca'   // ISO 2-letter country code (lowercase)
 let _searchCity    = ''     // city name for query boost
+let _searchLat     = 45.42  // fallback lat (Ottawa centre)
+let _searchLng     = -75.70 // fallback lng (Ottawa centre)
 let pingInterval = null
 let recentLocations = []
 // GPS fraud override state
@@ -121,6 +123,16 @@ async function initMain() {
     const ss = sd.settings || {}
     if (ss.country_code) _searchCountry = ss.country_code.toLowerCase()
     if (ss.city)         _searchCity    = ss.city
+  } catch(_) {}
+  // Load a known job-site lat/lng as search anchor (more precise than city centre)
+  try {
+    const jr = await fetch('/api/job-sites')
+    const jd = await jr.json()
+    const sites = jd.sites || []
+    if (sites.length > 0 && sites[0].lat) {
+      _searchLat = parseFloat(sites[0].lat)
+      _searchLng = parseFloat(sites[0].lng)
+    }
   } catch(_) {}
   await checkStatus()
   await loadStats()
@@ -391,34 +403,33 @@ let acTimer = null   // debounce handle
 async function fetchAddressSuggestions(query) {
   if (!query || query.length < 3) return []
   try {
-    // Build biased query:
-    // 1. If worker GPS is available → use viewbox (±0.5° around worker) + countrycode
-    // 2. If no GPS yet → use countrycode + prepend city to query for local results
-    let params = `format=json&limit=8&addressdetails=1&accept-language=en`
+    // Use Photon (komoot) — typo-tolerant, free, fast
+    // lat/lon bias: use worker GPS if available, else nearest job site, else city centre
+    const lat = currentLat  || _searchLat
+    const lng = currentLng  || _searchLng
 
-    if (currentLat && currentLng) {
-      // Tight viewbox around worker's current location — roughly 50 km radius
-      const d = 0.5  // ~55 km
-      const viewbox = `${(currentLng - d).toFixed(4)},${(currentLat + d).toFixed(4)},${(currentLng + d).toFixed(4)},${(currentLat - d).toFixed(4)}`
-      params += `&viewbox=${viewbox}&bounded=0&countrycodes=${_searchCountry}`
-    } else {
-      // No GPS — use country code and bias toward known city
-      params += `&countrycodes=${_searchCountry}`
-      if (_searchCity && !query.toLowerCase().includes(_searchCity.toLowerCase())) {
-        // Append city name to steer results without polluting user's typed text
-        query = query + ', ' + _searchCity
-      }
-    }
-
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&${params}`
-    const res  = await fetch(url, { headers: { 'Accept-Language': 'en' } })
+    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=7&lang=en&lat=${lat}&lon=${lng}`
+    const res  = await fetch(url)
     const data = await res.json()
-    return data.map(r => ({
-      display: r.display_name,
-      short:   [r.address?.house_number, r.address?.road, r.address?.city || r.address?.town || r.address?.village, r.address?.state_code || r.address?.state, r.address?.postcode].filter(Boolean).join(', '),
-      lat: parseFloat(r.lat),
-      lng: parseFloat(r.lon)
-    }))
+
+    return (data.features || []).map(f => {
+      const p = f.properties
+      const coords = f.geometry?.coordinates || []
+      // Build a clean short address: house# + street + city + province + postal
+      const short = [
+        p.housenumber, p.street || p.name,
+        p.district || p.locality,
+        p.city || p.town || p.village,
+        p.state,
+        p.postcode
+      ].filter(Boolean).join(', ')
+      return {
+        display: short,
+        short,
+        lat: coords[1] || 0,
+        lng: coords[0] || 0
+      }
+    }).filter(r => r.short.length > 0)
   } catch(_) { return [] }
 }
 

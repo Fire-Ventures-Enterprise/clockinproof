@@ -2,6 +2,9 @@ let adminMap = null
 let currentPeriod = 'today'
 let allSessionsData = []
 let sessionStore = {}  // id → session object for modal lookup
+// Address search location anchor — set from job sites or settings
+let _adminSearchLat = 45.42   // Ottawa centre fallback
+let _adminSearchLng = -75.70
 
 // ── Shared helpers ───────────────────────────────────────────────────────────────
 
@@ -3434,6 +3437,19 @@ async function loadJobSites() {
     const el = document.getElementById('job-sites-list')
     if (!el) return
 
+    // Cache first site's coordinates as search anchor for address autocomplete
+    if (sites.length > 0 && sites[0].lat) {
+      _adminSearchLat = parseFloat(sites[0].lat)
+      _adminSearchLng = parseFloat(sites[0].lng)
+    } else {
+      // Fall back to city coordinates from settings
+      const city = currentSettings?.city || ''
+      if (city && (currentSettings?.country_code || 'CA') === 'CA') {
+        // Use settings lat/lng if available, else Ottawa defaults
+        _adminSearchLat = 45.42; _adminSearchLng = -75.70
+      }
+    }
+
     if (sites.length === 0) {
       el.innerHTML = '<p class="text-gray-400 text-sm text-center py-8"><i class="fas fa-map-marker-alt text-3xl mb-3 block text-gray-300"></i>No job sites added yet. Click "Add Site" to get started.</p>'
       return
@@ -3667,7 +3683,7 @@ async function loadDisputeHistory() {
 }
 
 
-// ── Admin Job Site Address Autocomplete (Nominatim) ───────────────────────────
+// ── Admin Job Site Address Autocomplete (Photon — typo tolerant) ──────────────
 let siteAcTimer = null
 
 async function filterSiteAddressSuggestions(val) {
@@ -3681,55 +3697,43 @@ async function filterSiteAddressSuggestions(val) {
 
   siteAcTimer = setTimeout(async () => {
     try {
-      // Build location-biased search using admin settings (country + city)
-      const country = (currentSettings?.country_code || 'CA').toLowerCase()
-      const city    = currentSettings?.city || ''
-      const lat     = parseFloat(currentSettings?.lat || 0)
-      const lng     = parseFloat(currentSettings?.lng || 0)
-
-      let query = val
-      let params = `format=json&limit=8&addressdetails=1&accept-language=en&countrycodes=${country}`
-
-      // If we have a stored job-site lat/lng from a previous geocode, use it as viewbox
-      const firstSiteEl = document.querySelector('#job-sites-list [data-lat]')
-      const refLat = firstSiteEl ? parseFloat(firstSiteEl.dataset.lat) : null
-      const refLng = firstSiteEl ? parseFloat(firstSiteEl.dataset.lng) : null
-
-      if (refLat && refLng) {
-        const d = 0.5
-        const viewbox = `${(refLng - d).toFixed(4)},${(refLat + d).toFixed(4)},${(refLng + d).toFixed(4)},${(refLat - d).toFixed(4)}`
-        params += `&viewbox=${viewbox}&bounded=0`
-      } else if (city && !val.toLowerCase().includes(city.toLowerCase())) {
-        // Append city to steer results without showing it in the input
-        query = val + ', ' + city
-      }
-
-      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&${params}`
-      const res  = await fetch(url, { headers: { 'Accept-Language': 'en' } })
+      // Photon geocoder — typo-tolerant, fast, biased by lat/lon to local area
+      const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(val)}&limit=8&lang=en&lat=${_adminSearchLat}&lon=${_adminSearchLng}`
+      const res  = await fetch(url)
       const data = await res.json()
+      const features = data.features || []
 
-      if (!data || data.length === 0) {
+      if (features.length === 0) {
         box.innerHTML = '<div class="px-4 py-3 text-xs text-gray-400">No suggestions found. Try a more specific address.</div>'
         return
       }
 
-      box.innerHTML = data.map(r => {
-        const addr = r.address || {}
+      box.innerHTML = features.map(f => {
+        const p = f.properties
+        const coords = f.geometry?.coordinates || []
+        const lat = (coords[1] || 0).toFixed(7)
+        const lng = (coords[0] || 0).toFixed(7)
         const short = [
-          addr.house_number, addr.road,
-          addr.city || addr.town || addr.village || addr.municipality,
-          addr.state_code || addr.province || addr.state,
-          addr.postcode
+          p.housenumber, p.street || p.name,
+          p.district || p.locality,
+          p.city || p.town || p.village,
+          p.state,
+          p.postcode
         ].filter(Boolean).join(', ')
+        if (!short) return ''
 
         return `<button
           class="w-full text-left px-4 py-3 hover:bg-emerald-50 text-sm text-gray-700 border-b border-gray-100 last:border-0 flex items-start gap-3"
           onmousedown="event.preventDefault()"
-          onclick="selectSiteAddress('${short.replace(/'/g,"\\'").replace(/"/g,'&quot;')}', ${r.lat}, ${r.lon})">
+          onclick="selectSiteAddress('${short.replace(/'/g,"\\'").replace(/"/g,'&quot;')}', ${lat}, ${lng})">
           <i class="fas fa-map-marker-alt text-red-400 mt-0.5 flex-shrink-0 text-xs"></i>
           <span>${short}</span>
         </button>`
-      }).join('')
+      }).filter(Boolean).join('')
+
+      if (!box.innerHTML.trim()) {
+        box.innerHTML = '<div class="px-4 py-3 text-xs text-gray-400">No suggestions found.</div>'
+      }
     } catch(_) {
       box.innerHTML = '<div class="px-4 py-3 text-xs text-red-400">Could not fetch suggestions. Check connection.</div>'
     }
