@@ -570,8 +570,10 @@ async function ensureSchema(db: D1Database) {
       await db.prepare(sql).run()
     } catch(e: any) {
       // Ignore "duplicate column" errors from ALTER TABLE on re-runs
+      // and "no such table" errors when ALTER runs before CREATE (ordering issue)
       if (!e?.message?.includes('duplicate column') &&
-          !e?.message?.includes('already exists')) throw e
+          !e?.message?.includes('already exists') &&
+          !e?.message?.includes('no such table')) throw e
     }
   }
 }
@@ -3795,12 +3797,71 @@ app.post('/api/tenant/logo', async (c) => {
   return c.json({ success: true, logo_url: data_url })
 })
 
-// GET /api/plans — public pricing plans
+// GET /api/plans — public pricing plans (used by landing + signup pages)
 app.get('/api/plans', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
   const plans = await db.prepare(`SELECT * FROM stripe_plans WHERE active = 1 ORDER BY price_monthly`).all()
   return c.json({ plans: plans.results })
+})
+
+// GET /api/super/plans — all plans including inactive (super admin only)
+app.get('/api/super/plans', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const plans = await db.prepare(`SELECT * FROM stripe_plans ORDER BY price_monthly`).all()
+  // Count tenants per plan
+  const counts = await db.prepare(
+    `SELECT plan, COUNT(*) as tenant_count FROM tenants WHERE status != 'deleted' GROUP BY plan`
+  ).all()
+  const countMap: Record<string, number> = {}
+  for (const r of counts.results as any[]) countMap[r.plan] = r.tenant_count
+  const enriched = (plans.results as any[]).map(p => ({
+    ...p,
+    tenant_count: countMap[p.name.toLowerCase()] || 0
+  }))
+  return c.json({ plans: enriched })
+})
+
+// PUT /api/super/plans/:id — update a plan (name, price, features, worker limit, stripe_price_id)
+app.put('/api/super/plans/:id', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id   = c.req.param('id')
+  const body = await c.req.json() as any
+  const { name, stripe_price_id, price_monthly, max_workers, features, active } = body
+
+  // Validate
+  if (price_monthly !== undefined && (isNaN(price_monthly) || price_monthly < 0))
+    return c.json({ error: 'Invalid price' }, 400)
+  if (max_workers !== undefined && (isNaN(max_workers) || max_workers < 1))
+    return c.json({ error: 'Invalid max_workers' }, 400)
+
+  const fields: string[] = []
+  const vals:   any[]    = []
+  if (name            !== undefined) { fields.push('name = ?');             vals.push(name) }
+  if (stripe_price_id !== undefined) { fields.push('stripe_price_id = ?');  vals.push(stripe_price_id) }
+  if (price_monthly   !== undefined) { fields.push('price_monthly = ?');    vals.push(Math.round(price_monthly)) }
+  if (max_workers     !== undefined) { fields.push('max_workers = ?');      vals.push(Math.round(max_workers)) }
+  if (features        !== undefined) { fields.push('features = ?');         vals.push(features) }
+  if (active          !== undefined) { fields.push('active = ?');           vals.push(active ? 1 : 0) }
+
+  if (!fields.length) return c.json({ error: 'Nothing to update' }, 400)
+  vals.push(id)
+
+  await db.prepare(`UPDATE stripe_plans SET ${fields.join(', ')} WHERE id = ?`).bind(...vals).run()
+
+  // If max_workers changed, also update all active tenants on this plan
+  if (max_workers !== undefined && name !== undefined) {
+    await db.prepare(
+      `UPDATE tenants SET max_workers = ? WHERE LOWER(plan) = LOWER(?) AND status != 'deleted'`
+    ).bind(Math.round(max_workers), name).run()
+  }
+
+  const updated = await db.prepare(`SELECT * FROM stripe_plans WHERE id = ?`).bind(id).first()
+  return c.json({ success: true, plan: updated })
 })
 
 // GET /api/tenants — list all tenants (for future super admin)
@@ -7040,18 +7101,7 @@ app.get('/welcome', async (c) => {
 
 // ─── SIGNUP PAGE ──────────────────────────────────────────────────────────────
 function getSignupHTML(plan: string): string {
-  const plans: Record<string, { name: string; price: string; workers: string; color: string; priceId: string; features: string[] }> = {
-    starter: { name: 'Starter', price: '$49 CAD/mo', workers: 'Up to 10 workers', color: 'indigo',
-      priceId: 'price_1T6kPUGsh3cS5lanGXI0jwkd',
-      features: ['GPS clock-in proof', 'Geofence fraud detection', 'Auto clock-out', 'SMS + email alerts', 'Payroll reports'] },
-    growth:  { name: 'Growth',  price: '$99 CAD/mo', workers: 'Up to 25 workers', color: 'blue',
-      priceId: 'price_1T6kSBGsh3cS5lan2HC0PE7W',
-      features: ['Everything in Starter', 'Up to 25 workers', 'Job dispatch SMS', 'Multi-site management', 'QuickBooks export'] },
-    pro:     { name: 'Pro',     price: '$199 CAD/mo', workers: 'Unlimited workers', color: 'purple',
-      priceId: 'price_1T6kShGsh3cS5lan9QDp8aNa',
-      features: ['Everything in Growth', 'Unlimited workers', 'Custom branding', 'Priority support', 'API access'] },
-  }
-  const p = plans[plan] || plans.growth
+  // plan name passed as URL param — page loads plan details dynamically from /api/plans
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -7071,19 +7121,17 @@ function getSignupHTML(plan: string): string {
       </a>
     </div>
 
-    <!-- Selected Plan Badge -->
-    <div class="bg-blue-600/20 border border-blue-500/30 rounded-2xl p-4 mb-6 flex items-center justify-between">
+    <!-- Selected Plan Badge (populated by JS) -->
+    <div class="bg-blue-600/20 border border-blue-500/30 rounded-2xl p-4 mb-6 flex items-center justify-between" id="plan-badge">
       <div>
-        <p class="font-bold text-blue-300">${p.name} Plan</p>
-        <p class="text-sm text-gray-400">${p.workers}</p>
-        <ul class="mt-2 space-y-1">
-          ${p.features.map(f => `<li class="text-xs text-gray-400"><span class="text-green-400 mr-1">✓</span>${f}</li>`).join('')}
-        </ul>
+        <p class="font-bold text-blue-300" id="plan-badge-name">Loading plan…</p>
+        <p class="text-sm text-gray-400" id="plan-badge-workers"></p>
+        <ul class="mt-2 space-y-1" id="plan-badge-features"></ul>
       </div>
       <div class="text-right ml-4 flex-shrink-0">
-        <p class="text-2xl font-black text-white">${p.price}</p>
+        <p class="text-2xl font-black text-white" id="plan-badge-price"></p>
         <p class="text-xs text-gray-500">14-day free trial</p>
-        <a href="#pricing" onclick="history.back()" class="text-xs text-blue-400 hover:underline mt-1 block">Change plan</a>
+        <a href="/landing#pricing" class="text-xs text-blue-400 hover:underline mt-1 block">Change plan</a>
       </div>
     </div>
 
@@ -7132,7 +7180,7 @@ function getSignupHTML(plan: string): string {
         <button type="submit" id="signup-btn"
           class="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition text-base flex items-center justify-center gap-2">
           <i class="fas fa-rocket"></i>
-          Start 14-Day Free Trial — ${p.price}
+          <span id="signup-btn-text">Start 14-Day Free Trial</span>
         </button>
         <p class="text-center text-xs text-gray-500 mt-2">
           <i class="fas fa-lock mr-1"></i>Secured by Stripe · Cancel anytime · No setup fees
@@ -7153,11 +7201,43 @@ function getSignupHTML(plan: string): string {
   </div>
 
 <script>
-// Auto-generate slug from company name
+// ── Dynamic plan loader ───────────────────────────────────────────────────────
+const PLAN = '${plan}'
+let PRICE_ID = ''
+let planPriceDisplay = 'Free Trial'
+
+;(async function loadPlanDetails() {
+  try {
+    const res = await fetch('/api/plans')
+    const data = await res.json()
+    const plans = data.plans || []
+    // Match by slug (lowercase name)
+    const p = plans.find(x => (x.name||'').toLowerCase() === PLAN) || plans[0]
+    if (!p) return
+
+    PRICE_ID = p.stripe_price_id || ''
+    const dollars = Math.floor(p.price_monthly / 100)
+    const cents   = p.price_monthly % 100
+    planPriceDisplay = '$' + dollars + (cents ? '.' + String(cents).padStart(2,'0') : '') + ' CAD/mo'
+    const workers = p.max_workers >= 999 ? 'Unlimited workers' : 'Up to ' + p.max_workers + ' workers'
+    const features = (p.features || '').split(',').filter(Boolean)
+
+    document.getElementById('plan-badge-name').textContent    = p.name + ' Plan'
+    document.getElementById('plan-badge-workers').textContent = workers
+    document.getElementById('plan-badge-price').textContent   = planPriceDisplay
+    document.getElementById('plan-badge-features').innerHTML  =
+      features.map(f => '<li class="text-xs text-gray-400"><span class="text-green-400 mr-1">✓</span>' + f.trim() + '</li>').join('')
+    document.getElementById('signup-btn-text').textContent    = 'Start 14-Day Free Trial — ' + planPriceDisplay
+  } catch(e) {
+    document.getElementById('plan-badge-name').textContent = PLAN.charAt(0).toUpperCase() + PLAN.slice(1) + ' Plan'
+  }
+})()
+
+// ── Slug checker ──────────────────────────────────────────────────────────────
 document.getElementById('f-company').addEventListener('input', function() {
   const slug = this.value.toLowerCase()
-    .replace(/[^a-z0-9\\s-]/g, '')
-    .replace(/\\s+/g, '-')
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .substring(0, 30)
   document.getElementById('f-slug').value = slug
@@ -7172,7 +7252,7 @@ let slugTimer = null
 function checkSlug(slug) {
   const el = document.getElementById('slug-status')
   if (!slug || slug.length < 2) { el.textContent = ''; return }
-  el.textContent = 'Checking…'
+  el.textContent = 'Checking\u2026'
   el.className = 'text-xs mt-1 text-gray-500'
   clearTimeout(slugTimer)
   slugTimer = setTimeout(async () => {
@@ -7180,25 +7260,24 @@ function checkSlug(slug) {
       const res = await fetch('/api/tenants/check-slug?slug=' + encodeURIComponent(slug))
       const data = await res.json()
       if (data.available) {
-        el.textContent = '✅ ' + slug + '.clockinproof.com is available!'
+        el.textContent = '\u2705 ' + slug + '.clockinproof.com is available!'
         el.className = 'text-xs mt-1 text-green-400'
       } else {
-        el.textContent = '❌ That subdomain is taken'
+        el.textContent = '\u274C That subdomain is taken'
         el.className = 'text-xs mt-1 text-red-400'
       }
     } catch { el.textContent = '' }
   }, 500)
 }
 
-const PLAN = '${plan}'
-const PRICE_ID = '${p.priceId}'
-
+// ── Form submission ───────────────────────────────────────────────────────────
 document.getElementById('signup-form').addEventListener('submit', async function(e) {
   e.preventDefault()
-  const btn = document.getElementById('signup-btn')
-  const errEl = document.getElementById('signup-error')
+  const btn    = document.getElementById('signup-btn')
+  const btnTxt = document.getElementById('signup-btn-text')
+  const errEl  = document.getElementById('signup-error')
   btn.disabled = true
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Setting up your account…'
+  btnTxt.textContent = 'Setting up your account\u2026'
   errEl.classList.add('hidden')
 
   const slug        = document.getElementById('f-slug').value.trim()
@@ -7219,11 +7298,11 @@ document.getElementById('signup-form').addEventListener('submit', async function
       errEl.textContent = regData.error || 'Signup failed. Please try again.'
       errEl.classList.remove('hidden')
       btn.disabled = false
-      btn.innerHTML = '<i class="fas fa-rocket"></i> Start 14-Day Free Trial — ${p.price}'
+      btnTxt.textContent = 'Start 14-Day Free Trial \u2014 ' + planPriceDisplay
       return
     }
 
-    // Step 2: Create Stripe Checkout session → redirect
+    // Step 2: Create Stripe Checkout session \u2192 redirect
     const checkoutRes = await fetch('/api/stripe/checkout', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -7240,13 +7319,13 @@ document.getElementById('signup-form').addEventListener('submit', async function
       errEl.textContent = checkoutData.error || 'Could not start checkout. Please try again.'
       errEl.classList.remove('hidden')
       btn.disabled = false
-      btn.innerHTML = '<i class="fas fa-rocket"></i> Start 14-Day Free Trial — ${p.price}'
+      btnTxt.textContent = 'Start 14-Day Free Trial \u2014 ' + planPriceDisplay
     }
   } catch(e) {
     errEl.textContent = 'Network error. Please try again.'
     errEl.classList.remove('hidden')
     btn.disabled = false
-    btn.innerHTML = '<i class="fas fa-rocket"></i> Start 14-Day Free Trial — ${p.price}'
+    btnTxt.textContent = 'Start 14-Day Free Trial \u2014 ' + planPriceDisplay
   }
 })
 </script>
@@ -7631,74 +7710,10 @@ function getLandingHTML(): string {
       <p class="text-gray-400 text-lg">No feature gating. No surprise fees. Pick your team size and go.</p>
       <p class="text-sm text-gray-500 mt-2">All prices in CAD · 14-day free trial · Cancel anytime</p>
     </div>
-    <div class="grid md:grid-cols-3 gap-6">
 
-      <!-- Starter -->
-      <div class="bg-gray-950 border border-white/10 rounded-2xl p-8 flex flex-col">
-        <div class="mb-6">
-          <div class="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">Starter</div>
-          <div class="text-5xl font-black mb-1">$49<span class="text-xl font-normal text-gray-400"> CAD/mo</span></div>
-          <p class="text-gray-400 text-sm">Up to <strong class="text-white">10 workers</strong></p>
-        </div>
-        <ul class="space-y-3 text-sm text-gray-300 mb-8 flex-1">
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>GPS clock-in proof</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Geofence fraud detection</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Auto clock-out guardrails</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Live GPS map</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>SMS + email alerts</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Payroll reports + CSV export</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Job dispatch by SMS</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>QuickBooks sync</li>
-        </ul>
-        <a href="/signup?plan=starter" class="block text-center border border-white/20 hover:border-blue-500 hover:bg-blue-600/10 text-white font-bold py-3.5 rounded-xl transition text-sm">
-          Start Free 14-Day Trial
-        </a>
-      </div>
-
-      <!-- Growth — POPULAR -->
-      <div class="bg-gray-950 pricing-popular rounded-2xl p-8 flex flex-col">
-        <div class="mb-6">
-          <div class="text-xs font-bold text-blue-400 uppercase tracking-widest mb-2">Growth</div>
-          <div class="text-5xl font-black text-blue-400 mb-1">$99<span class="text-xl font-normal text-gray-400"> CAD/mo</span></div>
-          <p class="text-gray-400 text-sm">Up to <strong class="text-white">25 workers</strong></p>
-        </div>
-        <ul class="space-y-3 text-sm text-gray-300 mb-8 flex-1">
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Everything in Starter</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Up to 25 workers</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Job dispatch SMS to workers</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Multi-site management</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Accountant CSV export</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Worker dispute system</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Calendar view + history</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Custom company branding</li>
-        </ul>
-        <a href="/signup?plan=growth" class="block text-center bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 rounded-xl transition text-sm glow-blue">
-          Start Free 14-Day Trial
-        </a>
-      </div>
-
-      <!-- Pro -->
-      <div class="bg-gray-950 border border-white/10 rounded-2xl p-8 flex flex-col">
-        <div class="mb-6">
-          <div class="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">Pro</div>
-          <div class="text-5xl font-black mb-1">$199<span class="text-xl font-normal text-gray-400"> CAD/mo</span></div>
-          <p class="text-gray-400 text-sm"><strong class="text-white">Unlimited workers</strong></p>
-        </div>
-        <ul class="space-y-3 text-sm text-gray-300 mb-8 flex-1">
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Everything in Growth</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Unlimited workers</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>White-label branding</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Encircle job integration</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Dedicated onboarding call</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Priority support</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Advanced payroll analytics</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>API access</li>
-        </ul>
-        <a href="/signup?plan=pro" class="block text-center border border-white/20 hover:border-blue-500 hover:bg-blue-600/10 text-white font-bold py-3.5 rounded-xl transition text-sm">
-          Start Free 14-Day Trial
-        </a>
-      </div>
-
+    <!-- Plans loaded dynamically from DB -->
+    <div id="landing-pricing-grid" class="grid md:grid-cols-3 gap-6">
+      <div class="text-center py-16 text-gray-500 col-span-3"><i class="fas fa-spinner fa-spin mr-2"></i>Loading plans...</div>
     </div>
 
     <!-- Money-back guarantee -->
@@ -7904,10 +7919,49 @@ function toggleFaq(btn) {
     if (icon) icon.style.transform = 'rotate(180deg)'
   }
 }
+
+// ── Dynamic pricing from DB ──────────────────────────────────────────────────
+(async function loadLandingPricing() {
+  const grid = document.getElementById('landing-pricing-grid')
+  if (!grid) return
+  try {
+    const res = await fetch('/api/plans')
+    const data = await res.json()
+    const plans = data.plans || []
+    if (!plans.length) { grid.innerHTML = '<div class="text-center py-16 text-gray-500 col-span-3">No plans available</div>'; return }
+
+    const styles = [
+      { border:'border-white/10', priceColor:'text-white', labelColor:'text-gray-500', popular:false, btnClass:'border border-white/20 hover:border-blue-500 hover:bg-blue-600/10 text-white' },
+      { border:'pricing-popular', priceColor:'text-blue-400', labelColor:'text-blue-400', popular:true,  btnClass:'bg-blue-600 hover:bg-blue-500 text-white glow-blue' },
+      { border:'border-white/10', priceColor:'text-white', labelColor:'text-gray-500', popular:false, btnClass:'border border-white/20 hover:border-blue-500 hover:bg-blue-600/10 text-white' },
+    ]
+    grid.innerHTML = plans.map((p, i) => {
+      const st       = styles[i] || styles[0]
+      const price    = (p.price_monthly / 100).toFixed(0)
+      const workers  = p.max_workers >= 999 ? '<strong class="text-white">Unlimited workers</strong>' : 'Up to <strong class="text-white">' + p.max_workers + ' workers</strong>'
+      const features = (p.features || '').split(',').filter(Boolean)
+      const slug     = (p.name || 'starter').toLowerCase()
+      return '<div class="bg-gray-950 ' + st.border + ' rounded-2xl p-8 flex flex-col">' +
+        '<div class="mb-6">' +
+          '<div class="text-xs font-bold ' + st.labelColor + ' uppercase tracking-widest mb-2">' + p.name + '</div>' +
+          '<div class="text-5xl font-black ' + st.priceColor + ' mb-1">$' + price + '<span class="text-xl font-normal text-gray-400"> CAD/mo</span></div>' +
+          '<p class="text-gray-400 text-sm">' + workers + '</p>' +
+        '</div>' +
+        '<ul class="space-y-3 text-sm text-gray-300 mb-8 flex-1">' +
+          features.map(f => '<li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>' + f.trim() + '</li>').join('') +
+        '</ul>' +
+        '<a href="/signup?plan=' + slug + '" class="block text-center font-bold py-3.5 rounded-xl transition text-sm ' + st.btnClass + '">Start Free 14-Day Trial</a>' +
+      '</div>'
+    }).join('')
+  } catch(e) {
+    // Fallback: keep static content if API fails
+    grid.innerHTML = '<div class="text-center py-8 text-gray-500 col-span-3 text-sm">Pricing temporarily unavailable. <a href="/signup" class="text-blue-400 underline">Sign up here</a>.</div>'
+  }
+})()
 </script>
 
 </body>
-</html>`
+</html>\``
 }
 
 
@@ -12201,9 +12255,7 @@ select.input option{background:#1e293b}
             <div>
               <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Plan</label>
               <select id="new-plan" class="input">
-                <option value="starter">Starter — $49 CAD/mo (10 workers)</option>
-                <option value="growth" selected>Growth — $99 CAD/mo (25 workers)</option>
-                <option value="pro">Pro — $199 CAD/mo (Unlimited)</option>
+                <option value="">Loading plans…</option>
               </select>
             </div>
             <div>
@@ -12310,48 +12362,77 @@ select.input option{background:#1e293b}
 
     <!-- ── PLANS & PRICING ──────────────────────────────────── -->
     <div class="page" id="page-plans">
-      <div style="margin-bottom:20px">
-        <h1 style="font-size:20px;font-weight:800;color:#fff">Plans & Pricing</h1>
-        <p style="color:#64748b;font-size:13px">Current subscription tiers</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">
+        <div>
+          <h1 style="font-size:20px;font-weight:800;color:#fff">Plans & Pricing</h1>
+          <p style="color:#64748b;font-size:13px">Edit plan name, price, features, worker limit, and Stripe Price ID — changes go live instantly on the public pricing page and signup flow.</p>
+        </div>
+        <a href="https://clockinproof.com/landing#pricing" target="_blank" class="btn btn-ghost" style="font-size:12px"><i class="fas fa-external-link-alt"></i> Preview Public Page</a>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;max-width:900px">
-        <div class="card" style="padding:24px;border-color:#1e3a5f">
-          <div class="pill badge-starter" style="margin-bottom:14px">Starter</div>
-          <div style="font-size:36px;font-weight:800;color:#93c5fd">$49<span style="font-size:14px;font-weight:400;color:#64748b"> CAD/mo</span></div>
-          <div style="font-size:13px;color:#64748b;margin:8px 0 16px">Up to 10 workers</div>
-          <ul style="list-style:none;font-size:13px;color:#94a3b8;display:flex;flex-direction:column;gap:6px">
-            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>GPS clock-in/out</li>
-            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Fraud detection</li>
-            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Weekly reports</li>
-            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Email alerts</li>
-          </ul>
-        </div>
-        <div class="card" style="padding:24px;border-color:#3b1f6b;position:relative">
-          <div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:#7c3aed;color:#fff;font-size:10px;font-weight:700;padding:2px 12px;border-radius:20px">POPULAR</div>
-          <div class="pill badge-growth" style="margin-bottom:14px">Growth</div>
-          <div style="font-size:36px;font-weight:800;color:#c4b5fd">$99<span style="font-size:14px;font-weight:400;color:#64748b"> CAD/mo</span></div>
-          <div style="font-size:13px;color:#64748b;margin:8px 0 16px">Up to 25 workers</div>
-          <ul style="list-style:none;font-size:13px;color:#94a3b8;display:flex;flex-direction:column;gap:6px">
-            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Everything in Starter</li>
-            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Payroll exports</li>
-            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Multi-job tracking</li>
-            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Branding options</li>
-          </ul>
-        </div>
-        <div class="card" style="padding:24px;border-color:#14532d">
-          <div class="pill badge-pro" style="margin-bottom:14px">Pro</div>
-          <div style="font-size:36px;font-weight:800;color:#86efac">$199<span style="font-size:14px;font-weight:400;color:#64748b"> CAD/mo</span></div>
-          <div style="font-size:13px;color:#64748b;margin:8px 0 16px">Unlimited workers</div>
-          <ul style="list-style:none;font-size:13px;color:#94a3b8;display:flex;flex-direction:column;gap:6px">
-            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Everything in Growth</li>
-            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Priority support</li>
-            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Custom integrations</li>
-            <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>SLA guarantee</li>
-          </ul>
-        </div>
+
+      <!-- Plan cards loaded dynamically -->
+      <div id="plans-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;max-width:1000px">
+        <div style="text-align:center;padding:40px;color:#475569;grid-column:1/-1"><i class="fas fa-spinner fa-spin"></i> Loading plans...</div>
       </div>
-      <div class="card" style="padding:16px;max-width:900px;margin-top:20px;background:#1e293b88">
-        <p style="color:#64748b;font-size:12px"><i class="fas fa-info-circle" style="color:#818cf8;margin-right:6px"></i>Stripe billing integration coming soon. Currently plans are managed manually per tenant in the Edit Tenant modal.</p>
+
+      <!-- Info banner -->
+      <div class="card" style="padding:14px 16px;max-width:1000px;margin-top:20px;background:#0d1117;border-color:#1e3a5f">
+        <p style="color:#64748b;font-size:12px;margin:0">
+          <i class="fas fa-info-circle" style="color:#818cf8;margin-right:6px"></i>
+          <strong style="color:#94a3b8">How this works:</strong>
+          Editing a plan updates the public landing page, the signup page, and max_workers for all existing tenants on that plan — instantly.
+          The <strong style="color:#94a3b8">Stripe Price ID</strong> field is for reference only — it must match the price you created in your Stripe dashboard.
+          To change what Stripe bills a customer, update their subscription in the Stripe dashboard and the webhook will sync the plan back here automatically.
+        </p>
+      </div>
+    </div>
+
+    <!-- PLAN EDIT MODAL -->
+    <div id="plan-edit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:300;display:none;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closePlanModal()">
+      <div class="card" style="width:100%;max-width:540px;padding:28px;max-height:90vh;overflow-y:auto">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+          <h3 style="font-size:16px;font-weight:700;color:#fff">Edit Plan</h3>
+          <button onclick="closePlanModal()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:18px">✕</button>
+        </div>
+
+        <input type="hidden" id="plan-edit-id">
+
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div>
+            <label style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:5px">Plan Name</label>
+            <input id="plan-edit-name" class="input" placeholder="e.g. Starter">
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div>
+              <label style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:5px">Price (CAD cents) <span style="color:#475569;font-size:10px">e.g. 4900 = $49</span></label>
+              <input id="plan-edit-price" class="input" type="number" min="0" placeholder="4900">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:5px">Max Workers <span style="color:#475569;font-size:10px">999 = unlimited</span></label>
+              <input id="plan-edit-workers" class="input" type="number" min="1" placeholder="10">
+            </div>
+          </div>
+          <div>
+            <label style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:5px">Stripe Price ID <span style="color:#475569;font-size:10px">from Stripe dashboard → Products</span></label>
+            <input id="plan-edit-stripe-id" class="input" placeholder="price_1T6kPUGsh3cS5lan..." style="font-family:monospace;font-size:12px">
+          </div>
+          <div>
+            <label style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:5px">Features <span style="color:#475569;font-size:10px">comma-separated, shown on pricing page</span></label>
+            <textarea id="plan-edit-features" class="input" rows="4" placeholder="GPS clock-in proof,Geofence detection,Auto clock-out,Weekly reports" style="resize:vertical;font-size:12px"></textarea>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <label style="font-size:13px;color:#94a3b8;display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="plan-edit-active" style="width:16px;height:16px;accent-color:#4f46e5">
+              Plan is active (visible on public page &amp; signup)
+            </label>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:20px">
+          <button onclick="savePlanEdit()" class="btn btn-primary" style="flex:1"><i class="fas fa-save"></i> Save Changes</button>
+          <button onclick="closePlanModal()" class="btn btn-ghost">Cancel</button>
+        </div>
+        <div id="plan-edit-msg" style="margin-top:10px;font-size:12px;display:none"></div>
       </div>
     </div>
 
@@ -13038,9 +13119,7 @@ select.input option{background:#1e293b}
         <div>
           <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Plan</label>
           <select id="edit-plan" class="input">
-            <option value="starter">Starter (10 workers)</option>
-            <option value="growth">Growth (25 workers)</option>
-            <option value="pro">Pro (Unlimited)</option>
+            <option value="">Loading plans…</option>
           </select>
         </div>
         <div>
@@ -13127,6 +13206,11 @@ function showApp() {
       sel.appendChild(o)
     })
   }).catch(()=>{})
+  // pre-populate plan dropdowns in Add Tenant and Edit Tenant modals
+  api('/api/super/plans').then(d => {
+    _plansData = d.plans || []
+    populatePlanDropdowns(_plansData, null)
+  }).catch(()=>{})
 }
 
 if (superToken) showApp()
@@ -13158,6 +13242,7 @@ function showPage(name) {
   if (name === 'support')     loadTickets()
   if (name === 'platform')    loadPlatformUrls()
   if (name === 'tax')         loadTax()
+  if (name === 'plans')       loadPlansPage()
 }
 
 function toggleSidebar() {
@@ -13332,11 +13417,19 @@ function openEditModal(t) {
   document.getElementById('edit-company').value  = t.company_name||''
   document.getElementById('edit-email').value    = t.admin_email||''
   document.getElementById('edit-pin').value      = t.admin_pin||''
-  document.getElementById('edit-plan').value     = t.plan||'starter'
   document.getElementById('edit-status').value   = t.status||'active'
   document.getElementById('edit-max-workers').value = t.max_workers||''
   document.getElementById('edit-color').value    = t.primary_color||'#4F46E5'
   document.getElementById('edit-address').value  = t.company_address||''
+  // populate plan dropdown then set value
+  if (_plansData.length) {
+    populatePlanDropdowns(_plansData, (t.plan||'starter').toLowerCase())
+  } else {
+    api('/api/super/plans').then(d => {
+      _plansData = d.plans || []
+      populatePlanDropdowns(_plansData, (t.plan||'starter').toLowerCase())
+    }).catch(()=>{})
+  }
   document.getElementById('edit-modal').classList.add('open')
 }
 function closeEditModal() { document.getElementById('edit-modal').classList.remove('open') }
@@ -14063,6 +14156,132 @@ function infoRow(label, value) {
     <div style="font-size:10px;color:#64748b;margin-bottom:2px">\${label}</div>
     <div style="font-size:13px;color:#e2e8f0">\${value}</div>
   </div>\`
+}
+
+// ── Plans & Pricing ──────────────────────────────────────────────────────────
+let _plansData = []
+
+// Populate any plan <select> elements from DB data
+function populatePlanDropdowns(plans, currentVal) {
+  const selectors = ['new-plan', 'edit-plan']
+  selectors.forEach(id => {
+    const sel = document.getElementById(id)
+    if (!sel) return
+    const prev = currentVal || sel.value
+    sel.innerHTML = plans.map(p => {
+      const dollars = Math.floor(p.price_monthly / 100)
+      const workers = p.max_workers >= 999 ? 'Unlimited workers' : p.max_workers + ' workers'
+      const key = (p.name || '').toLowerCase()
+      return '<option value="' + key + '">' + p.name + ' — $' + dollars + ' CAD/mo (' + workers + ')</option>'
+    }).join('')
+    if (prev) sel.value = prev
+    if (!sel.value && plans.length) sel.value = (plans[Math.min(1, plans.length-1)].name || '').toLowerCase()
+  })
+}
+
+async function loadPlansPage() {
+  const grid = document.getElementById('plans-grid')
+  grid.innerHTML = '<div style="text-align:center;padding:40px;color:#475569;grid-column:1/-1"><i class="fas fa-spinner fa-spin"></i> Loading plans...</div>'
+  try {
+    const d = await api('/api/super/plans')
+    _plansData = d.plans || []
+    renderPlansGrid(_plansData)
+    populatePlanDropdowns(_plansData, null)  // refresh add/edit dropdowns
+  } catch(e) {
+    grid.innerHTML = '<div style="color:#ef4444;padding:40px;text-align:center;grid-column:1/-1">Failed to load plans: ' + e.message + '</div>'
+  }
+}
+
+function renderPlansGrid(plans) {
+  const grid = document.getElementById('plans-grid')
+  if (!plans.length) {
+    grid.innerHTML = '<div style="color:#475569;padding:40px;text-align:center;grid-column:1/-1">No plans found</div>'
+    return
+  }
+  const borderColors = { starter:'#1e3a5f', growth:'#3b1f6b', pro:'#14532d' }
+  const textColors   = { starter:'#93c5fd', growth:'#c4b5fd', pro:'#86efac' }
+  const pillClass    = { starter:'badge-starter', growth:'badge-growth', pro:'badge-pro' }
+  grid.innerHTML = plans.map(p => {
+    const key      = (p.name||'').toLowerCase()
+    const bc       = borderColors[key] || '#334155'
+    const tc       = textColors[key]   || '#e2e8f0'
+    const pill     = pillClass[key]    || 'badge-starter'
+    const price    = (p.price_monthly / 100).toFixed(0)
+    const features = (p.features || '').split(',').filter(Boolean)
+    const tenants  = p.tenant_count || 0
+    const inactive = !p.active
+    return \`<div class="card" style="padding:24px;border-color:\${bc};position:relative;opacity:\${inactive?'0.55':'1'}">
+      \${inactive ? '<div style="position:absolute;top:-10px;right:12px;background:#475569;color:#fff;font-size:10px;font-weight:700;padding:2px 10px;border-radius:20px">INACTIVE</div>' : ''}
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <span class="pill \${pill}">\${p.name}</span>
+        <span style="font-size:11px;color:#475569">\${tenants} tenant\${tenants!==1?'s':''}</span>
+      </div>
+      <div style="font-size:34px;font-weight:800;color:\${tc}">$\${price}<span style="font-size:13px;font-weight:400;color:#64748b"> CAD/mo</span></div>
+      <div style="font-size:12px;color:#64748b;margin:6px 0 14px">\${p.max_workers >= 999 ? 'Unlimited workers' : 'Up to ' + p.max_workers + ' workers'}</div>
+      <ul style="list-style:none;font-size:12px;color:#94a3b8;display:flex;flex-direction:column;gap:5px;margin-bottom:16px;min-height:80px">
+        \${features.slice(0,6).map(f => \`<li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>\${f.trim()}</li>\`).join('')}
+        \${features.length > 6 ? \`<li style="color:#64748b">+ \${features.length-6} more...</li>\` : ''}
+      </ul>
+      \${p.stripe_price_id ? \`<div style="font-size:10px;color:#475569;font-family:monospace;margin-bottom:12px;word-break:break-all">\${p.stripe_price_id}</div>\` : '<div style="font-size:10px;color:#ef4444;margin-bottom:12px">⚠ No Stripe Price ID set</div>'}
+      <button onclick="openPlanModal(\${p.id})" class="btn btn-ghost" style="width:100%;font-size:12px"><i class="fas fa-edit"></i> Edit Plan</button>
+    </div>\`
+  }).join('')
+}
+
+function openPlanModal(id) {
+  const p = _plansData.find(x => x.id === id)
+  if (!p) return
+  document.getElementById('plan-edit-id').value         = p.id
+  document.getElementById('plan-edit-name').value       = p.name || ''
+  document.getElementById('plan-edit-price').value      = p.price_monthly || 0
+  document.getElementById('plan-edit-workers').value    = p.max_workers || 10
+  document.getElementById('plan-edit-stripe-id').value  = p.stripe_price_id || ''
+  document.getElementById('plan-edit-features').value   = (p.features || '').split(',').map(f=>f.trim()).join(',' + String.fromCharCode(10))
+  document.getElementById('plan-edit-active').checked   = !!p.active
+  const msg = document.getElementById('plan-edit-msg')
+  msg.style.display = 'none'
+  const modal = document.getElementById('plan-edit-modal')
+  modal.style.display = 'flex'
+}
+
+function closePlanModal() {
+  document.getElementById('plan-edit-modal').style.display = 'none'
+}
+
+async function savePlanEdit() {
+  const id         = document.getElementById('plan-edit-id').value
+  const name       = document.getElementById('plan-edit-name').value.trim()
+  const price      = parseInt(document.getElementById('plan-edit-price').value)
+  const workers    = parseInt(document.getElementById('plan-edit-workers').value)
+  const stripeId   = document.getElementById('plan-edit-stripe-id').value.trim()
+  const rawFeat    = document.getElementById('plan-edit-features').value
+  const features   = rawFeat.replace(/,/g,'|').split('|').map(f=>f.trim()).filter(Boolean).join(',')
+  const active     = document.getElementById('plan-edit-active').checked
+
+  const msg = document.getElementById('plan-edit-msg')
+  if (!name)           { showPlanMsg('❌ Plan name is required', true); return }
+  if (isNaN(price))    { showPlanMsg('❌ Invalid price', true); return }
+  if (isNaN(workers))  { showPlanMsg('❌ Invalid worker count', true); return }
+
+  try {
+    showPlanMsg('Saving...', false)
+    await api('/api/super/plans/' + id, {
+      method: 'PUT',
+      body: JSON.stringify({ name, stripe_price_id: stripeId, price_monthly: price, max_workers: workers, features, active })
+    })
+    showPlanMsg('✅ Saved! Landing page & signup page now reflect these changes.', false)
+    await loadPlansPage()
+    setTimeout(closePlanModal, 1200)
+  } catch(e) {
+    showPlanMsg('❌ ' + e.message, true)
+  }
+}
+
+function showPlanMsg(txt, isErr) {
+  const el = document.getElementById('plan-edit-msg')
+  el.textContent    = txt
+  el.style.display  = 'block'
+  el.style.color    = isErr ? '#ef4444' : '#22c55e'
 }
 
 </script>
