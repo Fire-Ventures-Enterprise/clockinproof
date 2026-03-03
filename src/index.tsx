@@ -13204,7 +13204,7 @@ function renderTenants(tenants) {
             ? '<button class="btn btn-warning" onclick="suspendTenant('+t.id+')" title="Suspend"><i class="fas fa-pause"></i></button>'
             : '<button class="btn btn-success" onclick="activateTenant('+t.id+')" title="Activate"><i class="fas fa-play"></i></button>'
           }
-          \${t.id !== 1 ? '<button class="btn btn-danger" onclick="deleteTenant('+t.id+',\''+t.company_name.replace(/'/g,"\'")+'\'  )" title="Delete / Archive"><i class="fas fa-trash"></i></button>' : ''}
+          \${t.id !== 1 ? '<button class="btn btn-danger" data-id="'+t.id+'" data-name="'+encodeURIComponent(t.company_name||'')+'" onclick="deleteTenantBtn(this)" title="Delete / Archive"><i class="fas fa-trash"></i></button>' : ''}
         </div>
       </td>
     </tr>\`
@@ -13254,8 +13254,13 @@ async function activateTenant(id) {
   await api('/api/super/tenants/'+id, { method:'PUT', body:JSON.stringify({status:'active'}) })
   showToast('▶ Tenant activated'); loadTenants()
 }
+function deleteTenantBtn(btn) {
+  const id   = btn.getAttribute('data-id')
+  const name = decodeURIComponent(btn.getAttribute('data-name')||'')
+  deleteTenant(id, name)
+}
 async function deleteTenant(id, name) {
-  const confirmed = confirm('Archive "' + name + '"?\n\nThis will soft-delete the tenant. Their data is preserved but workers will not be able to clock in.\n\nType DELETE to confirm:')
+  const confirmed = confirm('Archive "' + name + '"?  This will soft-delete the tenant. Their data is preserved but workers will not be able to clock in.')
   if (!confirmed) return
   const typed = prompt('Type DELETE to confirm archiving "' + name + '":')
   if ((typed || '').trim().toUpperCase() !== 'DELETE') { showToast('❌ Cancelled — nothing changed', true); return }
