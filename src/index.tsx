@@ -2899,6 +2899,43 @@ app.get('/api/dispatch/pending/:worker_id', async (c) => {
   return c.json({ dispatch: row })
 })
 
+// GET /api/dispatch/worker/:worker_id — all dispatches for a worker (pending + last 30 days)
+// Used by the worker app Dispatches tab
+app.get('/api/dispatch/worker/:worker_id', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const workerId = c.req.param('worker_id')
+  const rows = await db.prepare(`
+    SELECT d.*
+    FROM job_dispatches d
+    WHERE d.worker_id = ?
+      AND d.created_at >= datetime('now','-30 days')
+    ORDER BY d.created_at DESC
+    LIMIT 50
+  `).bind(workerId).all()
+  return c.json({ dispatches: rows.results || [] })
+})
+
+// POST /api/dispatch/:id/respond — worker responds to a dispatch (accept / decline / arrived)
+app.post('/api/dispatch/:id/respond', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const { worker_id, response } = await c.req.json() as any  // response: 'accepted'|'declined'|'arrived'
+  if (!worker_id || !response) return c.json({ error: 'worker_id and response required' }, 400)
+  // Verify this dispatch belongs to this worker
+  const disp = await db.prepare(`SELECT * FROM job_dispatches WHERE id = ? AND worker_id = ?`).bind(id, worker_id).first() as any
+  if (!disp) return c.json({ error: 'Dispatch not found' }, 404)
+  const newStatus = response === 'arrived' ? 'arrived' : response === 'accepted' ? 'replied' : 'cancelled'
+  const replyText = response === 'arrived' ? 'Worker marked as arrived' : response === 'accepted' ? 'Accepted via app' : 'Declined via app'
+  await db.prepare(`
+    UPDATE job_dispatches SET status = ?, reply_text = ?, reply_at = datetime('now')
+    ${response === 'arrived' ? ", arrived_at = datetime('now')" : ''}
+    WHERE id = ?
+  `).bind(newStatus, replyText, id).run()
+  return c.json({ success: true, status: newStatus })
+})
+
 // POST /api/test/sms  — Super admin test endpoint to verify Twilio is working
 app.post('/api/test/sms', async (c) => {
   const db  = c.env.DB
@@ -3705,6 +3742,56 @@ app.get('/api/stats/worker/:worker_id', async (c) => {
       next_payday:  nextPayday,
       daily: daily.results,
     }
+  })
+})
+
+// GET /api/sessions/worker/:worker_id/period — sessions in the current pay period for a worker
+// Used by the worker app Pay History tab
+app.get('/api/sessions/worker/:worker_id/period', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const workerId = c.req.param('worker_id')
+  // Load pay period settings
+  const settingsRows = await db.prepare(`SELECT key, value FROM settings WHERE key IN ('pay_frequency','pay_period_anchor','show_pay_to_workers','timezone')`).all()
+  const cfg: Record<string,string> = {}
+  settingsRows.results.forEach((r: any) => { cfg[r.key] = r.value })
+  const payFreq  = cfg.pay_frequency    || 'biweekly'
+  const anchor   = cfg.pay_period_anchor || '2026-03-06'
+  const showPay  = cfg.show_pay_to_workers !== '0'
+  const periodDays = payFreq === 'weekly' ? 7 : payFreq === 'monthly' ? 30 : 14
+  const now = new Date()
+  const anchorDate = new Date(anchor + 'T00:00:00')
+  const msPerDay = 86400000
+  const daysSinceAnchor = Math.floor((now.getTime() - anchorDate.getTime()) / msPerDay)
+  const periodsSinceAnchor = Math.floor(daysSinceAnchor / periodDays)
+  const periodStart = new Date(anchorDate.getTime() + periodsSinceAnchor * periodDays * msPerDay)
+  const periodEnd   = new Date(periodStart.getTime() + periodDays * msPerDay)
+  const fmtDate = (d: Date) => d.toISOString().split('T')[0]
+  const startStr = fmtDate(periodStart)
+  const endStr   = fmtDate(periodEnd)
+  const nextPayday = endStr
+  const sessions = await db.prepare(`
+    SELECT id, clock_in_time, clock_out_time, total_hours, earnings,
+           job_location, job_description, status, edited, edit_reason
+    FROM sessions
+    WHERE worker_id = ?
+      AND date(clock_in_time) >= ?
+      AND date(clock_in_time) < ?
+    ORDER BY clock_in_time DESC
+  `).bind(workerId, startStr, endStr).all()
+  const totals = await db.prepare(`
+    SELECT SUM(CASE WHEN status='completed' THEN total_hours ELSE 0 END) as total_hours,
+           SUM(CASE WHEN status='completed' THEN earnings ELSE 0 END) as total_earnings,
+           COUNT(*) as session_count
+    FROM sessions WHERE worker_id = ? AND date(clock_in_time) >= ? AND date(clock_in_time) < ?
+  `).bind(workerId, startStr, endStr).first() as any
+  const worker = await db.prepare(`SELECT name, hourly_rate, pay_type FROM workers WHERE id = ?`).bind(workerId).first() as any
+  return c.json({
+    period: { start: startStr, end: endStr, next_payday: nextPayday, frequency: payFreq },
+    show_pay: showPay,
+    worker: { name: worker?.name, hourly_rate: worker?.hourly_rate, pay_type: worker?.pay_type },
+    sessions: sessions.results || [],
+    totals: { total_hours: totals?.total_hours || 0, total_earnings: totals?.total_earnings || 0, session_count: totals?.session_count || 0 }
   })
 })
 
@@ -8119,6 +8206,27 @@ function getWorkerHTML(tenant?: any): string {
     </div>
   </div>
 
+  <!-- ── Bottom Tab Navigation ──────────────────────────────────────────── -->
+  <nav id="wk-bottom-nav" style="position:fixed;bottom:0;left:0;right:0;z-index:100;background:#fff;border-top:1px solid #e5e7eb;display:flex;align-items:stretch;box-shadow:0 -2px 12px rgba(0,0,0,0.08)">
+    <button onclick="wkShowTab('clock')" id="wk-nav-clock" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px 10px;border:none;background:none;cursor:pointer;color:#4f46e5;font-size:10px;font-weight:700;gap:3px;border-top:2px solid #4f46e5">
+      <i class="fas fa-clock" style="font-size:18px"></i>Clock In
+    </button>
+    <button onclick="wkShowTab('dispatches')" id="wk-nav-dispatches" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px 10px;border:none;background:none;cursor:pointer;color:#9ca3af;font-size:10px;font-weight:600;gap:3px;border-top:2px solid transparent;position:relative">
+      <i class="fas fa-truck" style="font-size:18px"></i>Jobs
+      <span id="wk-dispatch-badge" style="display:none;position:absolute;top:6px;right:calc(50% - 14px);background:#ef4444;color:#fff;font-size:9px;font-weight:800;padding:1px 5px;border-radius:20px;line-height:1.4">0</span>
+    </button>
+    <button onclick="wkShowTab('history')" id="wk-nav-history" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px 10px;border:none;background:none;cursor:pointer;color:#9ca3af;font-size:10px;font-weight:600;gap:3px;border-top:2px solid transparent">
+      <i class="fas fa-receipt" style="font-size:18px"></i>Pay Period
+    </button>
+    <button onclick="wkShowTab('profile')" id="wk-nav-profile" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px 10px;border:none;background:none;cursor:pointer;color:#9ca3af;font-size:10px;font-weight:600;gap:3px;border-top:2px solid transparent">
+      <i class="fas fa-user-circle" style="font-size:18px"></i>Profile
+    </button>
+  </nav>
+
+  <!-- ── Tab Panels ──────────────────────────────────────────────────────── -->
+
+  <!-- CLOCK TAB -->
+  <div id="wk-tab-clock" style="padding-bottom:72px">
   <div class="p-4 space-y-4 max-w-lg mx-auto">
     <!-- Status Card -->
     <div id="status-card" class="bg-white rounded-2xl shadow-sm p-5 slide-up">
@@ -8395,13 +8503,157 @@ function getWorkerHTML(tenant?: any): string {
       </div>
     </div>
 
-    <div class="text-center py-4">
+    <div class="text-center py-2 pb-4">
       <a href="/admin" class="text-gray-400 text-xs hover:text-gray-600">
         <i class="fas fa-shield-alt mr-1"></i>Admin Panel
       </a>
     </div>
   </div>
-</div>
+  </div><!-- /wk-tab-clock -->
+
+  <!-- DISPATCHES TAB -->
+  <div id="wk-tab-dispatches" style="display:none;padding-bottom:72px">
+    <div class="p-4 max-w-lg mx-auto space-y-4">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding-top:4px">
+        <div>
+          <h2 style="font-size:17px;font-weight:800;color:#1e293b">My Jobs</h2>
+          <p style="font-size:12px;color:#94a3b8;margin-top:1px">Dispatches sent to you by admin</p>
+        </div>
+        <button onclick="loadWkDispatches()" style="background:#f1f5f9;border:none;padding:7px 12px;border-radius:10px;font-size:12px;color:#64748b;cursor:pointer;font-weight:600">
+          <i class="fas fa-sync-alt"></i> Refresh
+        </button>
+      </div>
+
+      <!-- Pending dispatches — needs response -->
+      <div id="wk-dispatches-pending" class="space-y-3"></div>
+
+      <!-- Recent completed dispatches -->
+      <div id="wk-dispatches-history">
+        <p style="font-size:11px;font-weight:700;text-transform:uppercase;color:#94a3b8;letter-spacing:.05em;margin-bottom:10px">Recent History (30 days)</p>
+        <div id="wk-dispatches-history-list" class="space-y-2"></div>
+      </div>
+
+      <!-- Empty state -->
+      <div id="wk-dispatches-empty" style="display:none;text-align:center;padding:40px 20px;color:#94a3b8">
+        <i class="fas fa-truck" style="font-size:40px;margin-bottom:12px;opacity:.4"></i>
+        <p style="font-size:15px;font-weight:600">No jobs yet</p>
+        <p style="font-size:12px;margin-top:4px">Your admin will send jobs here via SMS dispatch</p>
+      </div>
+    </div>
+  </div><!-- /wk-tab-dispatches -->
+
+  <!-- PAY HISTORY TAB -->
+  <div id="wk-tab-history" style="display:none;padding-bottom:72px">
+    <div class="p-4 max-w-lg mx-auto space-y-4">
+      <div style="padding-top:4px">
+        <h2 style="font-size:17px;font-weight:800;color:#1e293b">Pay Period</h2>
+        <p style="font-size:12px;color:#94a3b8;margin-top:1px" id="wk-hist-period-label">Loading...</p>
+      </div>
+
+      <!-- Summary card -->
+      <div id="wk-hist-summary" style="background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:20px;padding:20px;color:#fff">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+          <div style="background:rgba(255,255,255,.15);border-radius:14px;padding:14px;text-align:center">
+            <p style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;opacity:.8;margin-bottom:4px">Total Hours</p>
+            <p style="font-size:28px;font-weight:800" id="wk-hist-hours">–</p>
+          </div>
+          <div style="background:rgba(255,255,255,.15);border-radius:14px;padding:14px;text-align:center">
+            <p style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;opacity:.8;margin-bottom:4px">Gross Pay</p>
+            <p style="font-size:28px;font-weight:800" id="wk-hist-gross">–</p>
+          </div>
+        </div>
+        <div style="background:rgba(255,255,255,.1);border-radius:12px;padding:12px;display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <p style="font-size:10px;opacity:.7;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Next Payday</p>
+            <p style="font-size:16px;font-weight:800;margin-top:2px" id="wk-hist-payday">–</p>
+          </div>
+          <div style="text-align:right">
+            <p style="font-size:10px;opacity:.7;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Days Away</p>
+            <p style="font-size:22px;font-weight:800" id="wk-hist-days-left">–</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sessions list -->
+      <div>
+        <p style="font-size:11px;font-weight:700;text-transform:uppercase;color:#94a3b8;letter-spacing:.05em;margin-bottom:10px">Shifts This Period</p>
+        <div id="wk-hist-sessions" class="space-y-2"></div>
+        <div id="wk-hist-empty" style="display:none;text-align:center;padding:32px 20px;color:#94a3b8">
+          <i class="fas fa-calendar-times" style="font-size:36px;margin-bottom:10px;opacity:.4"></i>
+          <p style="font-size:14px;font-weight:600">No shifts this period yet</p>
+          <p style="font-size:12px;margin-top:4px">Clock in to start earning</p>
+        </div>
+      </div>
+    </div>
+  </div><!-- /wk-tab-history -->
+
+  <!-- PROFILE TAB -->
+  <div id="wk-tab-profile" style="display:none;padding-bottom:72px">
+    <div class="p-4 max-w-lg mx-auto space-y-4">
+      <div style="padding-top:4px">
+        <h2 style="font-size:17px;font-weight:800;color:#1e293b">My Profile</h2>
+      </div>
+      <!-- Worker info card -->
+      <div style="background:#fff;border-radius:20px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px">
+          <div style="width:56px;height:56px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="fas fa-user" style="font-size:22px;color:#fff"></i>
+          </div>
+          <div>
+            <p style="font-size:17px;font-weight:800;color:#1e293b" id="wk-profile-name">–</p>
+            <p style="font-size:13px;color:#64748b;margin-top:2px" id="wk-profile-phone">–</p>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div style="background:#f8fafc;border-radius:12px;padding:12px">
+            <p style="font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:700;letter-spacing:.05em">Pay Rate</p>
+            <p style="font-size:16px;font-weight:800;color:#059669;margin-top:3px" id="wk-profile-rate">–</p>
+          </div>
+          <div style="background:#f8fafc;border-radius:12px;padding:12px">
+            <p style="font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:700;letter-spacing:.05em">Status</p>
+            <p style="font-size:16px;font-weight:800;color:#4f46e5;margin-top:3px" id="wk-profile-status">–</p>
+          </div>
+          <div style="background:#f8fafc;border-radius:12px;padding:12px">
+            <p style="font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:700;letter-spacing:.05em">Total Sessions</p>
+            <p style="font-size:16px;font-weight:800;color:#1e293b;margin-top:3px" id="wk-profile-sessions">–</p>
+          </div>
+          <div style="background:#f8fafc;border-radius:12px;padding:12px">
+            <p style="font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:700;letter-spacing:.05em">All-Time Hours</p>
+            <p style="font-size:16px;font-weight:800;color:#1e293b;margin-top:3px" id="wk-profile-hours">–</p>
+          </div>
+        </div>
+      </div>
+      <!-- Actions -->
+      <div style="background:#fff;border-radius:20px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+        <p style="font-size:11px;font-weight:700;text-transform:uppercase;color:#94a3b8;letter-spacing:.05em;margin-bottom:10px">Account</p>
+        <div class="space-y-2">
+          <button onclick="openDisputeModal(null)" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px;background:#fef9f0;border:1.5px solid #fde68a;border-radius:14px;cursor:pointer;text-align:left">
+            <i class="fas fa-flag" style="color:#f59e0b;font-size:16px;width:20px;text-align:center"></i>
+            <div>
+              <p style="font-size:13px;font-weight:700;color:#1e293b">Report an Issue</p>
+              <p style="font-size:11px;color:#94a3b8;margin-top:1px">Wrong hours, GPS error, pay dispute</p>
+            </div>
+            <i class="fas fa-chevron-right" style="color:#d1d5db;margin-left:auto;font-size:12px"></i>
+          </button>
+          <button onclick="logout()" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px;background:#fff5f5;border:1.5px solid #fecaca;border-radius:14px;cursor:pointer;text-align:left">
+            <i class="fas fa-sign-out-alt" style="color:#ef4444;font-size:16px;width:20px;text-align:center"></i>
+            <div>
+              <p style="font-size:13px;font-weight:700;color:#1e293b">Sign Out</p>
+              <p style="font-size:11px;color:#94a3b8;margin-top:1px">You can sign back in anytime</p>
+            </div>
+            <i class="fas fa-chevron-right" style="color:#d1d5db;margin-left:auto;font-size:12px"></i>
+          </button>
+        </div>
+      </div>
+      <div class="text-center pb-2">
+        <a href="/admin" class="text-gray-400 text-xs hover:text-gray-600">
+          <i class="fas fa-shield-alt mr-1"></i>Admin Panel
+        </a>
+      </div>
+    </div>
+  </div><!-- /wk-tab-profile -->
+
+</div><!-- /screen-main -->
 
 <!-- ── Clock In Job Details Modal ─────────────────────────────────────────── -->
 <!-- ── Worker Clock-Out Confirmation Modal ────────────────────────────────── -->
@@ -8634,7 +8886,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260303d"></script>
+<script src="/static/worker.js?v=20260303e"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">

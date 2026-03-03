@@ -510,6 +510,27 @@ async function initMain() {
   await checkStatus()
   await loadStats()
   await loadWorkLog()
+  // Refresh dispatch badge count silently in background
+  refreshDispatchBadge()
+}
+
+async function refreshDispatchBadge() {
+  if (!currentWorker?.id) return
+  try {
+    const res  = await fetch('/api/dispatch/worker/' + currentWorker.id)
+    const data = await res.json()
+    const dispatches = data.dispatches || []
+    const pending = dispatches.filter(d => ['sent','replied'].includes(d.status))
+    const badgeEl = document.getElementById('wk-dispatch-badge')
+    if (badgeEl) {
+      if (pending.length > 0) {
+        badgeEl.style.display = 'inline-block'
+        badgeEl.textContent   = pending.length
+      } else {
+        badgeEl.style.display = 'none'
+      }
+    }
+  } catch(_) {}
 }
 
 // ── Pending Dispatch ──────────────────────────────────────────────────────────
@@ -1962,5 +1983,273 @@ const DISPUTE_MSGS = [
 ]
 function setDisputeMsg(n) {
   document.getElementById('dispute-message').value = DISPUTE_MSGS[n] || ''
+}
+
+// ── Worker Bottom Tab Navigation ──────────────────────────────────────────────
+const WK_TABS = ['clock','dispatches','history','profile']
+const WK_ACCENT = '#4f46e5'
+
+function wkShowTab(tab) {
+  WK_TABS.forEach(t => {
+    const panel = document.getElementById('wk-tab-' + t)
+    const btn   = document.getElementById('wk-nav-' + t)
+    if (!panel || !btn) return
+    const active = (t === tab)
+    panel.style.display = active ? '' : 'none'
+    btn.style.color      = active ? WK_ACCENT : '#9ca3af'
+    btn.style.fontWeight = active ? '700' : '600'
+    btn.style.borderTop  = active ? '2px solid ' + WK_ACCENT : '2px solid transparent'
+  })
+  // Lazy-load data when tab is first opened
+  if (tab === 'dispatches') loadWkDispatches()
+  if (tab === 'history')    loadWkPayHistory()
+  if (tab === 'profile')    loadWkProfile()
+}
+
+// ── Dispatches Tab ────────────────────────────────────────────────────────────
+async function loadWkDispatches() {
+  if (!currentWorker?.id) return
+  const pendingEl = document.getElementById('wk-dispatches-pending')
+  const histEl    = document.getElementById('wk-dispatches-history-list')
+  const emptyEl   = document.getElementById('wk-dispatches-empty')
+  const badgeEl   = document.getElementById('wk-dispatch-badge')
+  if (!pendingEl) return
+
+  pendingEl.innerHTML = '<div style="text-align:center;padding:20px;color:#94a3b8;font-size:13px"><i class="fas fa-spinner fa-spin"></i> Loading...</div>'
+  if (histEl) histEl.innerHTML = ''
+
+  try {
+    const res  = await fetch('/api/dispatch/worker/' + currentWorker.id)
+    const data = await res.json()
+    const dispatches = data.dispatches || []
+
+    const pending  = dispatches.filter(d => ['sent','replied'].includes(d.status))
+    const history  = dispatches.filter(d => !['sent','replied'].includes(d.status))
+
+    // Badge
+    if (badgeEl) {
+      if (pending.length > 0) {
+        badgeEl.style.display = 'inline-block'
+        badgeEl.textContent   = pending.length
+      } else {
+        badgeEl.style.display = 'none'
+      }
+    }
+
+    if (!dispatches.length) {
+      pendingEl.innerHTML = ''
+      if (histEl) histEl.innerHTML = ''
+      if (emptyEl) emptyEl.style.display = 'block'
+      return
+    }
+    if (emptyEl) emptyEl.style.display = 'none'
+
+    // Render pending
+    if (pending.length === 0) {
+      pendingEl.innerHTML = ''
+    } else {
+      pendingEl.innerHTML = '<p style="font-size:11px;font-weight:700;text-transform:uppercase;color:#ef4444;letter-spacing:.05em;margin-bottom:10px"><i class="fas fa-bell mr-1"></i>Needs Your Response</p>'
+        + pending.map(d => renderDispatchCard(d, true)).join('')
+    }
+
+    // Render history
+    if (histEl) {
+      if (history.length === 0) {
+        histEl.innerHTML = '<p style="text-align:center;color:#94a3b8;font-size:12px;padding:12px 0">No recent history</p>'
+      } else {
+        histEl.innerHTML = history.map(d => renderDispatchCard(d, false)).join('')
+      }
+    }
+  } catch(e) {
+    pendingEl.innerHTML = '<p style="text-align:center;color:#ef4444;font-size:13px;padding:20px">Could not load jobs. Try refreshing.</p>'
+  }
+}
+
+function renderDispatchCard(d, isPending) {
+  const date    = d.created_at ? new Date(d.created_at).toLocaleDateString('en-CA',{month:'short',day:'numeric',year:'numeric'}) : ''
+  const time    = d.created_at ? new Date(d.created_at).toLocaleTimeString('en-CA',{hour:'2-digit',minute:'2-digit'}) : ''
+  const statusColors = {
+    sent:      '#f59e0b',
+    replied:   '#3b82f6',
+    arrived:   '#10b981',
+    completed: '#6b7280',
+    cancelled: '#ef4444',
+    failed:    '#ef4444',
+  }
+  const statusLabels = {
+    sent:      'Awaiting Response',
+    replied:   'Accepted',
+    arrived:   'Arrived on Site',
+    completed: 'Completed',
+    cancelled: 'Cancelled',
+    failed:    'Failed',
+  }
+  const color  = statusColors[d.status] || '#9ca3af'
+  const label  = statusLabels[d.status] || d.status
+
+  const responseButtons = isPending ? `
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button onclick="respondDispatch(${d.id},'accepted')"
+        style="flex:1;background:#10b981;color:#fff;border:none;padding:9px 0;border-radius:10px;font-weight:700;font-size:12px;cursor:pointer">
+        <i class="fas fa-check mr-1"></i>Accept
+      </button>
+      <button onclick="respondDispatch(${d.id},'arrived')"
+        style="flex:1;background:#3b82f6;color:#fff;border:none;padding:9px 0;border-radius:10px;font-weight:700;font-size:12px;cursor:pointer">
+        <i class="fas fa-map-marker-alt mr-1"></i>I Arrived
+      </button>
+      <button onclick="respondDispatch(${d.id},'declined')"
+        style="flex:1;background:#fff;color:#ef4444;border:1.5px solid #fecaca;padding:9px 0;border-radius:10px;font-weight:700;font-size:12px;cursor:pointer">
+        Decline
+      </button>
+    </div>` : ''
+
+  return `
+  <div style="background:#fff;border-radius:16px;padding:14px 16px;box-shadow:0 1px 4px rgba(0,0,0,.07);margin-bottom:10px;border-left:4px solid ${color}">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+      <div style="flex:1;min-width:0">
+        <p style="font-size:14px;font-weight:800;color:#1e293b;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+          ${d.job_name || 'Job Dispatch'}
+        </p>
+        ${d.job_address ? `<p style="font-size:12px;color:#64748b;margin-bottom:4px"><i class="fas fa-map-marker-alt mr-1" style="color:#ef4444"></i>${d.job_address}</p>` : ''}
+        <p style="font-size:11px;color:#94a3b8">${date} ${time}</p>
+      </div>
+      <span style="flex-shrink:0;background:${color}22;color:${color};font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px;white-space:nowrap">${label}</span>
+    </div>
+    ${d.notes ? `<p style="font-size:12px;color:#64748b;margin-top:6px;background:#f8fafc;padding:8px 10px;border-radius:8px">${d.notes}</p>` : ''}
+    ${d.maps_url ? `<a href="${d.maps_url}" target="_blank" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#4f46e5;font-weight:600;margin-top:6px"><i class="fas fa-directions"></i>Get Directions</a>` : ''}
+    ${responseButtons}
+  </div>`
+}
+
+async function respondDispatch(id, response) {
+  if (!currentWorker?.id) return
+  try {
+    const res  = await fetch('/api/dispatch/' + id + '/respond', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ worker_id: currentWorker.id, response })
+    })
+    const data = await res.json()
+    if (data.success) {
+      const labels = { accepted: '✅ Job accepted!', declined: 'Job declined.', arrived: '📍 Marked as arrived!' }
+      showToast(labels[response] || 'Response sent', 'success')
+      await loadWkDispatches()
+      // Also refresh the dispatch banner on the clock tab
+      await checkPendingDispatch()
+    } else {
+      showToast(data.error || 'Failed to respond', 'error')
+    }
+  } catch(e) {
+    showToast('Connection error', 'error')
+  }
+}
+
+// ── Pay Period History Tab ────────────────────────────────────────────────────
+async function loadWkPayHistory() {
+  if (!currentWorker?.id) return
+  const periodLabel = document.getElementById('wk-hist-period-label')
+  const hoursEl     = document.getElementById('wk-hist-hours')
+  const grossEl     = document.getElementById('wk-hist-gross')
+  const paydayEl    = document.getElementById('wk-hist-payday')
+  const daysEl      = document.getElementById('wk-hist-days-left')
+  const sessionsEl  = document.getElementById('wk-hist-sessions')
+  const emptyEl     = document.getElementById('wk-hist-empty')
+  if (!sessionsEl) return
+
+  if (periodLabel) periodLabel.textContent = 'Loading…'
+  sessionsEl.innerHTML = '<div style="text-align:center;padding:20px;color:#94a3b8;font-size:13px"><i class="fas fa-spinner fa-spin"></i> Loading...</div>'
+
+  try {
+    const res  = await fetch('/api/sessions/worker/' + currentWorker.id + '/period')
+    const data = await res.json()
+    const period   = data.period   || {}
+    const totals   = data.totals   || {}
+    const sessions = data.sessions || []
+    const showPay  = data.show_pay !== false
+
+    // Period label
+    const fmt = (s) => {
+      if (!s) return '–'
+      const d = new Date(s + 'T00:00:00')
+      return d.toLocaleDateString('en-CA',{month:'short',day:'numeric'})
+    }
+    if (periodLabel) periodLabel.textContent = fmt(period.start) + ' – ' + fmt(period.end) + '  ·  ' + (period.frequency || 'biweekly')
+
+    // Summary card
+    const hrs = parseFloat(totals.total_hours || 0)
+    if (hoursEl) hoursEl.textContent = hrs.toFixed(1) + 'h'
+    if (grossEl) {
+      grossEl.textContent = showPay
+        ? '$' + parseFloat(totals.total_earnings || 0).toFixed(2)
+        : '—'
+    }
+
+    // Payday countdown
+    const today   = new Date(); today.setHours(0,0,0,0)
+    const payday  = period.next_payday ? new Date(period.next_payday + 'T00:00:00') : null
+    const daysLeft = payday ? Math.max(0, Math.round((payday - today) / 86400000)) : '–'
+    if (paydayEl) paydayEl.textContent = payday ? payday.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'}) : '–'
+    if (daysEl)   daysEl.textContent   = daysLeft
+
+    // Sessions list
+    if (sessions.length === 0) {
+      sessionsEl.innerHTML = ''
+      if (emptyEl) emptyEl.style.display = 'block'
+      return
+    }
+    if (emptyEl) emptyEl.style.display = 'none'
+
+    sessionsEl.innerHTML = sessions.map(s => {
+      const inTime  = s.clock_in_time  ? new Date(s.clock_in_time)  : null
+      const outTime = s.clock_out_time ? new Date(s.clock_out_time) : null
+      const dateStr = inTime ? inTime.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'}) : '–'
+      const inStr   = inTime  ? inTime.toLocaleTimeString('en-CA',{hour:'2-digit',minute:'2-digit'}) : '–'
+      const outStr  = outTime ? outTime.toLocaleTimeString('en-CA',{hour:'2-digit',minute:'2-digit'}) : 'Active'
+      const hrs     = parseFloat(s.total_hours || 0).toFixed(1)
+      const earn    = parseFloat(s.earnings    || 0).toFixed(2)
+      const statusColor = s.status === 'active' ? '#f59e0b' : '#10b981'
+      const editedBadge = s.edited ? '<span style="font-size:9px;background:#fef3c7;color:#d97706;padding:1px 5px;border-radius:10px;font-weight:700;margin-left:4px">EDITED</span>' : ''
+      return `
+      <div style="background:#fff;border-radius:14px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid ${statusColor}">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:4px">
+          <p style="font-size:13px;font-weight:800;color:#1e293b">${dateStr}${editedBadge}</p>
+          <span style="font-size:12px;font-weight:700;color:#059669">${showPay ? '$'+earn : hrs+'h'}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;font-size:11px;color:#64748b">
+          <span><i class="fas fa-sign-in-alt mr-1" style="color:#10b981"></i>${inStr}</span>
+          <span style="color:#d1d5db">→</span>
+          <span><i class="fas fa-sign-out-alt mr-1" style="color:#ef4444"></i>${outStr}</span>
+          <span style="margin-left:auto;font-weight:600;color:#1e293b">${hrs}h</span>
+        </div>
+        ${s.job_location ? `<p style="font-size:11px;color:#94a3b8;margin-top:4px"><i class="fas fa-map-marker-alt mr-1"></i>${s.job_location}</p>` : ''}
+        ${s.edit_reason  ? `<p style="font-size:10px;color:#d97706;margin-top:4px"><i class="fas fa-edit mr-1"></i>${s.edit_reason}</p>` : ''}
+      </div>`
+    }).join('')
+  } catch(e) {
+    sessionsEl.innerHTML = '<p style="text-align:center;color:#ef4444;font-size:13px;padding:20px">Could not load pay history. Try refreshing.</p>'
+  }
+}
+
+// ── Profile Tab ───────────────────────────────────────────────────────────────
+async function loadWkProfile() {
+  if (!currentWorker) return
+  const nameEl     = document.getElementById('wk-profile-name')
+  const phoneEl    = document.getElementById('wk-profile-phone')
+  const rateEl     = document.getElementById('wk-profile-rate')
+  const statusEl   = document.getElementById('wk-profile-status')
+  const sessionsEl = document.getElementById('wk-profile-sessions')
+  const hoursEl    = document.getElementById('wk-profile-hours')
+  if (nameEl)   nameEl.textContent   = currentWorker.name  || '–'
+  if (phoneEl)  phoneEl.textContent  = currentWorker.phone || '–'
+  if (rateEl)   rateEl.textContent   = currentWorker.hourly_rate ? '$' + parseFloat(currentWorker.hourly_rate).toFixed(2) + '/hr' : '–'
+  if (statusEl) statusEl.textContent = currentWorker.status ? currentWorker.status.charAt(0).toUpperCase() + currentWorker.status.slice(1) : '–'
+  // Load lifetime stats
+  try {
+    const res  = await fetch('/api/stats/worker/' + currentWorker.id)
+    const data = await res.json()
+    const st   = data.stats || {}
+    if (sessionsEl) sessionsEl.textContent = st.total_sessions ?? '–'
+    if (hoursEl)    hoursEl.textContent    = st.total_hours ? parseFloat(st.total_hours).toFixed(1) + 'h' : '–'
+  } catch(_) {}
 }
 
