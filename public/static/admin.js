@@ -1972,8 +1972,8 @@ async function sendInviteViaTwilio(workerId, workerName) {
       else if (data.twilio_code === 21265) errMsg = 'Phone needs country code — save as +1XXXXXXXXXX'
       else if (data.twilio_code === 21608) errMsg = 'Unverified number on Twilio trial — verify at twilio.com or upgrade account'
       else if (data.twilio_code === 21219) errMsg = 'Phone not verified — upgrade Twilio or verify the number'
-      else if (data.twilio_code === 20003) errMsg = 'Twilio auth failed — check Account SID & Auth Token in Settings'
-      else if (data.twilio_missing)        errMsg = 'Twilio not set up — add credentials in Settings → Notifications'
+      else if (data.twilio_code === 20003) errMsg = 'SMS auth failed — contact your ClockInProof administrator to verify credentials'
+      else if (data.twilio_missing)        errMsg = 'SMS not configured — contact your ClockInProof administrator'
 
       status.className = 'mb-3 p-3 rounded-xl text-sm font-medium bg-red-50 border border-red-200 text-red-700'
       status.innerHTML = `<i class="fas fa-exclamation-triangle mr-2"></i>${errMsg}`
@@ -2460,12 +2460,7 @@ async function loadSettings() {
     if (notifySmsEl) notifySmsEl.checked = currentSettings.notify_sms === '1'
     const adminPhoneEl = document.getElementById('s-admin-phone')
     if (adminPhoneEl) adminPhoneEl.value = currentSettings.admin_phone || ''
-    const twilioSidEl = document.getElementById('s-twilio-sid')
-    if (twilioSidEl) twilioSidEl.value = currentSettings.twilio_account_sid || ''
-    const twilioTokenEl = document.getElementById('s-twilio-token')
-    if (twilioTokenEl) twilioTokenEl.value = currentSettings.twilio_auth_token || ''
-    const twilioFromEl = document.getElementById('s-twilio-from')
-    if (twilioFromEl) twilioFromEl.value = currentSettings.twilio_from_number || ''
+    // Twilio credentials are platform-managed (Super Admin only) — not loaded here
 
     // Country dropdown
     const country = currentSettings.country_code || 'CA'
@@ -2591,9 +2586,7 @@ async function saveSettings() {
     notify_email: document.getElementById('s-notify-email')?.checked ? '1' : '0',
     notify_sms: document.getElementById('s-notify-sms')?.checked ? '1' : '0',
     admin_phone: document.getElementById('s-admin-phone')?.value?.trim() || '',
-    twilio_account_sid: document.getElementById('s-twilio-sid')?.value?.trim() || '',
-    twilio_auth_token: document.getElementById('s-twilio-token')?.value?.trim() || '',
-    twilio_from_number: document.getElementById('s-twilio-from')?.value?.trim() || '',
+    // Twilio credentials managed by platform Super Admin — not saved from tenant settings
     pay_frequency: document.getElementById('s-pay-frequency')?.value || 'biweekly',
     pay_period_anchor: document.getElementById('s-pay-anchor')?.value || '2026-03-06',
     show_pay_to_workers: document.getElementById('s-show-pay-workers')?.checked ? '1' : '0',
@@ -2975,7 +2968,7 @@ async function resendNotify(id) {
     } else if (data.errors && data.errors.length > 0) {
       showAdminToast('Notify failed: ' + data.errors[0], 'error')
     } else {
-      showAdminToast('No channels configured — add email/Twilio in Settings', 'info')
+      showAdminToast('No channels configured — contact your ClockInProof administrator', 'info')
     }
   } catch(e) { showAdminToast('Connection error', 'error') }
 }

@@ -233,6 +233,9 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('twilio_account_sid', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('twilio_auth_token', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('twilio_from_number', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('twilio_messaging_service', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('resend_api_key', '')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('resend_from', 'alerts@clockinproof.com')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('app_host', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_host', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('max_shift_hours', '10')`,
@@ -1396,7 +1399,10 @@ async function sendOverrideNotification(
     : null
 
   // ── EMAIL via Resend ────────────────────────────────────────────────────────
-  if (notifyEmail && adminEmail && env.RESEND_API_KEY) {
+  // Credentials: Cloudflare env secret first, DB fallback for local dev
+  const resendKey  = (env.RESEND_API_KEY || settings.resend_api_key || '').trim()
+  const resendFrom = (env.RESEND_FROM    || settings.resend_from    || `${appName} Alerts <alerts@clockinproof.com>`).trim()
+  if (notifyEmail && adminEmail && resendKey) {
     const emailHtml = `
 <!DOCTYPE html>
 <html>
@@ -1476,9 +1482,9 @@ async function sendOverrideNotification(
     try {
       const emailRes = await fetch('https://api.resend.com/emails', {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+        headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from: `${appName} Alerts <alerts@clockinproof.com>`,
+          from: resendFrom,
           to: [adminEmail],
           subject: `🚨 [${appName}] Clock-In Blocked: ${req.worker_name} is ${distTxt} from "${req.job_location}"`,
           html: emailHtml
@@ -1496,7 +1502,7 @@ async function sendOverrideNotification(
   }
 
   // ── SMS via Twilio ──────────────────────────────────────────────────────────
-  // Credentials: prefer Cloudflare env secrets, fall back to DB settings
+  // Credentials: prefer Cloudflare env secrets, fall back to DB settings (local dev)
   const twilioSid    = (env.TWILIO_ACCOUNT_SID      || settings.twilio_account_sid       || '').trim()
   const twilioToken  = (env.TWILIO_AUTH_TOKEN        || settings.twilio_auth_token        || '').trim()
   const twilioMsgSvc = (env.TWILIO_MESSAGING_SERVICE || settings.twilio_messaging_service || '').trim()
@@ -1903,28 +1909,36 @@ app.post('/api/override/:id/notify', async (c) => {
   })
 })
 
-// ── HELPER: Send SMS to a worker via Twilio ───────────────────────────────────
+// ── HELPER: Send SMS via platform Twilio ─────────────────────────────────────
+// Credentials priority: Cloudflare env secrets → DB settings (local dev fallback)
 async function sendWorkerSms(
   env: any,
   workerPhone: string,
   message: string
 ): Promise<{ sent: boolean; error?: string }> {
   try {
-    const db = env.DB
-    const settingsRaw = await db.prepare('SELECT key, value FROM settings').all()
-    const s: Record<string, string> = {}
-    ;(settingsRaw.results as any[]).forEach((r: any) => { s[r.key] = r.value })
+    // 1. Try env secrets first (production)
+    let sid    = (env.TWILIO_ACCOUNT_SID      || '').trim()
+    let token  = (env.TWILIO_AUTH_TOKEN       || '').trim()
+    let msgSvc = (env.TWILIO_MESSAGING_SERVICE|| '').trim()
+    let from   = (env.TWILIO_FROM_NUMBER      || '').trim()
 
-    const sid     = (env.TWILIO_ACCOUNT_SID || s.twilio_account_sid || '').trim()
-    const token   = (env.TWILIO_AUTH_TOKEN  || s.twilio_auth_token  || '').trim()
-    const msgSvc  = (env.TWILIO_MESSAGING_SERVICE || s.twilio_messaging_service || '').trim()
-    const from    = (env.TWILIO_FROM_NUMBER || s.twilio_from_number || '').trim()
-
-    if (!sid || !token || (!msgSvc && !from)) {
-      return { sent: false, error: 'Twilio not configured' }
+    // 2. Fall back to DB settings (local dev / first-run)
+    if (!sid || !token) {
+      const db = env.DB
+      const settingsRaw = await db.prepare("SELECT key, value FROM settings WHERE key IN ('twilio_account_sid','twilio_auth_token','twilio_from_number','twilio_messaging_service')").all()
+      const s: Record<string, string> = {}
+      ;(settingsRaw.results as any[]).forEach((r: any) => { s[r.key] = r.value })
+      if (!sid)    sid    = (s.twilio_account_sid       || '').trim()
+      if (!token)  token  = (s.twilio_auth_token        || '').trim()
+      if (!msgSvc) msgSvc = (s.twilio_messaging_service || '').trim()
+      if (!from)   from   = (s.twilio_from_number       || '').trim()
     }
 
-    // Normalize phone number
+    if (!sid || !token || (!msgSvc && !from)) {
+      return { sent: false, error: 'Twilio not configured — add credentials in Super Admin → Platform Settings' }
+    }
+
     const rawPhone = workerPhone.replace(/[\s\-\(\)\.]/g, '')
     const toPhone  = rawPhone.startsWith('+') ? rawPhone : `+1${rawPhone}`
 
@@ -2829,6 +2843,43 @@ app.get('/api/dispatch/pending/:worker_id', async (c) => {
   `).bind(workerId).first() as any
   if (!row) return c.json({ dispatch: null })
   return c.json({ dispatch: row })
+})
+
+// POST /api/test/sms  — Super admin test endpoint to verify Twilio is working
+app.post('/api/test/sms', async (c) => {
+  const db  = c.env.DB
+  const env = c.env as any
+  const { to, message } = await c.req.json() as any
+  if (!to) return c.json({ error: 'to required' }, 400)
+  const result = await sendWorkerSms(env, to, message || '✅ ClockInProof SMS test — platform messaging is working!')
+  return c.json(result.sent ? { success: true } : { success: false, error: result.error })
+})
+
+// POST /api/test/email  — Super admin test endpoint to verify Resend is working
+app.post('/api/test/email', async (c) => {
+  const env = c.env as any
+  const { to } = await c.req.json() as any
+  if (!to) return c.json({ error: 'to required' }, 400)
+  const resendKey  = (env.RESEND_API_KEY || '').trim()
+  const resendFrom = (env.RESEND_FROM    || 'ClockInProof <alerts@clockinproof.com>').trim()
+  if (!resendKey) return c.json({ success: false, error: 'RESEND_API_KEY not configured' })
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: resendFrom,
+        to: [to],
+        subject: '✅ ClockInProof — Platform Email Test',
+        html: '<p style="font-family:sans-serif;padding:24px"><strong>✅ ClockInProof platform email is working!</strong><br><br>This is a test from the Super Admin platform settings.</p>'
+      })
+    })
+    if (res.ok) return c.json({ success: true })
+    const err = await res.json() as any
+    return c.json({ success: false, error: err?.message || `Resend error ${res.status}` })
+  } catch(e: any) {
+    return c.json({ success: false, error: e.message })
+  }
 })
 
 // POST /api/twilio/webhook  — inbound SMS from workers (Twilio calls this URL)
@@ -7376,7 +7427,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260302l"></script>
+<script src="/static/worker.js?v=20260303a"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -8496,15 +8547,15 @@ function getAdminHTML(): string {
         </div>
       </div>
 
-      <!-- Override Notifications -->
+      <!-- Notifications — Platform-managed, no tenant setup needed -->
       <div class="space-y-4">
         <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2 flex items-center gap-2">
-          <i class="fas fa-bell text-amber-500"></i> Override Notifications
-          <span class="text-xs font-normal text-gray-400 normal-case tracking-normal">Get alerted the moment a worker is blocked</span>
+          <i class="fas fa-bell text-amber-500"></i> Notifications
+          <span class="text-xs font-normal text-gray-400 normal-case tracking-normal">Alert channels for overrides, auto clock-outs &amp; dispatches</span>
         </h4>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <!-- Email notification -->
+          <!-- Email toggle -->
           <div class="bg-amber-50 border border-amber-200 rounded-2xl p-4">
             <div class="flex items-center justify-between mb-3">
               <div class="flex items-center gap-2">
@@ -8516,11 +8567,11 @@ function getAdminHTML(): string {
                 <div class="w-10 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
               </label>
             </div>
-            <p class="text-xs text-gray-500 mb-2">Sends a rich HTML email with map link, worker details, and a direct approval link.</p>
-            <p class="text-xs text-green-600 font-medium"><i class="fas fa-check-circle mr-1"></i>Uses Resend (already configured for weekly reports)</p>
+            <p class="text-xs text-gray-500 mb-2">Rich HTML email with map link, worker details, and a direct approval link.</p>
+            <p class="text-xs text-green-600 font-medium"><i class="fas fa-check-circle mr-1"></i>Included — powered by ClockInProof platform</p>
           </div>
 
-          <!-- SMS notification -->
+          <!-- SMS toggle -->
           <div class="bg-blue-50 border border-blue-200 rounded-2xl p-4">
             <div class="flex items-center justify-between mb-3">
               <div class="flex items-center gap-2">
@@ -8532,54 +8583,26 @@ function getAdminHTML(): string {
                 <div class="w-10 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500"></div>
               </label>
             </div>
-            <p class="text-xs text-gray-500 mb-2">Sends an SMS with a deep-link to the Overrides tab. Works on Android &amp; iOS.</p>
-            <p class="text-xs text-amber-600 font-medium"><i class="fas fa-exclamation-circle mr-1"></i>Requires Twilio credentials (see below)</p>
+            <p class="text-xs text-gray-500 mb-2">Instant SMS with a deep-link to the Overrides tab. Works on Android &amp; iOS.</p>
+            <p class="text-xs text-green-600 font-medium"><i class="fas fa-check-circle mr-1"></i>Included — powered by ClockInProof platform</p>
           </div>
         </div>
 
-        <!-- Admin phone number -->
+        <!-- Admin phone number (tenant sets their own) -->
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">
-            Admin Phone Number <span class="text-gray-400 font-normal">(for SMS — include country code e.g. +1 613 555 0100)</span>
+            Admin Phone Number <span class="text-gray-400 font-normal">(for SMS alerts — include country code e.g. +1 613 555 0100)</span>
           </label>
           <input id="s-admin-phone" type="tel" placeholder="+1 613 555 0100"
             class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-400 text-sm"/>
+          <p class="text-xs text-gray-400 mt-1"><i class="fas fa-info-circle mr-1"></i>SMS alerts for overrides, auto clock-outs, and dispatches are sent to this number.</p>
         </div>
 
-        <!-- Twilio credentials (collapsible) -->
-        <details class="bg-gray-50 border border-gray-200 rounded-2xl overflow-hidden">
-          <summary class="flex items-center gap-2 cursor-pointer px-4 py-3 font-medium text-sm text-gray-700 hover:bg-gray-100">
-            <i class="fas fa-key text-gray-400"></i> Twilio SMS Setup
-            <span class="text-xs text-gray-400 font-normal ml-auto">Free trial gives ~1000 texts</span>
-          </summary>
-          <div class="px-4 pb-4 space-y-3 border-t border-gray-200 pt-3">
-            <div class="bg-blue-50 rounded-xl p-3 text-xs text-blue-700 mb-3">
-              <strong>Setup in 3 steps:</strong>
-              <ol class="list-decimal list-inside mt-1 space-y-1">
-                <li>Sign up free at <a href="https://twilio.com" target="_blank" class="underline">twilio.com</a> — get $15 credit (~1000 SMS)</li>
-                <li>Copy your Account SID, Auth Token, and free phone number from the Twilio Console</li>
-                <li>In production: add <code class="bg-white px-1 rounded">TWILIO_ACCOUNT_SID</code>, <code class="bg-white px-1 rounded">TWILIO_AUTH_TOKEN</code>, <code class="bg-white px-1 rounded">TWILIO_FROM_NUMBER</code> as Cloudflare secrets — or enter them below for local dev</li>
-              </ol>
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-gray-600 mb-1">Account SID</label>
-              <input id="s-twilio-sid" type="text" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                class="w-full px-3 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-400"/>
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-gray-600 mb-1">Auth Token</label>
-              <input id="s-twilio-token" type="password" placeholder="Your Twilio Auth Token"
-                class="w-full px-3 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-400"/>
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-gray-600 mb-1">From Number (Twilio number)</label>
-              <input id="s-twilio-from" type="tel" placeholder="+15005550006"
-                class="w-full px-3 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-400"/>
-            </div>
-            <p class="text-xs text-gray-400">Note: For production deployment, use Cloudflare secrets instead of saving here for security.</p>
-          </div>
-        </details>
-
+        <!-- Info note -->
+        <div class="bg-indigo-50 border border-indigo-100 rounded-xl p-3 text-xs text-indigo-600 flex items-start gap-2">
+          <i class="fas fa-shield-halved text-indigo-400 mt-0.5 flex-shrink-0"></i>
+          <span>All messaging is handled by the ClockInProof platform — no external accounts or API keys required. Email and SMS are included in your plan.</span>
+        </div>
       </div>
 
       <div class="mt-6 flex gap-3">
@@ -10357,7 +10380,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260302i"></script>
+<script src="/static/admin.js?v=20260303a"></script>
 
 </body>
 </html>`
@@ -11184,6 +11207,78 @@ select.input option{background:#1e293b}
             </div>
           </div>
         </div>
+
+        <!-- TWILIO SMS CREDENTIALS -->
+        <div class="card" style="padding:20px">
+          <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:4px">
+            <i class="fas fa-sms" style="color:#818cf8;margin-right:6px"></i>TWILIO SMS
+          </h3>
+          <p style="font-size:11px;color:#475569;margin-bottom:14px">Platform SMS credentials — shared across all tenants. Stored as Cloudflare secrets in production.</p>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Account SID</label>
+              <input type="text" id="sp-twilio-sid" class="input" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
+              <p style="font-size:10px;color:#475569;margin-top:3px">Set as <code style="background:#0f172a;padding:1px 4px;border-radius:3px;color:#a5b4fc">TWILIO_ACCOUNT_SID</code> Cloudflare secret</p>
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Auth Token</label>
+              <input type="password" id="sp-twilio-token" class="input" placeholder="Your Twilio Auth Token">
+              <p style="font-size:10px;color:#475569;margin-top:3px">Set as <code style="background:#0f172a;padding:1px 4px;border-radius:3px;color:#a5b4fc">TWILIO_AUTH_TOKEN</code> Cloudflare secret</p>
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">From Number</label>
+              <input type="tel" id="sp-twilio-from" class="input" placeholder="+16135550100">
+              <p style="font-size:10px;color:#475569;margin-top:3px">Set as <code style="background:#0f172a;padding:1px 4px;border-radius:3px;color:#a5b4fc">TWILIO_FROM_NUMBER</code> Cloudflare secret</p>
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Messaging Service SID <span style="font-weight:400;text-transform:none">(optional — overrides From Number)</span></label>
+              <input type="text" id="sp-twilio-msgsvc" class="input" placeholder="MGxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
+              <p style="font-size:10px;color:#475569;margin-top:3px">Set as <code style="background:#0f172a;padding:1px 4px;border-radius:3px;color:#a5b4fc">TWILIO_MESSAGING_SERVICE</code> Cloudflare secret</p>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:4px">
+              <button class="btn btn-primary" onclick="savePlatformTwilio()"><i class="fas fa-save"></i> Save to DB</button>
+              <button class="btn btn-ghost" onclick="testPlatformSms()"><i class="fas fa-paper-plane"></i> Send Test SMS</button>
+            </div>
+            <div style="background:#0f172a;border:1px solid #1e293b;border-radius:6px;padding:10px;font-size:11px;color:#64748b">
+              <strong style="color:#94a3b8">Production setup:</strong> Add these as Cloudflare Pages secrets via the dashboard or wrangler CLI.
+              They take priority over anything saved in the database.
+              <br><br>
+              <code style="color:#a5b4fc">wrangler pages secret put TWILIO_ACCOUNT_SID</code><br>
+              <code style="color:#a5b4fc">wrangler pages secret put TWILIO_AUTH_TOKEN</code><br>
+              <code style="color:#a5b4fc">wrangler pages secret put TWILIO_FROM_NUMBER</code>
+            </div>
+            <p id="sp-twilio-status" style="font-size:12px;color:#34d399;display:none"></p>
+          </div>
+        </div>
+
+        <!-- RESEND EMAIL CREDENTIALS -->
+        <div class="card" style="padding:20px">
+          <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:4px">
+            <i class="fas fa-envelope" style="color:#818cf8;margin-right:6px"></i>RESEND EMAIL
+          </h3>
+          <p style="font-size:11px;color:#475569;margin-bottom:14px">Platform email credentials — powers all alerts, weekly reports, and invite emails.</p>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Resend API Key</label>
+              <input type="password" id="sp-resend-key" class="input" placeholder="re_xxxxxxxxxxxxxxxxxxxx">
+              <p style="font-size:10px;color:#475569;margin-top:3px">Set as <code style="background:#0f172a;padding:1px 4px;border-radius:3px;color:#a5b4fc">RESEND_API_KEY</code> Cloudflare secret</p>
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">From Address</label>
+              <input type="email" id="sp-resend-from" class="input" placeholder="alerts@clockinproof.com">
+              <p style="font-size:10px;color:#475569;margin-top:3px">The "From" address on all platform emails. Must be a verified Resend domain.</p>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:4px">
+              <button class="btn btn-primary" onclick="savePlatformResend()"><i class="fas fa-save"></i> Save</button>
+              <button class="btn btn-ghost" onclick="testPlatformEmail()"><i class="fas fa-paper-plane"></i> Send Test Email</button>
+            </div>
+            <div style="background:#0f172a;border:1px solid #1e293b;border-radius:6px;padding:10px;font-size:11px;color:#64748b">
+              <strong style="color:#94a3b8">Production setup:</strong><br>
+              <code style="color:#a5b4fc">wrangler pages secret put RESEND_API_KEY</code>
+            </div>
+            <p id="sp-resend-status" style="font-size:12px;color:#34d399;display:none"></p>
+          </div>
+        </div>
         <!-- APP URLs / DOMAIN CONFIGURATION -->
         <div class="card" style="padding:20px;grid-column:1/-1">
           <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:14px">
@@ -11938,7 +12033,21 @@ async function loadPlatformUrls() {
     const adminEl = document.getElementById('sp-admin-host')
     if (appEl)   appEl.value   = s.app_host   || ''
     if (adminEl) adminEl.value = s.admin_host  || ''
-  } catch(e) { showToast('Failed to load URLs', true) }
+    // Load Twilio DB values (Cloudflare secrets take priority at runtime)
+    const sidEl    = document.getElementById('sp-twilio-sid')
+    const tokenEl  = document.getElementById('sp-twilio-token')
+    const fromEl   = document.getElementById('sp-twilio-from')
+    const msgsvcEl = document.getElementById('sp-twilio-msgsvc')
+    if (sidEl)    sidEl.value    = s.twilio_account_sid       || ''
+    if (tokenEl)  tokenEl.value  = s.twilio_auth_token        || ''
+    if (fromEl)   fromEl.value   = s.twilio_from_number       || ''
+    if (msgsvcEl) msgsvcEl.value = s.twilio_messaging_service || ''
+    // Load Resend DB values
+    const resendKeyEl  = document.getElementById('sp-resend-key')
+    const resendFromEl = document.getElementById('sp-resend-from')
+    if (resendKeyEl)  resendKeyEl.value  = s.resend_api_key  || ''
+    if (resendFromEl) resendFromEl.value = s.resend_from     || ''
+  } catch(e) { showToast('Failed to load platform settings', true) }
 }
 
 async function savePlatformUrls() {
@@ -11946,7 +12055,6 @@ async function savePlatformUrls() {
   const adminHost = (document.getElementById('sp-admin-host')?.value || '').trim()
   const statusEl  = document.getElementById('sp-url-status')
   try {
-    // Read current settings first so we don't wipe other fields
     const d = await api('/api/settings')
     const current = d.settings || {}
     const payload = { ...current, app_host: appHost, admin_host: adminHost }
@@ -11960,6 +12068,85 @@ async function savePlatformUrls() {
     showToast('✅ Platform URLs saved')
     setTimeout(() => { if (statusEl) statusEl.style.display = 'none' }, 4000)
   } catch(e) { showToast('❌ Failed to save URLs', true) }
+}
+
+async function savePlatformTwilio() {
+  const sid    = (document.getElementById('sp-twilio-sid')?.value    || '').trim()
+  const token  = (document.getElementById('sp-twilio-token')?.value  || '').trim()
+  const from   = (document.getElementById('sp-twilio-from')?.value   || '').trim()
+  const msgsvc = (document.getElementById('sp-twilio-msgsvc')?.value || '').trim()
+  const statusEl = document.getElementById('sp-twilio-status')
+  try {
+    const d = await api('/api/settings')
+    const current = d.settings || {}
+    const payload = { ...current,
+      twilio_account_sid: sid,
+      twilio_auth_token: token,
+      twilio_from_number: from,
+      twilio_messaging_service: msgsvc
+    }
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!res.ok) throw new Error('Save failed')
+    if (statusEl) { statusEl.textContent = '✓ Twilio credentials saved to DB (Cloudflare secrets override these at runtime)'; statusEl.style.display = 'block' }
+    showToast('✅ Twilio credentials saved')
+    setTimeout(() => { if (statusEl) statusEl.style.display = 'none' }, 5000)
+  } catch(e) { showToast('❌ Failed to save Twilio credentials', true) }
+}
+
+async function savePlatformResend() {
+  const key  = (document.getElementById('sp-resend-key')?.value  || '').trim()
+  const from = (document.getElementById('sp-resend-from')?.value || '').trim()
+  const statusEl = document.getElementById('sp-resend-status')
+  try {
+    const d = await api('/api/settings')
+    const current = d.settings || {}
+    const payload = { ...current, resend_api_key: key, resend_from: from }
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!res.ok) throw new Error('Save failed')
+    if (statusEl) { statusEl.textContent = '✓ Resend config saved (RESEND_API_KEY secret overrides at runtime)'; statusEl.style.display = 'block' }
+    showToast('✅ Resend config saved')
+    setTimeout(() => { if (statusEl) statusEl.style.display = 'none' }, 5000)
+  } catch(e) { showToast('❌ Failed to save Resend config', true) }
+}
+
+async function testPlatformSms() {
+  const adminPhone = prompt('Send test SMS to which number? (include + country code)')
+  if (!adminPhone) return
+  showToast('📤 Sending test SMS...')
+  try {
+    const res = await fetch('/api/test/sms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: adminPhone, message: '✅ ClockInProof platform SMS test — it works!' })
+    })
+    const d = await res.json()
+    if (d.success) showToast('✅ Test SMS sent to ' + adminPhone)
+    else showToast('❌ ' + (d.error || 'SMS failed'), true)
+  } catch(e) { showToast('❌ Test SMS failed', true) }
+}
+
+async function testPlatformEmail() {
+  const toEmail = prompt('Send test email to which address?')
+  if (!toEmail) return
+  showToast('📤 Sending test email...')
+  try {
+    const res = await fetch('/api/test/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: toEmail })
+    })
+    const d = await res.json()
+    if (d.success) showToast('✅ Test email sent to ' + toEmail)
+    else showToast('❌ ' + (d.error || 'Email failed'), true)
+  } catch(e) { showToast('❌ Test email failed', true) }
 }
 
 // ── Support Tickets ───────────────────────────────────────────────────────────
