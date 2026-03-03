@@ -438,6 +438,8 @@ async function ensureSchema(db: D1Database) {
     `ALTER TABLE job_sites ADD COLUMN encircle_synced_at DATETIME`,
     `ALTER TABLE job_sites ADD COLUMN encircle_status TEXT`,
     `ALTER TABLE encircle_jobs ADD COLUMN manually_closed INTEGER DEFAULT 0`,
+    `ALTER TABLE encircle_jobs ADD COLUMN cip_closed_at DATETIME`,
+    `ALTER TABLE encircle_jobs ADD COLUMN cip_closed_note TEXT`,
     `ALTER TABLE job_sites ADD COLUMN manually_closed INTEGER DEFAULT 0`,
     `CREATE TABLE IF NOT EXISTS encircle_settings (
       id INTEGER PRIMARY KEY,
@@ -3204,9 +3206,19 @@ async function runEncircleSync(db: D1Database): Promise<{
         if (geo) { lat = geo.lat; lng = geo.lng }
       } catch (_) {}
 
-      // ── 1. Upsert into encircle_jobs (full contact data) — skip if manually closed ──
-      const existingJob = await db.prepare(`SELECT manually_closed FROM encircle_jobs WHERE encircle_claim_id=?`).bind(encId).first() as any
-      if (existingJob?.manually_closed) continue
+      // ── 1. Upsert into encircle_jobs ─────────────────────────────────────────
+      // CIP IS THE SOURCE OF TRUTH — never overwrite manually_closed or status
+      // if the admin has explicitly closed this job in CIP
+      const existingJob = await db.prepare(
+        `SELECT manually_closed, status FROM encircle_jobs WHERE encircle_claim_id=?`
+      ).bind(encId).first() as any
+
+      // GUARDRAIL: skip this job entirely if manually closed in CIP
+      // Even if Encircle keeps sending it — CIP decision wins
+      if (existingJob?.manually_closed) {
+        encircleIds.push(encId) // still track ID so deactivation doesn't flip it
+        continue
+      }
 
       await db.prepare(`
         INSERT INTO encircle_jobs (
@@ -3235,7 +3247,8 @@ async function runEncircleSync(db: D1Database): Promise<{
           emergency_estimate=excluded.emergency_estimate,
           repair_estimate=excluded.repair_estimate,
           permalink_url=excluded.permalink_url,
-          status='active',
+          -- GUARDRAIL: only update status to 'active' if NOT manually closed
+          status = CASE WHEN manually_closed = 1 THEN status ELSE 'active' END,
           synced_at=CURRENT_TIMESTAMP
       `).bind(
         encId,
@@ -3264,7 +3277,7 @@ async function runEncircleSync(db: D1Database): Promise<{
         `SELECT id, name, lat, lng, manually_closed FROM job_sites WHERE encircle_job_id = ?`
       ).bind(encId).first() as any
 
-      // Never re-activate a job the admin manually closed
+      // GUARDRAIL: CIP decision wins — never re-activate a manually closed job site
       if (existing?.manually_closed) continue
 
       if (!existing) {
@@ -3284,14 +3297,20 @@ async function runEncircleSync(db: D1Database): Promise<{
       }
     }
 
-    // ── Deactivate jobs no longer in Encircle (removed or closed) ────────────
+    // ── Deactivate jobs no longer returned by Encircle at all ─────────────────
+    // GUARDRAIL: never touch manually_closed jobs — CIP owns their state
     if (encircleIds.length > 0) {
       const ph = encircleIds.map(() => '?').join(',')
       const deactivateResult = await db.prepare(
-        `UPDATE job_sites SET active=0, encircle_status='Closed' WHERE encircle_job_id IS NOT NULL AND encircle_job_id NOT IN (${ph})`
+        `UPDATE job_sites SET active=0, encircle_status='Closed'
+         WHERE encircle_job_id IS NOT NULL
+         AND manually_closed = 0
+         AND encircle_job_id NOT IN (${ph})`
       ).bind(...encircleIds).run()
       await db.prepare(
-        `UPDATE encircle_jobs SET status='closed' WHERE encircle_claim_id NOT IN (${ph})`
+        `UPDATE encircle_jobs SET status='closed'
+         WHERE manually_closed = 0
+         AND encircle_claim_id NOT IN (${ph})`
       ).bind(...encircleIds).run()
       closed = (deactivateResult.meta?.changes || 0) + skippedClosed
     } else {
@@ -3401,23 +3420,42 @@ app.delete('/api/encircle/settings', async (c) => {
   return c.json({ success: true, message: 'Encircle disconnected. Synced job sites have been deactivated.' })
 })
 
-// POST /api/encircle/jobs/:claimId/close — manually close a job (won't re-sync)
+// POST /api/encircle/jobs/:claimId/close — CIP manually closes job (survives all future syncs)
 app.post('/api/encircle/jobs/:claimId/close', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
   const claimId = c.req.param('claimId')
-  await db.prepare(`UPDATE encircle_jobs SET status='closed', manually_closed=1 WHERE encircle_claim_id=?`).bind(claimId).run()
-  await db.prepare(`UPDATE job_sites SET active=0, manually_closed=1, encircle_status='Closed' WHERE encircle_job_id=?`).bind(claimId).run()
+  const body = await c.req.json().catch(() => ({})) as { note?: string }
+  const note = body.note || null
+  // Set manually_closed=1 + record who closed it and when (full audit trail)
+  await db.prepare(`
+    UPDATE encircle_jobs
+    SET status='closed', manually_closed=1, cip_closed_at=CURRENT_TIMESTAMP, cip_closed_note=?
+    WHERE encircle_claim_id=?
+  `).bind(note, claimId).run()
+  await db.prepare(`
+    UPDATE job_sites SET active=0, manually_closed=1, encircle_status='CIP-Closed'
+    WHERE encircle_job_id=?
+  `).bind(claimId).run()
   return c.json({ success: true })
 })
 
-// POST /api/encircle/jobs/:claimId/reopen — reopen a manually closed job
+// POST /api/encircle/jobs/:claimId/reopen — CIP admin reopens a manually closed job
+// This is the intentional override \u2014 admin explicitly re-activates
 app.post('/api/encircle/jobs/:claimId/reopen', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
   const claimId = c.req.param('claimId')
-  await db.prepare(`UPDATE encircle_jobs SET status='active', manually_closed=0 WHERE encircle_claim_id=?`).bind(claimId).run()
-  await db.prepare(`UPDATE job_sites SET active=1, manually_closed=0, encircle_status='active' WHERE encircle_job_id=?`).bind(claimId).run()
+  // Clear manually_closed so next sync can manage it normally again
+  await db.prepare(`
+    UPDATE encircle_jobs
+    SET status='active', manually_closed=0, cip_closed_at=NULL, cip_closed_note=NULL
+    WHERE encircle_claim_id=?
+  `).bind(claimId).run()
+  await db.prepare(`
+    UPDATE job_sites SET active=1, manually_closed=0, encircle_status='active'
+    WHERE encircle_job_id=?
+  `).bind(claimId).run()
   return c.json({ success: true })
 })
 
@@ -11034,7 +11072,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260303f"></script>
+<script src="/static/admin.js?v=20260303g"></script>
 
 </body>
 </html>`

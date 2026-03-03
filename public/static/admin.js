@@ -5775,13 +5775,17 @@ function renderEncircleCards(jobs) {
       : ''
 
     return `
-    <div class="bg-white rounded-2xl shadow-sm border ${j.status === 'closed' ? 'border-gray-200 opacity-70' : 'border-gray-100 hover:shadow-md hover:border-sky-200'} transition-all duration-200 overflow-hidden cursor-pointer" onclick="openEncircleCardDetail('${claimKey}')">
+    <div class="bg-white rounded-2xl shadow-sm border ${j.status === 'closed' ? 'border-red-100 opacity-80' : 'border-gray-100 hover:shadow-md hover:border-sky-200'} transition-all duration-200 overflow-hidden cursor-pointer" onclick="openEncircleCardDetail('${claimKey}')">
 
       ${j.status === 'closed' ? `
-      <!-- Closed banner -->
-      <div class="flex items-center gap-2 px-4 py-1.5 bg-gray-100 border-b border-gray-200">
-        <i class="fas fa-archive text-gray-400 text-xs"></i>
-        <span class="text-xs font-bold text-gray-500 uppercase tracking-wide">Closed / Archived</span>
+      <!-- CIP-Closed banner — this job was closed inside ClockInProof -->
+      <div class="flex items-center justify-between px-4 py-1.5 bg-red-50 border-b border-red-100">
+        <div class="flex items-center gap-2">
+          <i class="fas fa-lock text-red-400 text-xs"></i>
+          <span class="text-xs font-bold text-red-500 uppercase tracking-wide">Closed in CIP</span>
+          ${j.cip_closed_note ? `<span class="text-[10px] text-red-400 italic">— ${escHtml(j.cip_closed_note)}</span>` : ''}
+        </div>
+        ${j.cip_closed_at ? `<span class="text-[10px] text-red-300">${new Date(j.cip_closed_at).toLocaleDateString('en-CA',{month:'short',day:'numeric'})}</span>` : ''}
       </div>` : ''}
 
       <!-- ── Card Top Bar ── -->
