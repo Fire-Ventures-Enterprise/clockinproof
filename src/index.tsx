@@ -2882,6 +2882,138 @@ app.post('/api/test/email', async (c) => {
   }
 })
 
+// ─── STRIPE CHECKOUT + BILLING ────────────────────────────────────────────────
+
+// POST /api/stripe/checkout — create a Stripe Checkout Session and return the URL
+app.post('/api/stripe/checkout', async (c) => {
+  const db  = c.env.DB
+  const env = c.env
+  const stripeKey = env.STRIPE_SECRET_KEY || ''
+  if (!stripeKey) return c.json({ error: 'Stripe not configured' }, 500)
+
+  const body = await c.req.json() as any
+  const { tenant_id, price_id, email, company_name, slug, plan, success_url, cancel_url } = body
+  if (!price_id || !email || !success_url) return c.json({ error: 'Missing required fields' }, 400)
+
+  try {
+    const params = new URLSearchParams({
+      'mode': 'subscription',
+      'payment_method_types[0]': 'card',
+      'line_items[0][price]': price_id,
+      'line_items[0][quantity]': '1',
+      'customer_email': email,
+      'subscription_data[trial_period_days]': '14',
+      'subscription_data[metadata][tenant_id]': String(tenant_id || ''),
+      'subscription_data[metadata][slug]': slug || '',
+      'subscription_data[metadata][plan]': plan || '',
+      'metadata[tenant_id]': String(tenant_id || ''),
+      'metadata[slug]': slug || '',
+      'metadata[plan]': plan || '',
+      'success_url': success_url + '&session_id={CHECKOUT_SESSION_ID}',
+      'cancel_url': cancel_url || 'https://clockinproof.com/pricing',
+    })
+
+    const res = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${stripeKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString()
+    })
+    const session = await res.json() as any
+    if (!res.ok) return c.json({ error: session.error?.message || 'Stripe error' }, 500)
+    return c.json({ url: session.url, session_id: session.id })
+  } catch (e: any) {
+    return c.json({ error: e.message || 'Checkout failed' }, 500)
+  }
+})
+
+// POST /api/stripe/webhook — Stripe sends events here on subscription changes
+// Configure in Stripe Dashboard: Developers → Webhooks → Add endpoint
+// URL: https://admin.clockinproof.com/api/stripe/webhook
+// Events: checkout.session.completed, customer.subscription.updated, customer.subscription.deleted
+app.post('/api/stripe/webhook', async (c) => {
+  const db  = c.env.DB
+  const env = c.env
+  const stripeKey = env.STRIPE_SECRET_KEY || ''
+  if (!stripeKey) return c.text('Not configured', 500)
+
+  let event: any
+  try {
+    const body = await c.req.text()
+    event = JSON.parse(body)
+  } catch {
+    return c.text('Invalid payload', 400)
+  }
+
+  const type = event.type
+  const obj  = event.data?.object
+
+  if (type === 'checkout.session.completed') {
+    const meta      = obj.metadata || {}
+    const tenantId  = meta.tenant_id
+    const slug      = meta.slug
+    const plan      = meta.plan || 'starter'
+    const custId    = obj.customer
+    const subId     = obj.subscription
+    const planLimits: Record<string, number> = { starter: 10, growth: 25, pro: 999 }
+    const maxWorkers = planLimits[plan] || 10
+
+    if (tenantId) {
+      await db.prepare(`
+        UPDATE tenants SET status='active', stripe_customer_id=?, stripe_subscription_id=?,
+        plan=?, max_workers=?, updated_at=CURRENT_TIMESTAMP WHERE id=?
+      `).bind(custId, subId, plan, maxWorkers, parseInt(tenantId)).run()
+    } else if (slug) {
+      await db.prepare(`
+        UPDATE tenants SET status='active', stripe_customer_id=?, stripe_subscription_id=?,
+        plan=?, max_workers=?, updated_at=CURRENT_TIMESTAMP WHERE slug=?
+      `).bind(custId, subId, plan, maxWorkers, slug).run()
+    }
+  }
+
+  if (type === 'customer.subscription.updated') {
+    const custId = obj.customer
+    const status = obj.status // active, past_due, canceled, trialing
+    const tenantStatus = (status === 'active' || status === 'trialing') ? 'active' : 'suspended'
+    await db.prepare(`UPDATE tenants SET status=?, updated_at=CURRENT_TIMESTAMP WHERE stripe_customer_id=?`)
+      .bind(tenantStatus, custId).run()
+  }
+
+  if (type === 'customer.subscription.deleted') {
+    const custId = obj.customer
+    await db.prepare(`UPDATE tenants SET status='suspended', updated_at=CURRENT_TIMESTAMP WHERE stripe_customer_id=?`)
+      .bind(custId).run()
+  }
+
+  return c.text('ok', 200)
+})
+
+// GET /api/stripe/portal — create a billing portal session for tenant self-service
+app.get('/api/stripe/portal', async (c) => {
+  const db  = c.env.DB
+  const env = c.env
+  const stripeKey = env.STRIPE_SECRET_KEY || ''
+  if (!stripeKey) return c.json({ error: 'Stripe not configured' }, 500)
+
+  const tenant = await db.prepare(`SELECT stripe_customer_id FROM tenants WHERE id=1`).first() as any
+  if (!tenant?.stripe_customer_id) return c.json({ error: 'No billing account found' }, 404)
+
+  const params = new URLSearchParams({
+    customer: tenant.stripe_customer_id,
+    return_url: 'https://admin.clockinproof.com/#settings'
+  })
+  const res = await fetch('https://api.stripe.com/v1/billing_portal/sessions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${stripeKey}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString()
+  })
+  const session = await res.json() as any
+  if (!res.ok) return c.json({ error: session.error?.message || 'Portal error' }, 500)
+  return c.json({ url: session.url })
+})
+
 // POST /api/twilio/webhook  — inbound SMS from workers (Twilio calls this URL)
 // Configure in Twilio Console: Messaging → Phone Number → Incoming messages webhook
 // URL: https://admin.clockinproof.com/api/twilio/webhook  Method: POST
@@ -6149,14 +6281,75 @@ app.get('/signup', (c) => {
   return c.html(getSignupHTML(plan))
 })
 
+// Welcome page — shown after successful Stripe checkout
+app.get('/welcome', async (c) => {
+  const slug = c.req.query('tenant') || ''
+  const adminUrl = slug ? `https://${slug}.clockinproof.com/admin` : 'https://admin.clockinproof.com'
+  const workerUrl = slug ? `https://${slug}.clockinproof.com` : 'https://app.clockinproof.com'
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Welcome to ClockInProof 🎉</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+</head>
+<body class="bg-gray-950 text-white min-h-screen flex items-center justify-center px-4 py-12">
+  <div class="w-full max-w-lg text-center">
+    <div class="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
+      <i class="fas fa-check-circle text-green-400 text-4xl"></i>
+    </div>
+    <h1 class="text-4xl font-black mb-3">You're in! 🎉</h1>
+    <p class="text-gray-300 text-lg mb-8">Your ClockInProof account is live and your 14-day free trial has started.</p>
+
+    <div class="space-y-4 mb-10">
+      <a href="${adminUrl}" class="flex items-center justify-between bg-blue-600 hover:bg-blue-500 rounded-2xl px-6 py-4 transition group">
+        <div class="text-left">
+          <p class="font-bold text-white">Admin Dashboard</p>
+          <p class="text-blue-200 text-sm">${adminUrl}</p>
+        </div>
+        <i class="fas fa-arrow-right text-white group-hover:translate-x-1 transition-transform"></i>
+      </a>
+      <a href="${workerUrl}" class="flex items-center justify-between bg-gray-800 hover:bg-gray-700 border border-white/10 rounded-2xl px-6 py-4 transition group">
+        <div class="text-left">
+          <p class="font-bold text-white">Worker App</p>
+          <p class="text-gray-400 text-sm">${workerUrl}</p>
+        </div>
+        <i class="fas fa-arrow-right text-gray-400 group-hover:translate-x-1 transition-transform"></i>
+      </a>
+    </div>
+
+    <div class="bg-gray-900 border border-white/10 rounded-2xl p-6 text-left mb-8">
+      <h3 class="font-bold text-white mb-4"><i class="fas fa-rocket text-blue-400 mr-2"></i>Quick Start Checklist</h3>
+      <ul class="space-y-3 text-sm text-gray-300">
+        <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold flex-shrink-0">1</span>Log into your admin dashboard with your PIN</li>
+        <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold flex-shrink-0">2</span>Go to Workers → Add your first worker</li>
+        <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold flex-shrink-0">3</span>Go to Job Sites → Add your first job location</li>
+        <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold flex-shrink-0">4</span>Send workers the invite SMS from the Workers tab</li>
+        <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold flex-shrink-0">5</span>Workers clock in from their phone — GPS verified ✅</li>
+      </ul>
+    </div>
+
+    <p class="text-gray-600 text-sm">Questions? Email <a href="mailto:support@clockinproof.com" class="text-blue-400 hover:underline">support@clockinproof.com</a></p>
+  </div>
+</body>
+</html>`)
+})
+
 // ─── HTML Templates ───────────────────────────────────────────────────────────
 
 // ─── SIGNUP PAGE ──────────────────────────────────────────────────────────────
 function getSignupHTML(plan: string): string {
-  const plans: Record<string, { name: string; price: string; workers: string; color: string }> = {
-    starter: { name: 'Starter', price: '$29/mo', workers: 'Up to 10 workers', color: 'indigo' },
-    growth:  { name: 'Growth',  price: '$59/mo', workers: 'Up to 25 workers', color: 'blue' },
-    pro:     { name: 'Pro',     price: '$99/mo', workers: 'Unlimited workers', color: 'purple' },
+  const plans: Record<string, { name: string; price: string; workers: string; color: string; priceId: string; features: string[] }> = {
+    starter: { name: 'Starter', price: '$49 CAD/mo', workers: 'Up to 10 workers', color: 'indigo',
+      priceId: 'price_1T6kPUGsh3cS5lanGXI0jwkd',
+      features: ['GPS clock-in proof', 'Geofence fraud detection', 'Auto clock-out', 'SMS + email alerts', 'Payroll reports'] },
+    growth:  { name: 'Growth',  price: '$99 CAD/mo', workers: 'Up to 25 workers', color: 'blue',
+      priceId: 'price_1T6kSBGsh3cS5lan2HC0PE7W',
+      features: ['Everything in Starter', 'Up to 25 workers', 'Job dispatch SMS', 'Multi-site management', 'QuickBooks export'] },
+    pro:     { name: 'Pro',     price: '$199 CAD/mo', workers: 'Unlimited workers', color: 'purple',
+      priceId: 'price_1T6kShGsh3cS5lan9QDp8aNa',
+      features: ['Everything in Growth', 'Unlimited workers', 'Custom branding', 'Priority support', 'API access'] },
   }
   const p = plans[plan] || plans.growth
   return `<!DOCTYPE html>
@@ -6183,10 +6376,14 @@ function getSignupHTML(plan: string): string {
       <div>
         <p class="font-bold text-blue-300">${p.name} Plan</p>
         <p class="text-sm text-gray-400">${p.workers}</p>
+        <ul class="mt-2 space-y-1">
+          ${p.features.map(f => `<li class="text-xs text-gray-400"><span class="text-green-400 mr-1">✓</span>${f}</li>`).join('')}
+        </ul>
       </div>
-      <div class="text-right">
+      <div class="text-right ml-4 flex-shrink-0">
         <p class="text-2xl font-black text-white">${p.price}</p>
         <p class="text-xs text-gray-500">14-day free trial</p>
+        <a href="#pricing" onclick="history.back()" class="text-xs text-blue-400 hover:underline mt-1 block">Change plan</a>
       </div>
     </div>
 
@@ -6235,15 +6432,18 @@ function getSignupHTML(plan: string): string {
         <button type="submit" id="signup-btn"
           class="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition text-base flex items-center justify-center gap-2">
           <i class="fas fa-rocket"></i>
-          Start 14-Day Free Trial
+          Start 14-Day Free Trial — ${p.price}
         </button>
+        <p class="text-center text-xs text-gray-500 mt-2">
+          <i class="fas fa-lock mr-1"></i>Secured by Stripe · Cancel anytime · No setup fees
+        </p>
       </form>
 
       <p class="text-center text-xs text-gray-600 mt-4">
         By signing up you agree to our
         <a href="/terms" class="text-blue-500 underline">Terms of Service</a> and
         <a href="/privacy" class="text-blue-500 underline">Privacy Policy</a>.
-        <br>No credit card required for trial.
+        <br>Card required to start — 14-day free trial, not charged until trial ends.
       </p>
     </div>
 
@@ -6290,53 +6490,63 @@ function checkSlug(slug) {
   }, 500)
 }
 
+const PLAN = '${plan}'
+const PRICE_ID = '${p.priceId}'
+
 document.getElementById('signup-form').addEventListener('submit', async function(e) {
   e.preventDefault()
   const btn = document.getElementById('signup-btn')
   const errEl = document.getElementById('signup-error')
-  const okEl = document.getElementById('signup-success')
   btn.disabled = true
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating your account…'
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Setting up your account…'
   errEl.classList.add('hidden')
-  okEl.classList.add('hidden')
+
+  const slug        = document.getElementById('f-slug').value.trim()
+  const companyName = document.getElementById('f-company').value.trim()
+  const email       = document.getElementById('f-email').value.trim()
+  const pin         = document.getElementById('f-pin').value.trim()
+  const address     = document.getElementById('f-address').value.trim()
 
   try {
-    const res = await fetch('/api/tenants', {
+    // Step 1: Pre-register tenant
+    const regRes = await fetch('/api/tenants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug, company_name: companyName, company_address: address, admin_email: email, admin_pin: pin, plan: PLAN })
+    })
+    const regData = await regRes.json()
+    if (!regRes.ok) {
+      errEl.textContent = regData.error || 'Signup failed. Please try again.'
+      errEl.classList.remove('hidden')
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-rocket"></i> Start 14-Day Free Trial — ${p.price}'
+      return
+    }
+
+    // Step 2: Create Stripe Checkout session → redirect
+    const checkoutRes = await fetch('/api/stripe/checkout', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        slug: document.getElementById('f-slug').value.trim(),
-        company_name: document.getElementById('f-company').value.trim(),
-        company_address: document.getElementById('f-address').value.trim(),
-        admin_email: document.getElementById('f-email').value.trim(),
-        admin_pin: document.getElementById('f-pin').value.trim(),
-        plan: '${plan}'
+        tenant_id: regData.id, price_id: PRICE_ID, email, company_name: companyName, slug, plan: PLAN,
+        success_url: window.location.origin + '/welcome?tenant=' + slug,
+        cancel_url: window.location.origin + '/signup?plan=' + PLAN
       })
     })
-    const data = await res.json()
-    if (res.ok && data.success) {
-      okEl.innerHTML = \`
-        <p class="font-bold text-green-300 text-base mb-1">🎉 Your account is ready!</p>
-        <p class="mb-2">Your ClockInProof is live at:</p>
-        <a href="\${data.url}/admin" target="_blank"
-          class="block bg-green-800 rounded-lg px-3 py-2 font-mono text-green-200 hover:text-white">
-          \${data.url}/admin
-        </a>
-        <p class="mt-2 text-gray-400 text-xs">Bookmark this link — it's your admin panel.</p>
-      \`
-      okEl.classList.remove('hidden')
-      document.getElementById('signup-form').classList.add('hidden')
+    const checkoutData = await checkoutRes.json()
+    if (checkoutRes.ok && checkoutData.url) {
+      window.location.href = checkoutData.url
     } else {
-      errEl.textContent = data.error || 'Signup failed. Please try again.'
+      errEl.textContent = checkoutData.error || 'Could not start checkout. Please try again.'
       errEl.classList.remove('hidden')
       btn.disabled = false
-      btn.innerHTML = '<i class="fas fa-rocket"></i> Start 14-Day Free Trial'
+      btn.innerHTML = '<i class="fas fa-rocket"></i> Start 14-Day Free Trial — ${p.price}'
     }
   } catch(e) {
     errEl.textContent = 'Network error. Please try again.'
     errEl.classList.remove('hidden')
     btn.disabled = false
-    btn.innerHTML = '<i class="fas fa-rocket"></i> Start 14-Day Free Trial'
+    btn.innerHTML = '<i class="fas fa-rocket"></i> Start 14-Day Free Trial — ${p.price}'
   }
 })
 </script>
@@ -6715,6 +6925,7 @@ function getLandingHTML(): string {
     <div class="text-center mb-14">
       <h2 class="text-4xl font-black mb-3">Simple pricing.<br/><span class="text-blue-400">All features. Every plan.</span></h2>
       <p class="text-gray-400 text-lg">No feature gating. No surprise fees. Pick your team size and go.</p>
+      <p class="text-sm text-gray-500 mt-2">All prices in CAD · 14-day free trial · Cancel anytime</p>
     </div>
     <div class="grid md:grid-cols-3 gap-6">
 
@@ -6722,13 +6933,13 @@ function getLandingHTML(): string {
       <div class="bg-gray-950 border border-white/10 rounded-2xl p-8 flex flex-col">
         <div class="mb-6">
           <div class="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">Starter</div>
-          <div class="text-5xl font-black mb-1">$39<span class="text-xl font-normal text-gray-400">/mo</span></div>
-          <p class="text-gray-400 text-sm">Up to <strong class="text-white">5 workers</strong></p>
+          <div class="text-5xl font-black mb-1">$49<span class="text-xl font-normal text-gray-400"> CAD/mo</span></div>
+          <p class="text-gray-400 text-sm">Up to <strong class="text-white">10 workers</strong></p>
         </div>
         <ul class="space-y-3 text-sm text-gray-300 mb-8 flex-1">
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>GPS clock-in proof</li>
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Geofence fraud detection</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Auto clock-out</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Auto clock-out guardrails</li>
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Live GPS map</li>
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>SMS + email alerts</li>
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Payroll reports + CSV export</li>
@@ -6740,19 +6951,19 @@ function getLandingHTML(): string {
         </a>
       </div>
 
-      <!-- Growing Business — POPULAR -->
+      <!-- Growth — POPULAR -->
       <div class="bg-gray-950 pricing-popular rounded-2xl p-8 flex flex-col">
         <div class="mb-6">
-          <div class="text-xs font-bold text-blue-400 uppercase tracking-widest mb-2">Growing Business</div>
-          <div class="text-5xl font-black text-blue-400 mb-1">$59<span class="text-xl font-normal text-gray-400">/mo</span></div>
-          <p class="text-gray-400 text-sm"><strong class="text-white">6 to 10 workers</strong></p>
+          <div class="text-xs font-bold text-blue-400 uppercase tracking-widest mb-2">Growth</div>
+          <div class="text-5xl font-black text-blue-400 mb-1">$99<span class="text-xl font-normal text-gray-400"> CAD/mo</span></div>
+          <p class="text-gray-400 text-sm">Up to <strong class="text-white">25 workers</strong></p>
         </div>
         <ul class="space-y-3 text-sm text-gray-300 mb-8 flex-1">
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Everything in Starter</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Up to 10 workers</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Priority alert notifications</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Up to 25 workers</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Job dispatch SMS to workers</li>
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Multi-site management</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Accountant email export</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Accountant CSV export</li>
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Worker dispute system</li>
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Calendar view + history</li>
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Custom company branding</li>
@@ -6762,22 +6973,22 @@ function getLandingHTML(): string {
         </a>
       </div>
 
-      <!-- All Grown Up -->
+      <!-- Pro -->
       <div class="bg-gray-950 border border-white/10 rounded-2xl p-8 flex flex-col">
         <div class="mb-6">
-          <div class="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">All Grown Up</div>
-          <div class="text-5xl font-black mb-1">$79<span class="text-xl font-normal text-gray-400">/mo</span></div>
-          <p class="text-gray-400 text-sm"><strong class="text-white">11 to 25 workers</strong></p>
+          <div class="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">Pro</div>
+          <div class="text-5xl font-black mb-1">$199<span class="text-xl font-normal text-gray-400"> CAD/mo</span></div>
+          <p class="text-gray-400 text-sm"><strong class="text-white">Unlimited workers</strong></p>
         </div>
         <ul class="space-y-3 text-sm text-gray-300 mb-8 flex-1">
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Everything in Growing Business</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Up to 25 workers</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Everything in Growth</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Unlimited workers</li>
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>White-label branding</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Custom logo + colors</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Encircle job integration</li>
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Dedicated onboarding call</li>
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Priority support</li>
-          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Encircle job integration</li>
           <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Advanced payroll analytics</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>API access</li>
         </ul>
         <a href="/signup?plan=pro" class="block text-center border border-white/20 hover:border-blue-500 hover:bg-blue-600/10 text-white font-bold py-3.5 rounded-xl transition text-sm">
           Start Free 14-Day Trial
@@ -11253,9 +11464,9 @@ select.input option{background:#1e293b}
             <div>
               <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Plan</label>
               <select id="new-plan" class="input">
-                <option value="starter">Starter — $29/mo (10 workers)</option>
-                <option value="growth" selected>Growth — $59/mo (25 workers)</option>
-                <option value="pro">Pro — $99/mo (Unlimited)</option>
+                <option value="starter">Starter — $49 CAD/mo (10 workers)</option>
+                <option value="growth" selected>Growth — $99 CAD/mo (25 workers)</option>
+                <option value="pro">Pro — $199 CAD/mo (Unlimited)</option>
               </select>
             </div>
             <div>
@@ -11369,7 +11580,7 @@ select.input option{background:#1e293b}
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;max-width:900px">
         <div class="card" style="padding:24px;border-color:#1e3a5f">
           <div class="pill badge-starter" style="margin-bottom:14px">Starter</div>
-          <div style="font-size:36px;font-weight:800;color:#93c5fd">$29<span style="font-size:14px;font-weight:400;color:#64748b">/mo</span></div>
+          <div style="font-size:36px;font-weight:800;color:#93c5fd">$49<span style="font-size:14px;font-weight:400;color:#64748b"> CAD/mo</span></div>
           <div style="font-size:13px;color:#64748b;margin:8px 0 16px">Up to 10 workers</div>
           <ul style="list-style:none;font-size:13px;color:#94a3b8;display:flex;flex-direction:column;gap:6px">
             <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>GPS clock-in/out</li>
@@ -11381,7 +11592,7 @@ select.input option{background:#1e293b}
         <div class="card" style="padding:24px;border-color:#3b1f6b;position:relative">
           <div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:#7c3aed;color:#fff;font-size:10px;font-weight:700;padding:2px 12px;border-radius:20px">POPULAR</div>
           <div class="pill badge-growth" style="margin-bottom:14px">Growth</div>
-          <div style="font-size:36px;font-weight:800;color:#c4b5fd">$59<span style="font-size:14px;font-weight:400;color:#64748b">/mo</span></div>
+          <div style="font-size:36px;font-weight:800;color:#c4b5fd">$99<span style="font-size:14px;font-weight:400;color:#64748b"> CAD/mo</span></div>
           <div style="font-size:13px;color:#64748b;margin:8px 0 16px">Up to 25 workers</div>
           <ul style="list-style:none;font-size:13px;color:#94a3b8;display:flex;flex-direction:column;gap:6px">
             <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Everything in Starter</li>
@@ -11392,7 +11603,7 @@ select.input option{background:#1e293b}
         </div>
         <div class="card" style="padding:24px;border-color:#14532d">
           <div class="pill badge-pro" style="margin-bottom:14px">Pro</div>
-          <div style="font-size:36px;font-weight:800;color:#86efac">$99<span style="font-size:14px;font-weight:400;color:#64748b">/mo</span></div>
+          <div style="font-size:36px;font-weight:800;color:#86efac">$199<span style="font-size:14px;font-weight:400;color:#64748b"> CAD/mo</span></div>
           <div style="font-size:13px;color:#64748b;margin:8px 0 16px">Unlimited workers</div>
           <ul style="list-style:none;font-size:13px;color:#94a3b8;display:flex;flex-direction:column;gap:6px">
             <li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>Everything in Growth</li>
