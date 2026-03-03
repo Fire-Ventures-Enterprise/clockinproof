@@ -4107,6 +4107,88 @@ app.get('/api/super/tenants/:id/impersonate', async (c) => {
   })
 })
 
+// GET /api/super/tenants/:id/profile — full landlord view of one tenant
+app.get('/api/super/tenants/:id/profile', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+
+  const tenant = await db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(id).first() as any
+  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+
+  // Workers breakdown
+  const workers = await db.prepare(`
+    SELECT id, name, phone, status, device_id, created_at,
+      (SELECT COUNT(*) FROM sessions WHERE worker_id = workers.id) as session_count,
+      (SELECT MAX(clock_in) FROM sessions WHERE worker_id = workers.id) as last_session
+    FROM workers WHERE tenant_id = ? ORDER BY name
+  `).bind(id).all()
+
+  // Recent sessions (last 10)
+  const sessions = await db.prepare(`
+    SELECT s.id, s.clock_in, s.clock_out, s.total_hours, s.status,
+           w.name as worker_name, w.phone as worker_phone
+    FROM sessions s
+    JOIN workers w ON s.worker_id = w.id
+    WHERE s.tenant_id = ?
+    ORDER BY s.clock_in DESC LIMIT 10
+  `).bind(id).all()
+
+  // Open support tickets
+  const tickets = await db.prepare(`
+    SELECT id, subject, status, priority, created_at
+    FROM support_tickets WHERE tenant_id = ? AND status != 'closed'
+    ORDER BY created_at DESC
+  `).bind(id).all().catch(() => ({ results: [] }))
+
+  // Device reset requests pending
+  const deviceResets = await db.prepare(`
+    SELECT dr.id, dr.status, dr.created_at, w.name as worker_name, w.phone
+    FROM device_reset_requests dr
+    JOIN workers w ON dr.worker_id = w.id
+    WHERE dr.tenant_id = ? AND dr.status = 'pending'
+  `).bind(id).all().catch(() => ({ results: [] }))
+
+  // Stats
+  const stats = await db.prepare(`
+    SELECT
+      COUNT(CASE WHEN status='active' THEN 1 END)     as active_workers,
+      COUNT(CASE WHEN status='on_holiday' THEN 1 END) as on_holiday,
+      COUNT(CASE WHEN status='sick_leave' THEN 1 END) as sick_leave,
+      COUNT(CASE WHEN status='suspended' THEN 1 END)  as suspended,
+      COUNT(CASE WHEN status='terminated' THEN 1 END) as terminated,
+      COUNT(*) as total_workers
+    FROM workers WHERE tenant_id = ?
+  `).bind(id).first() as any
+
+  const sessionStats = await db.prepare(`
+    SELECT
+      COUNT(CASE WHEN status='clocked_in' THEN 1 END) as currently_in,
+      COUNT(*) as total_sessions,
+      ROUND(SUM(total_hours),1) as total_hours
+    FROM sessions WHERE tenant_id = ?
+  `).bind(id).first() as any
+
+  // Days since created
+  const createdAt = tenant.created_at ? new Date(tenant.created_at) : null
+  const daysSince = createdAt ? Math.floor((Date.now() - createdAt.getTime()) / 86400000) : null
+
+  return c.json({
+    tenant: {
+      ...tenant,
+      days_active: daysSince,
+      admin_url: `https://admin.clockinproof.com/?tenant=${tenant.slug}`,
+      app_url: `https://${tenant.slug}.clockinproof.com`
+    },
+    stats: { ...stats, ...sessionStats },
+    workers: workers.results,
+    recent_sessions: sessions.results,
+    open_tickets: tickets.results,
+    pending_device_resets: deviceResets.results
+  })
+})
+
 // GET /api/super/live — currently clocked-in workers across all tenants
 app.get('/api/super/live', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
@@ -12892,6 +12974,33 @@ select.input option{background:#1e293b}
   </div>
 </div>
 
+<!-- TENANT PROFILE DRAWER -->
+<div id="tenant-profile-overlay" onclick="closeTenantProfile()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200"></div>
+<div id="tenant-profile-drawer" style="display:none;position:fixed;top:0;right:0;width:min(680px,100vw);height:100vh;background:#0f172a;border-left:1px solid #1e293b;z-index:201;overflow-y:auto;box-shadow:-8px 0 40px rgba(0,0,0,0.5)">
+  <!-- Header -->
+  <div style="padding:20px 24px;border-bottom:1px solid #1e293b;display:flex;align-items:center;gap:12px;position:sticky;top:0;background:#0f172a;z-index:10">
+    <div id="tp-logo" style="width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;color:#fff;flex-shrink:0;background:#4f46e5">?</div>
+    <div style="flex:1;min-width:0">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <h2 id="tp-name" style="font-size:18px;font-weight:700;color:#fff;margin:0">Loading...</h2>
+        <span id="tp-status-badge" class="pill">—</span>
+        <span id="tp-plan-badge" class="pill">—</span>
+      </div>
+      <div id="tp-meta" style="color:#64748b;font-size:12px;margin-top:2px">—</div>
+    </div>
+    <div style="display:flex;gap:6px;flex-shrink:0">
+      <a id="tp-admin-link" href="#" target="_blank" class="btn btn-ghost" title="Open Tenant Admin Panel" style="font-size:11px"><i class="fas fa-external-link-alt"></i> Admin</a>
+      <a id="tp-app-link" href="#" target="_blank" class="btn btn-ghost" title="Worker App" style="font-size:11px"><i class="fas fa-mobile-alt"></i> App</a>
+      <button onclick="closeTenantProfile()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:18px;padding:4px 8px">✕</button>
+    </div>
+  </div>
+
+  <!-- Body -->
+  <div id="tp-body" style="padding:20px 24px">
+    <div style="text-align:center;padding:60px;color:#475569"><i class="fas fa-spinner fa-spin"></i> Loading tenant profile...</div>
+  </div>
+</div>
+
 <!-- EDIT TENANT MODAL -->
 <div class="modal-bg" id="edit-modal" onclick="if(event.target===this)closeEditModal()">
   <div class="card" style="padding:24px;width:100%;max-width:520px;max-height:90vh;overflow-y:auto">
@@ -13183,28 +13292,27 @@ function renderTenants(tenants) {
     const pc = t.plan==='pro'?'badge-pro':t.plan==='growth'?'badge-growth':'badge-starter'
     const la = t.last_active ? new Date(t.last_active).toLocaleDateString() : 'Never'
     const cr = t.created_at ? new Date(t.created_at).toLocaleDateString() : '—'
-    return \`<tr>
+    return \`<tr style="cursor:pointer" onclick="openTenantProfile(\${t.id})">
       <td>
         <div style="font-weight:600;color:#e2e8f0">\${t.company_name}</div>
         <div style="color:#475569;font-size:11px">\${t.admin_email||'—'}</div>
         <div style="color:#334155;font-size:10px">Created \${cr}</div>
       </td>
-      <td><a href="https://\${t.slug}.clockinproof.com" target="_blank" style="color:#818cf8;font-size:12px">\${t.slug}</a></td>
+      <td><span style="color:#818cf8;font-size:12px">\${t.slug}</span></td>
       <td><span class="pill \${pc}">\${t.plan||'starter'}</span></td>
       <td><span class="pill \${sc}">\${t.status}</span></td>
       <td style="color:#94a3b8">\${t.worker_count||0} / \${t.max_workers||'?'}</td>
       <td style="color:#94a3b8">\${t.session_count||0}</td>
       <td style="color:#64748b;font-size:12px">\${la}</td>
-      <td style="text-align:right">
+      <td style="text-align:right" onclick="event.stopPropagation()">
         <div style="display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap">
-          <button class="btn btn-ghost" onclick='openEditModal(\${JSON.stringify(t).replace(/'/g,"&#39;")})'  title="Edit"><i class="fas fa-edit"></i></button>
-          <a href="https://admin.clockinproof.com/?tenant=\${t.slug}" target="_blank" class="btn btn-ghost" title="Open Admin Panel"><i class="fas fa-external-link-alt"></i></a>
-          <a href="https://\${t.slug}.clockinproof.com" target="_blank" class="btn btn-ghost" title="Worker App"><i class="fas fa-mobile-alt"></i></a>
+          <button class="btn btn-ghost" onclick='openEditModal(\${JSON.stringify(t).replace(/'/g,"&#39;")})' title="Edit"><i class="fas fa-edit"></i></button>
+          <a href="https://admin.clockinproof.com/?tenant=\${t.slug}" target="_blank" class="btn btn-ghost" title="Open Admin Panel" onclick="event.stopPropagation()"><i class="fas fa-external-link-alt"></i></a>
           \${t.status==='active'
-            ? '<button class="btn btn-warning" onclick="suspendTenant('+t.id+')" title="Suspend"><i class="fas fa-pause"></i></button>'
-            : '<button class="btn btn-success" onclick="activateTenant('+t.id+')" title="Activate"><i class="fas fa-play"></i></button>'
+            ? '<button class="btn btn-warning" onclick="event.stopPropagation();suspendTenant('+t.id+')" title="Suspend"><i class="fas fa-pause"></i></button>'
+            : '<button class="btn btn-success" onclick="event.stopPropagation();activateTenant('+t.id+')" title="Activate"><i class="fas fa-play"></i></button>'
           }
-          \${t.id !== 1 ? '<button class="btn btn-danger" data-id="'+t.id+'" data-name="'+encodeURIComponent(t.company_name||'')+'" onclick="deleteTenantBtn(this)" title="Delete / Archive"><i class="fas fa-trash"></i></button>' : ''}
+          \${t.id !== 1 ? '<button class="btn btn-danger" data-id="'+t.id+'" data-name="'+encodeURIComponent(t.company_name||'')+'" onclick="event.stopPropagation();deleteTenantBtn(this)" title="Delete / Archive"><i class="fas fa-trash"></i></button>' : ''}
         </div>
       </td>
     </tr>\`
@@ -13758,6 +13866,197 @@ function showToast(msg, isError=false) {
   t.style.borderColor = isError ? '#dc2626' : '#4f46e5'
   t.style.display = 'block'
   setTimeout(()=>{ t.style.display='none' }, 3500)
+}
+
+// ── Tenant Profile Drawer ────────────────────────────────────────────────────
+let _profileTenantId = null
+
+function openTenantProfile(id) {
+  _profileTenantId = id
+  const overlay = document.getElementById('tenant-profile-overlay')
+  const drawer  = document.getElementById('tenant-profile-drawer')
+  overlay.style.display = 'block'
+  drawer.style.display  = 'block'
+  document.getElementById('tp-body').innerHTML = '<div style="text-align:center;padding:60px;color:#475569"><i class="fas fa-spinner fa-spin"></i> Loading tenant profile...</div>'
+  // Reset header
+  document.getElementById('tp-name').textContent  = 'Loading...'
+  document.getElementById('tp-meta').textContent  = '—'
+  document.getElementById('tp-status-badge').textContent = '—'
+  document.getElementById('tp-plan-badge').textContent   = '—'
+  loadTenantProfile(id)
+}
+
+function closeTenantProfile() {
+  document.getElementById('tenant-profile-overlay').style.display = 'none'
+  document.getElementById('tenant-profile-drawer').style.display  = 'none'
+  _profileTenantId = null
+}
+
+// Close on Escape key
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && _profileTenantId) closeTenantProfile() })
+
+async function loadTenantProfile(id) {
+  try {
+    const d = await api('/api/super/tenants/' + id + '/profile')
+    const t  = d.tenant
+    const st = d.stats || {}
+
+    // ── Header ──
+    const logo = document.getElementById('tp-logo')
+    logo.textContent       = (t.company_name||'?')[0].toUpperCase()
+    logo.style.background  = t.primary_color || '#4f46e5'
+    document.getElementById('tp-name').textContent = t.company_name || '—'
+
+    const stBadge = document.getElementById('tp-status-badge')
+    stBadge.textContent  = t.status || '—'
+    stBadge.className    = 'pill ' + (t.status==='active'?'badge-active':t.status==='trial'?'badge-trial':'badge-suspended')
+
+    const plBadge = document.getElementById('tp-plan-badge')
+    plBadge.textContent  = (t.plan||'starter').toUpperCase()
+    plBadge.className    = 'pill ' + (t.plan==='pro'?'badge-pro':t.plan==='growth'?'badge-growth':'badge-starter')
+
+    const since = t.days_active != null ? t.days_active + ' days active' : ''
+    document.getElementById('tp-meta').textContent = [t.admin_email, since, 'Slug: ' + t.slug].filter(Boolean).join('  ·  ')
+
+    document.getElementById('tp-admin-link').href = t.admin_url || '#'
+    document.getElementById('tp-app-link').href   = t.app_url   || '#'
+
+    // ── Body ──
+    const nowIn    = st.currently_in  || 0
+    const alerts   = (d.pending_device_resets||[]).length + (d.open_tickets||[]).length
+    const alertBadge = alerts > 0 ? \`<span style="background:#dc2626;color:#fff;border-radius:20px;padding:2px 8px;font-size:11px;font-weight:700;margin-left:6px">\${alerts} alert\${alerts!==1?'s':''}</span>\` : ''
+
+    document.getElementById('tp-body').innerHTML = \`
+    <!-- KPI row -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:20px">
+      \${kpiCard('fas fa-users','Workers',\`\${st.total_workers||0} / \${t.max_workers||'∞'}\`,'#6366f1')}
+      \${kpiCard('fas fa-clock','Clocked In Now',nowIn,'#22c55e')}
+      \${kpiCard('fas fa-history','Total Sessions',st.total_sessions||0,'#818cf8')}
+      \${kpiCard('fas fa-hourglass-half','Total Hours',(st.total_hours||0)+'h','#f59e0b')}
+      \${kpiCard('fas fa-calendar-alt','Days Active',t.days_active!=null?t.days_active+'d':'—','#06b6d4')}
+      \${kpiCard('fas fa-bell','Open Alerts',alerts,alerts>0?'#ef4444':'#64748b')}
+    </div>
+
+    <!-- Alerts section -->
+    \${(d.pending_device_resets||[]).length > 0 ? \`
+    <div style="background:#1c0a0a;border:1px solid #dc2626;border-radius:10px;padding:14px 16px;margin-bottom:16px">
+      <div style="color:#fca5a5;font-weight:700;font-size:13px;margin-bottom:8px"><i class="fas fa-mobile-alt"></i> Pending Device Resets</div>
+      \${(d.pending_device_resets).map(r => \`
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #2d0a0a">
+          <div><span style="color:#e2e8f0;font-size:13px">\${r.worker_name}</span> <span style="color:#94a3b8;font-size:11px">\${r.phone}</span></div>
+          <span style="color:#64748b;font-size:11px">\${new Date(r.created_at).toLocaleDateString()}</span>
+        </div>
+      \`).join('')}
+    </div>
+    \` : ''}
+
+    \${(d.open_tickets||[]).length > 0 ? \`
+    <div style="background:#0d1117;border:1px solid #f59e0b;border-radius:10px;padding:14px 16px;margin-bottom:16px">
+      <div style="color:#fcd34d;font-weight:700;font-size:13px;margin-bottom:8px"><i class="fas fa-ticket-alt"></i> Open Support Tickets</div>
+      \${(d.open_tickets).map(tk => \`
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #1a1a0d">
+          <div style="color:#e2e8f0;font-size:13px">\${tk.subject||'No subject'}</div>
+          <span style="background:#374151;color:#fcd34d;border-radius:20px;padding:2px 8px;font-size:10px">\${tk.priority||'normal'}</span>
+        </div>
+      \`).join('')}
+    </div>
+    \` : ''}
+
+    <!-- Worker roster -->
+    <div style="margin-bottom:20px">
+      <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">
+        <i class="fas fa-id-badge"></i> Worker Roster
+        <span style="color:#475569;font-weight:400;text-transform:none;font-size:12px;margin-left:6px">
+          \${st.active_workers||0} active · \${st.on_holiday||0} holiday · \${st.sick_leave||0} sick · \${st.suspended||0} suspended
+        </span>
+      </div>
+      \${(d.workers||[]).length === 0
+        ? '<div style="color:#475569;font-size:13px;padding:12px 0">No workers yet</div>'
+        : \`<div style="background:#0f1a2e;border:1px solid #1e293b;border-radius:10px;overflow:hidden">
+          \${(d.workers).map(w => {
+            const sc2 = w.status==='active'?'#22c55e':w.status==='on_holiday'?'#f59e0b':w.status==='sick_leave'?'#f97316':'#ef4444'
+            const last = w.last_session ? new Date(w.last_session).toLocaleDateString() : 'Never'
+            return \`<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #1e293b">
+              <span style="width:8px;height:8px;border-radius:50%;background:\${sc2};flex-shrink:0"></span>
+              <div style="flex:1;min-width:0">
+                <div style="color:#e2e8f0;font-size:13px;font-weight:600">\${w.name}</div>
+                <div style="color:#64748b;font-size:11px">\${w.phone} · \${w.session_count||0} sessions · Last: \${last}</div>
+              </div>
+              <span style="font-size:11px;color:#475569">\${w.status}</span>
+              \${w.device_id ? '' : '<span style="font-size:10px;color:#f59e0b;background:#1c1400;border:1px solid #f59e0b;border-radius:4px;padding:1px 5px">no device</span>'}
+            </div>\`
+          }).join('')}
+        </div>\`
+      }
+    </div>
+
+    <!-- Recent sessions -->
+    <div style="margin-bottom:20px">
+      <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px"><i class="fas fa-list-alt"></i> Recent Sessions (last 10)</div>
+      \${(d.recent_sessions||[]).length === 0
+        ? '<div style="color:#475569;font-size:13px;padding:12px 0">No sessions yet</div>'
+        : \`<div style="background:#0f1a2e;border:1px solid #1e293b;border-radius:10px;overflow:hidden">
+          \${(d.recent_sessions).map(s => {
+            const ci   = s.clock_in  ? new Date(s.clock_in).toLocaleString()  : '—'
+            const co   = s.clock_out ? new Date(s.clock_out).toLocaleString() : '<span style="color:#22c55e">Active</span>'
+            const hrs  = s.total_hours ? s.total_hours.toFixed(1)+'h' : '—'
+            return \`<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid #1e293b">
+              <div style="flex:1;min-width:0">
+                <div style="color:#e2e8f0;font-size:13px;font-weight:600">\${s.worker_name}</div>
+                <div style="color:#64748b;font-size:11px">In: \${ci}</div>
+              </div>
+              <div style="text-align:right;flex-shrink:0">
+                <div style="font-size:12px;color:#94a3b8">\${hrs}</div>
+                <div style="font-size:10px;color:#475569">Out: \${co}</div>
+              </div>
+            </div>\`
+          }).join('')}
+        </div>\`
+      }
+    </div>
+
+    <!-- Account info -->
+    <div style="background:#0f1a2e;border:1px solid #1e293b;border-radius:10px;padding:16px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px"><i class="fas fa-cog"></i> Account Details</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        \${infoRow('Admin Email', t.admin_email||'—')}
+        \${infoRow('Admin PIN', t.admin_pin ? '••••' : '—')}
+        \${infoRow('Plan', (t.plan||'starter').toUpperCase())}
+        \${infoRow('Max Workers', t.max_workers||'∞')}
+        \${infoRow('Status', t.status||'—')}
+        \${infoRow('Created', t.created_at ? new Date(t.created_at).toLocaleDateString() : '—')}
+        \${infoRow('Primary Color', t.primary_color||'—')}
+        \${infoRow('Subdomain', t.slug)}
+      </div>
+    </div>
+
+    <!-- Quick actions -->
+    <div style="display:flex;gap:8px;flex-wrap:wrap;padding-bottom:24px">
+      <button onclick="closeTenantProfile();openEditModal(\${JSON.stringify(t).replace(/'/g,'&#39;').replace(/\\\\/g,'\\\\\\\\')})" class="btn btn-ghost" style="font-size:12px"><i class="fas fa-edit"></i> Edit Tenant</button>
+      \${t.status==='active'
+        ? '<button onclick="closeTenantProfile();suspendTenant('+t.id+')" class="btn btn-warning" style="font-size:12px"><i class="fas fa-pause"></i> Suspend Tenant</button>'
+        : '<button onclick="closeTenantProfile();activateTenant('+t.id+')" class="btn btn-success" style="font-size:12px"><i class="fas fa-play"></i> Activate Tenant</button>'
+      }
+    </div>
+    \`
+  } catch(e) {
+    document.getElementById('tp-body').innerHTML = '<div style="color:#ef4444;padding:40px;text-align:center"><i class="fas fa-exclamation-triangle"></i> Failed to load profile: ' + e.message + '</div>'
+  }
+}
+
+function kpiCard(icon, label, value, color) {
+  return \`<div style="background:#0f1a2e;border:1px solid #1e293b;border-radius:10px;padding:14px 16px">
+    <div style="color:\${color};font-size:20px;margin-bottom:6px"><i class="\${icon}"></i></div>
+    <div style="font-size:20px;font-weight:700;color:#e2e8f0">\${value}</div>
+    <div style="font-size:11px;color:#64748b;margin-top:2px">\${label}</div>
+  </div>\`
+}
+
+function infoRow(label, value) {
+  return \`<div>
+    <div style="font-size:10px;color:#64748b;margin-bottom:2px">\${label}</div>
+    <div style="font-size:13px;color:#e2e8f0">\${value}</div>
+  </div>\`
 }
 
 </script>
