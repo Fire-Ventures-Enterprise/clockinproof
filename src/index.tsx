@@ -3425,8 +3425,8 @@ app.post('/api/encircle/jobs/:claimId/close', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
   const claimId = c.req.param('claimId')
-  const body = await c.req.json().catch(() => ({})) as { note?: string }
-  const note = body.note || null
+  let note: string | null = null
+  try { const body = await c.req.json(); note = body?.note || null } catch { /* no body is fine */ }
   // Set manually_closed=1 + record who closed it and when (full audit trail)
   await db.prepare(`
     UPDATE encircle_jobs
@@ -11072,7 +11072,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260303g"></script>
+<script src="/static/admin.js?v=20260303h"></script>
 
 </body>
 </html>`

@@ -5878,31 +5878,46 @@ function renderEncircleCards(jobs) {
 // Cache for Encircle tab cards (populated by renderEncircleCards)
 let _encircleJobsCache = []
 
-// Manually close an Encircle job — prevents re-sync from re-activating it
+// Manually close an Encircle job — CIP is source of truth, survives all future syncs
 async function closeEncircleJob(claimId) {
-  if (!confirm('Close this job? It will be hidden from active jobs and won\'t be re-synced from Encircle.')) return
+  if (!confirm('Close this job in CIP?\n\nIt will be removed from active jobs and GPS geofence.\nEncircle will keep syncing but CIP will ignore it.\n\nYou can reopen it anytime.')) return
   try {
-    const res = await fetch(`/api/encircle/jobs/${claimId}/close`, { method: 'POST' })
-    if (res.ok) {
-      showAdminToast('Job closed ✅ — won\'t re-sync', 'success')
-      loadEncircleJobs()
+    const res = await fetch(`/api/encircle/jobs/${claimId}/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: '' })
+    })
+    const data = await res.json().catch(() => ({}))
+    if (res.ok && data.success) {
+      showAdminToast('Job closed in CIP ✅ — protected from re-sync', 'success')
+      loadEncircleStatus()
     } else {
-      showAdminToast('Failed to close job', 'error')
+      showAdminToast('Failed to close job — try again', 'error')
+      console.error('Close failed:', data)
     }
-  } catch(e) { showAdminToast('Connection error', 'error') }
+  } catch(e) {
+    showAdminToast('Connection error — try again', 'error')
+    console.error('closeEncircleJob error:', e)
+  }
 }
 
-// Reopen a manually closed Encircle job
+// Reopen a CIP-closed Encircle job — intentional admin override
 async function reopenEncircleJob(claimId) {
+  if (!confirm('Reopen this job in CIP?\n\nIt will become active again and CIP will sync updates from Encircle.')) return
   try {
-    const res = await fetch(`/api/encircle/jobs/${claimId}/reopen`, { method: 'POST' })
-    if (res.ok) {
-      showAdminToast('Job reopened ✅', 'success')
-      loadEncircleJobs()
+    const res = await fetch(`/api/encircle/jobs/${claimId}/reopen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    })
+    const data = await res.json().catch(() => ({}))
+    if (res.ok && data.success) {
+      showAdminToast('Job reopened ✅ — active and syncing', 'success')
+      loadEncircleStatus()
     } else {
-      showAdminToast('Failed to reopen job', 'error')
+      showAdminToast('Failed to reopen job — try again', 'error')
     }
-  } catch(e) { showAdminToast('Connection error', 'error') }
+  } catch(e) { showAdminToast('Connection error — try again', 'error') }
 }
 
 // Reveal a masked field inside an Encircle card
