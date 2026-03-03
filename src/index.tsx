@@ -459,6 +459,52 @@ async function ensureSchema(db: D1Database) {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_job_sites_encircle ON job_sites(encircle_job_id)`,
 
+    // ── Tax Compliance Module ─────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS tax_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      stripe_charge_id TEXT UNIQUE,
+      date TEXT NOT NULL,
+      description TEXT,
+      usd_amount REAL NOT NULL,
+      cad_amount REAL,
+      exchange_rate REAL,
+      category TEXT DEFAULT 'eci',
+      processor TEXT DEFAULT 'stripe',
+      status TEXT DEFAULT 'pending',
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      reviewed_at DATETIME,
+      reviewed_by TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS tax_exchange_rates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      rate_date TEXT UNIQUE NOT NULL,
+      usd_cad REAL NOT NULL,
+      source TEXT DEFAULT 'bankofcanada',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS tax_deadlines (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      form_type TEXT NOT NULL,
+      due_date TEXT NOT NULL,
+      extended_date TEXT,
+      fiscal_year INTEGER NOT NULL,
+      status TEXT DEFAULT 'pending',
+      filed_date TEXT,
+      filed_by TEXT,
+      notes TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS tax_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      action TEXT NOT NULL,
+      details TEXT,
+      ip_address TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_tax_tx_date ON tax_transactions(date)`,
+    `CREATE INDEX IF NOT EXISTS idx_tax_tx_status ON tax_transactions(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_tax_rates_date ON tax_exchange_rates(rate_date)`,
+
     // ── Encircle full claim data (contact info, notes, etc.) ─────────────────
     `CREATE TABLE IF NOT EXISTS encircle_jobs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4168,8 +4214,337 @@ app.post('/api/super/test-email', async (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ─── SUPPORT TICKET SYSTEM ───────────────────────────────────────────────────
+// ─── TAX COMPLIANCE MODULE (Super Admin only) ────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// GET /api/super/tax/summary — YTD stats + threshold alerts
+app.get('/api/super/tax/summary', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const year = c.req.query('year') || new Date().getFullYear().toString()
+
+  const [ytdRow, monthlyRows, deadlines, latestRate] = await Promise.all([
+    db.prepare(`SELECT
+      COUNT(*) as tx_count,
+      SUM(CASE WHEN usd_amount > 0 THEN usd_amount ELSE 0 END) as gross_usd,
+      SUM(CASE WHEN usd_amount > 0 THEN cad_amount ELSE 0 END) as gross_cad,
+      SUM(CASE WHEN usd_amount < 0 THEN usd_amount ELSE 0 END) as refunds_usd,
+      SUM(CASE WHEN category='fee' THEN ABS(usd_amount) ELSE 0 END) as fees_usd,
+      COUNT(CASE WHEN status='pending' THEN 1 END) as pending_count
+      FROM tax_transactions WHERE strftime('%Y', date) = ?`).bind(year).first(),
+    db.prepare(`SELECT
+      strftime('%Y-%m', date) as month,
+      SUM(CASE WHEN usd_amount > 0 THEN usd_amount ELSE 0 END) as usd_revenue,
+      SUM(CASE WHEN usd_amount > 0 THEN cad_amount ELSE 0 END) as cad_revenue,
+      AVG(exchange_rate) as avg_rate,
+      COUNT(*) as tx_count
+      FROM tax_transactions WHERE strftime('%Y', date) = ?
+      GROUP BY strftime('%Y-%m', date) ORDER BY month`).bind(year).all(),
+    db.prepare(`SELECT * FROM tax_deadlines WHERE fiscal_year = ? ORDER BY due_date`).bind(parseInt(year)).all(),
+    db.prepare(`SELECT usd_cad, rate_date FROM tax_exchange_rates ORDER BY rate_date DESC LIMIT 1`).first()
+  ])
+
+  const ytd = ytdRow as any
+  const grossUsd = ytd?.gross_usd || 0
+  const grossCad = ytd?.gross_cad || 0
+  const t1135_triggered = grossCad >= 100000
+  const fbar_triggered = grossUsd >= 10000
+
+  // Seed default deadlines if none exist
+  if (!(deadlines?.results?.length)) {
+    const yr = parseInt(year)
+    const seeds = [
+      { form: 'Form 5472 + 1120', due: `${yr+1}-04-15`, ext: `${yr+1}-10-15`, yr },
+      { form: 'Form 1040-NR',     due: `${yr+1}-06-15`, ext: `${yr+1}-10-15`, yr },
+      { form: 'FBAR (FinCEN 114)',due: `${yr+1}-04-15`, ext: `${yr+1}-10-15`, yr },
+      { form: 'T1135 (CRA)',       due: `${yr+1}-04-30`, ext: null, yr }
+    ]
+    for (const s of seeds) {
+      await db.prepare(`INSERT OR IGNORE INTO tax_deadlines (form_type, due_date, extended_date, fiscal_year, status) VALUES (?,?,?,?,'pending')`)
+        .bind(s.form, s.due, s.ext, s.yr).run()
+    }
+  }
+
+  await db.prepare(`INSERT INTO tax_audit_log (action, details) VALUES ('view_tax_summary', ?)`)
+    .bind(`Year: ${year}`).run()
+
+  return c.json({
+    year,
+    ytd: {
+      gross_usd: grossUsd,
+      gross_cad: grossCad,
+      refunds_usd: ytd?.refunds_usd || 0,
+      fees_usd: ytd?.fees_usd || 0,
+      net_usd: (grossUsd || 0) + (ytd?.refunds_usd || 0) - (ytd?.fees_usd || 0),
+      tx_count: ytd?.tx_count || 0,
+      pending_count: ytd?.pending_count || 0
+    },
+    alerts: {
+      t1135_triggered,
+      t1135_threshold_cad: 100000,
+      fbar_triggered,
+      fbar_threshold_usd: 10000,
+      t1135_pct: Math.min(100, Math.round((grossCad / 100000) * 100)),
+      fbar_pct: Math.min(100, Math.round((grossUsd / 10000) * 100))
+    },
+    monthly: monthlyRows?.results || [],
+    deadlines: deadlines?.results || [],
+    latest_rate: latestRate || null
+  })
+})
+
+// GET /api/super/tax/transactions — paginated ledger
+app.get('/api/super/tax/transactions', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const year   = c.req.query('year') || new Date().getFullYear().toString()
+  const page   = parseInt(c.req.query('page') || '1')
+  const limit  = 50
+  const offset = (page - 1) * limit
+  const cat    = c.req.query('category') || ''
+  const status = c.req.query('status') || ''
+
+  let where = `WHERE strftime('%Y', date) = ?`
+  const params: any[] = [year]
+  if (cat)    { where += ` AND category = ?`; params.push(cat) }
+  if (status) { where += ` AND status = ?`;   params.push(status) }
+
+  const [rows, totalRow] = await Promise.all([
+    db.prepare(`SELECT * FROM tax_transactions ${where} ORDER BY date DESC LIMIT ? OFFSET ?`)
+      .bind(...params, limit, offset).all(),
+    db.prepare(`SELECT COUNT(*) as cnt FROM tax_transactions ${where}`).bind(...params).first()
+  ])
+
+  return c.json({ transactions: rows?.results || [], total: (totalRow as any)?.cnt || 0, page, limit })
+})
+
+// POST /api/super/tax/transactions — manual entry
+app.post('/api/super/tax/transactions', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const body = await c.req.json() as any
+  const { date, description, usd_amount, category, notes, processor } = body
+
+  // Look up exchange rate for that date
+  const rateRow: any = await db.prepare(
+    `SELECT usd_cad FROM tax_exchange_rates WHERE rate_date <= ? ORDER BY rate_date DESC LIMIT 1`
+  ).bind(date).first()
+  const rate = rateRow?.usd_cad || null
+  const cad_amount = rate ? Math.round(usd_amount * rate * 100) / 100 : null
+
+  const r = await db.prepare(
+    `INSERT INTO tax_transactions (date, description, usd_amount, cad_amount, exchange_rate, category, processor, notes, status)
+     VALUES (?,?,?,?,?,?,?,?,'reconciled')`
+  ).bind(date, description, usd_amount, cad_amount, rate, category||'eci', processor||'manual', notes||null).run()
+
+  await db.prepare(`INSERT INTO tax_audit_log (action, details) VALUES ('add_transaction', ?)`)
+    .bind(`Manual: ${description} USD ${usd_amount}`).run()
+
+  return c.json({ success: true, id: r.meta.last_row_id, cad_amount, exchange_rate: rate })
+})
+
+// DELETE /api/super/tax/transactions/:id
+app.delete('/api/super/tax/transactions/:id', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  await db.prepare(`DELETE FROM tax_transactions WHERE id = ?`).bind(id).run()
+  await db.prepare(`INSERT INTO tax_audit_log (action, details) VALUES ('delete_transaction', ?)`)
+    .bind(`ID: ${id}`).run()
+  return c.json({ success: true })
+})
+
+// POST /api/super/tax/reconcile/:id — mark transaction as reconciled
+app.post('/api/super/tax/reconcile/:id', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const { notes } = await c.req.json() as any
+  await db.prepare(`UPDATE tax_transactions SET status='reconciled', reviewed_at=CURRENT_TIMESTAMP, reviewed_by='super-admin', notes=COALESCE(?,notes) WHERE id=?`)
+    .bind(notes||null, id).run()
+  return c.json({ success: true })
+})
+
+// GET /api/super/tax/rates — exchange rate history
+app.get('/api/super/tax/rates', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const rows = await db.prepare(
+    `SELECT * FROM tax_exchange_rates ORDER BY rate_date DESC LIMIT 90`
+  ).all()
+  return c.json({ rates: rows?.results || [] })
+})
+
+// POST /api/super/tax/rates — manual rate entry or override
+app.post('/api/super/tax/rates', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const { rate_date, usd_cad } = await c.req.json() as any
+  await db.prepare(
+    `INSERT INTO tax_exchange_rates (rate_date, usd_cad, source) VALUES (?,?,'manual')
+     ON CONFLICT(rate_date) DO UPDATE SET usd_cad=excluded.usd_cad, source='manual-override'`
+  ).bind(rate_date, usd_cad).run()
+  await db.prepare(`INSERT INTO tax_audit_log (action, details) VALUES ('set_exchange_rate', ?)`)
+    .bind(`Date: ${rate_date} Rate: ${usd_cad}`).run()
+  return c.json({ success: true })
+})
+
+// POST /api/super/tax/fetch-rate — pull live rate from Bank of Canada
+app.post('/api/super/tax/fetch-rate', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  try {
+    const today = new Date().toISOString().split('T')[0]
+    const res = await fetch(`https://www.bankofcanada.ca/valet/observations/FXUSDCAD/json?start_date=${today}&end_date=${today}`)
+    const data: any = await res.json()
+    const obs = data?.observations?.[0]
+    const rate = obs?.FXUSDCAD?.v ? parseFloat(obs.FXUSDCAD.v) : null
+    if (!rate) return c.json({ error: 'Rate not available yet for today — try after 8 AM ET' }, 404)
+    await db.prepare(
+      `INSERT INTO tax_exchange_rates (rate_date, usd_cad, source) VALUES (?,?,'bankofcanada')
+       ON CONFLICT(rate_date) DO UPDATE SET usd_cad=excluded.usd_cad, source='bankofcanada'`
+    ).bind(today, rate).run()
+    // Backfill CAD amounts for any transactions on this date missing cad_amount
+    await db.prepare(
+      `UPDATE tax_transactions SET cad_amount=ROUND(usd_amount*?,2), exchange_rate=? WHERE date=? AND cad_amount IS NULL`
+    ).bind(rate, rate, today).run()
+    return c.json({ success: true, date: today, rate })
+  } catch (e: any) {
+    return c.json({ error: e.message || 'Failed to fetch rate' }, 500)
+  }
+})
+
+// POST /api/super/tax/sync-stripe — import last 90 days of Stripe charges
+app.post('/api/super/tax/sync-stripe', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const stripeKey = c.env.STRIPE_SECRET_KEY
+  if (!stripeKey) return c.json({ error: 'STRIPE_SECRET_KEY not configured' }, 500)
+
+  try {
+    const since = Math.floor(Date.now() / 1000) - 90 * 86400
+    let added = 0, skipped = 0
+    let url = `https://api.stripe.com/v1/charges?limit=100&created[gte]=${since}&expand[]=data.balance_transaction`
+    let hasMore = true
+
+    while (hasMore) {
+      const res = await fetch(url, { headers: { 'Authorization': `Bearer ${stripeKey}` } })
+      const data: any = await res.json()
+      if (!res.ok) return c.json({ error: data.error?.message || 'Stripe error' }, 500)
+
+      for (const ch of (data.data || [])) {
+        if (ch.status !== 'succeeded') continue
+        const chargeDate = new Date(ch.created * 1000).toISOString().split('T')[0]
+        const usdAmt = ch.amount / 100
+        const feeAmt = ch.balance_transaction?.fee ? ch.balance_transaction.fee / 100 : 0
+
+        // Check for existing rate
+        const rateRow: any = await db.prepare(
+          `SELECT usd_cad FROM tax_exchange_rates WHERE rate_date <= ? ORDER BY rate_date DESC LIMIT 1`
+        ).bind(chargeDate).first()
+        const rate = rateRow?.usd_cad || null
+        const cadAmt = rate ? Math.round(usdAmt * rate * 100) / 100 : null
+
+        // Insert charge (skip if already exists)
+        const existing: any = await db.prepare(
+          `SELECT id FROM tax_transactions WHERE stripe_charge_id = ?`
+        ).bind(ch.id).first()
+        if (!existing) {
+          await db.prepare(
+            `INSERT INTO tax_transactions (stripe_charge_id, date, description, usd_amount, cad_amount, exchange_rate, category, processor, status)
+             VALUES (?,?,?,?,?,?,'eci','stripe','pending')`
+          ).bind(ch.id, chargeDate, ch.description || ch.billing_details?.name || 'Stripe Payment', usdAmt, cadAmt, rate).run()
+          added++
+
+          // Also record the Stripe fee as a separate line
+          if (feeAmt > 0) {
+            await db.prepare(
+              `INSERT OR IGNORE INTO tax_transactions (stripe_charge_id, date, description, usd_amount, cad_amount, exchange_rate, category, processor, status)
+               VALUES (?,?,?,?,?,?,'fee','stripe','reconciled')`
+            ).bind(ch.id + '_fee', chargeDate, 'Stripe Processing Fee', -feeAmt,
+              rate ? Math.round(-feeAmt * rate * 100) / 100 : null, rate).run()
+          }
+        } else { skipped++ }
+      }
+
+      hasMore = data.has_more
+      if (hasMore && data.data?.length) {
+        url = `https://api.stripe.com/v1/charges?limit=100&created[gte]=${since}&starting_after=${data.data[data.data.length-1].id}&expand[]=data.balance_transaction`
+      }
+    }
+
+    await db.prepare(`INSERT INTO tax_audit_log (action, details) VALUES ('stripe_sync', ?)`)
+      .bind(`Added: ${added}, Skipped: ${skipped}`).run()
+
+    return c.json({ success: true, added, skipped })
+  } catch (e: any) {
+    return c.json({ error: e.message || 'Stripe sync failed' }, 500)
+  }
+})
+
+// PUT /api/super/tax/deadlines/:id — mark filed / update status
+app.put('/api/super/tax/deadlines/:id', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const { status, filed_date, filed_by, notes } = await c.req.json() as any
+  await db.prepare(
+    `UPDATE tax_deadlines SET status=COALESCE(?,status), filed_date=COALESCE(?,filed_date), filed_by=COALESCE(?,filed_by), notes=COALESCE(?,notes) WHERE id=?`
+  ).bind(status||null, filed_date||null, filed_by||null, notes||null, id).run()
+  await db.prepare(`INSERT INTO tax_audit_log (action, details) VALUES ('update_deadline', ?)`)
+    .bind(`ID: ${id} Status: ${status}`).run()
+  return c.json({ success: true })
+})
+
+// GET /api/super/tax/export — CSV export
+app.get('/api/super/tax/export', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const year = c.req.query('year') || new Date().getFullYear().toString()
+  const rows = await db.prepare(
+    `SELECT date, description, processor, category, usd_amount, exchange_rate, cad_amount, status, notes
+     FROM tax_transactions WHERE strftime('%Y', date) = ? ORDER BY date`
+  ).bind(year).all()
+
+  const lines = ['Date,Description,Processor,Category,USD Amount,Exchange Rate (USD/CAD),CAD Amount,Status,Notes']
+  for (const r of (rows?.results || []) as any[]) {
+    lines.push([r.date, `"${(r.description||'').replace(/"/g,'""')}"`, r.processor, r.category,
+      r.usd_amount, r.exchange_rate||'', r.cad_amount||'', r.status,
+      `"${(r.notes||'').replace(/"/g,'""')}"`].join(','))
+  }
+
+  await db.prepare(`INSERT INTO tax_audit_log (action, details) VALUES ('export_csv', ?)`)
+    .bind(`Year: ${year}`).run()
+
+  return new Response(lines.join('\n'), {
+    headers: {
+      'Content-Type': 'text/csv',
+      'Content-Disposition': `attachment; filename="cip_tax_${year}.csv"`
+    }
+  })
+})
+
+// GET /api/super/tax/audit-log
+app.get('/api/super/tax/audit-log', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const rows = await db.prepare(
+    `SELECT * FROM tax_audit_log ORDER BY created_at DESC LIMIT 100`
+  ).all()
+  return c.json({ logs: rows?.results || [] })
+})
 
 // Helper: generate ticket number like CIP-2026-0042
 async function generateTicketNumber(db: D1Database): Promise<string> {
@@ -11547,8 +11922,14 @@ select.input option{background:#1e293b}
     <button class="nav-item" id="nav-sessions" onclick="showPage('sessions')">
       <i class="fas fa-clock"></i> All Sessions
     </button>
+
+    <div class="section-header" style="margin-top:8px">Finance</div>
     <button class="nav-item" id="nav-revenue" onclick="showPage('revenue')">
       <i class="fas fa-dollar-sign"></i> Revenue / MRR
+    </button>
+    <button class="nav-item" id="nav-tax" onclick="showPage('tax')">
+      <i class="fas fa-file-invoice-dollar"></i> Tax Compliance
+      <span class="nav-badge" id="tax-alert-badge" style="display:none">!</span>
     </button>
 
     <div class="section-header" style="margin-top:8px">Support</div>
@@ -12186,8 +12567,274 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
+    <!-- ── TAX COMPLIANCE ─────────────────────────────────────────── -->
+    <div class="page" id="page-tax" style="padding:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">
+        <div>
+          <h1 style="font-size:20px;font-weight:800;color:#fff"><i class="fas fa-file-invoice-dollar" style="color:#818cf8;margin-right:8px"></i>Tax Compliance</h1>
+          <p style="color:#64748b;font-size:13px">Wyoming LLC · Canadian-owned · USD→CAD tracking · Form 5472 / T1135 / FBAR</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <select id="tax-year-select" class="input" style="width:100px" onchange="loadTax()">
+            <option value="2026">2026</option>
+            <option value="2025">2025</option>
+            <option value="2024">2024</option>
+          </select>
+          <button class="btn btn-ghost" onclick="syncStripe()" id="stripe-sync-btn"><i class="fas fa-sync"></i> Sync Stripe</button>
+          <button class="btn btn-ghost" onclick="fetchTodayRate()" id="rate-fetch-btn"><i class="fas fa-exchange-alt"></i> Get Today's Rate</button>
+          <a id="tax-export-link" class="btn btn-ghost" href="#"><i class="fas fa-download"></i> Export CSV</a>
+        </div>
+      </div>
+
+      <!-- Alert banners -->
+      <div id="tax-alert-t1135" style="display:none;background:#7c2d12;border:1px solid #c2410c;border-radius:10px;padding:12px 16px;margin-bottom:12px;color:#fed7aa;font-size:13px">
+        <i class="fas fa-exclamation-triangle" style="margin-right:8px;color:#fb923c"></i>
+        <strong>T1135 REQUIRED</strong> — CAD revenue has exceeded $100,000 threshold. You must file T1135 with your Canadian return.
+      </div>
+      <div id="tax-alert-fbar" style="display:none;background:#1e3a5f;border:1px solid #2563eb;border-radius:10px;padding:12px 16px;margin-bottom:16px;color:#bfdbfe;font-size:13px">
+        <i class="fas fa-university" style="margin-right:8px;color:#60a5fa"></i>
+        <strong>FBAR ALERT</strong> — US account/revenue exceeds $10,000 USD. FBAR (FinCEN 114) filing required by April 15.
+      </div>
+
+      <!-- KPI cards -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px">
+        <div class="stat-card">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">YTD Revenue (USD)</div>
+          <div style="font-size:26px;font-weight:800;color:#34d399" id="tax-ytd-usd">—</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">Gross (ECI)</div>
+        </div>
+        <div class="stat-card">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">YTD Revenue (CAD)</div>
+          <div style="font-size:26px;font-weight:800;color:#818cf8" id="tax-ytd-cad">—</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">For CRA reporting</div>
+        </div>
+        <div class="stat-card">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Stripe Fees (USD)</div>
+          <div style="font-size:26px;font-weight:800;color:#f59e0b" id="tax-fees-usd">—</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">Deductible expense</div>
+        </div>
+        <div class="stat-card">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Net Income (USD)</div>
+          <div style="font-size:26px;font-weight:800;color:#e2e8f0" id="tax-net-usd">—</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">After refunds + fees</div>
+        </div>
+        <div class="stat-card">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Today's Rate</div>
+          <div style="font-size:26px;font-weight:800;color:#e2e8f0" id="tax-rate-today">—</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">USD → CAD (BoC)</div>
+        </div>
+        <div class="stat-card">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Pending Review</div>
+          <div style="font-size:26px;font-weight:800;color:#f87171" id="tax-pending-count">—</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">Unreconciled tx</div>
+        </div>
+      </div>
+
+      <!-- Threshold progress bars -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
+        <div class="card" style="padding:14px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+            <span style="font-size:12px;font-weight:700;color:#e2e8f0"><i class="fas fa-maple-leaf" style="color:#f87171;margin-right:6px"></i>T1135 Threshold (CAD $100K)</span>
+            <span style="font-size:12px;color:#94a3b8" id="tax-t1135-label">—</span>
+          </div>
+          <div style="background:#1e293b;border-radius:20px;height:8px;overflow:hidden">
+            <div id="tax-t1135-bar" style="background:#818cf8;height:100%;width:0%;border-radius:20px;transition:width .5s"></div>
+          </div>
+          <div style="font-size:10px;color:#475569;margin-top:4px">T1135 required if CAD income &gt; $100,000 in calendar year</div>
+        </div>
+        <div class="card" style="padding:14px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+            <span style="font-size:12px;font-weight:700;color:#e2e8f0"><i class="fas fa-university" style="color:#60a5fa;margin-right:6px"></i>FBAR Threshold (USD $10K)</span>
+            <span style="font-size:12px;color:#94a3b8" id="tax-fbar-label">—</span>
+          </div>
+          <div style="background:#1e293b;border-radius:20px;height:8px;overflow:hidden">
+            <div id="tax-fbar-bar" style="background:#60a5fa;height:100%;width:0%;border-radius:20px;transition:width .5s"></div>
+          </div>
+          <div style="font-size:10px;color:#475569;margin-top:4px">FBAR required if US account/income exceeded $10,000 USD at any point</div>
+        </div>
+      </div>
+
+      <!-- Tab pills inside tax page -->
+      <div style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap">
+        <button onclick="showTaxTab('monthly')" id="taxtab-monthly" class="btn btn-primary" style="font-size:12px;padding:6px 14px">Monthly Breakdown</button>
+        <button onclick="showTaxTab('ledger')"  id="taxtab-ledger"  class="btn btn-ghost"   style="font-size:12px;padding:6px 14px">Transaction Ledger</button>
+        <button onclick="showTaxTab('deadlines')" id="taxtab-deadlines" class="btn btn-ghost" style="font-size:12px;padding:6px 14px">Deadlines</button>
+        <button onclick="showTaxTab('forms')"   id="taxtab-forms"   class="btn btn-ghost"   style="font-size:12px;padding:6px 14px">Form Worksheets</button>
+        <button onclick="showTaxTab('rates')"   id="taxtab-rates"   class="btn btn-ghost"   style="font-size:12px;padding:6px 14px">Exchange Rates</button>
+        <button onclick="showTaxTab('audit')"   id="taxtab-audit"   class="btn btn-ghost"   style="font-size:12px;padding:6px 14px">Audit Log</button>
+      </div>
+
+      <!-- MONTHLY BREAKDOWN -->
+      <div id="taxtab-monthly-content">
+        <div style="overflow-x:auto">
+          <table class="tbl">
+            <thead>
+              <tr style="background:#0c1322">
+                <th style="text-align:left;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Month</th>
+                <th style="text-align:right;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">USD Revenue</th>
+                <th style="text-align:right;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Avg Rate</th>
+                <th style="text-align:right;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">CAD Equivalent</th>
+                <th style="text-align:right;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Transactions</th>
+              </tr>
+            </thead>
+            <tbody id="tax-monthly-tbody">
+              <tr><td colspan="5" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- TRANSACTION LEDGER -->
+      <div id="taxtab-ledger-content" style="display:none">
+        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+          <select id="tax-cat-filter" class="input" style="width:140px" onchange="loadTaxLedger()">
+            <option value="">All Categories</option>
+            <option value="eci">ECI Revenue</option>
+            <option value="fee">Stripe Fees</option>
+            <option value="refund">Refunds</option>
+            <option value="manual">Manual Entry</option>
+          </select>
+          <select id="tax-status-filter" class="input" style="width:130px" onchange="loadTaxLedger()">
+            <option value="">All Status</option>
+            <option value="pending">Pending</option>
+            <option value="reconciled">Reconciled</option>
+          </select>
+          <button class="btn btn-primary" style="font-size:12px" onclick="showAddTxModal()"><i class="fas fa-plus"></i> Add Manual Entry</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="tbl">
+            <thead>
+              <tr style="background:#0c1322">
+                <th style="text-align:left;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Date</th>
+                <th style="text-align:left;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Description</th>
+                <th style="text-align:left;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Processor</th>
+                <th style="text-align:left;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Category</th>
+                <th style="text-align:right;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">USD</th>
+                <th style="text-align:right;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Rate</th>
+                <th style="text-align:right;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">CAD</th>
+                <th style="text-align:center;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Status</th>
+                <th style="text-align:right;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tax-ledger-tbody">
+              <tr><td colspan="9" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="tax-ledger-pagination" style="text-align:center;margin-top:12px"></div>
+      </div>
+
+      <!-- TAX DEADLINES -->
+      <div id="taxtab-deadlines-content" style="display:none">
+        <div id="tax-deadlines-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px"></div>
+      </div>
+
+      <!-- FORM WORKSHEETS -->
+      <div id="taxtab-forms-content" style="display:none">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px">
+          <!-- Form 5472 -->
+          <div class="card" style="padding:20px">
+            <div style="display:flex;align-items:center;gap-10px;margin-bottom:12px">
+              <span style="background:#312e81;color:#a5b4fc;font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;margin-right:8px">IRS</span>
+              <span style="font-size:15px;font-weight:700;color:#e2e8f0">Form 5472 Worksheet</span>
+            </div>
+            <p style="font-size:12px;color:#64748b;margin-bottom:12px">Required annually for foreign-owned US LLCs with reportable transactions. Filed with pro-forma Form 1120.</p>
+            <div id="form5472-data" style="font-size:13px;color:#94a3b8;line-height:2">Loading...</div>
+            <div style="margin-top:14px;display:flex;gap:8px">
+              <a id="form5472-csv" class="btn btn-primary" style="font-size:12px" href="#"><i class="fas fa-download"></i> Download CSV</a>
+              <a href="https://www.irs.gov/forms-pubs/about-form-5472" target="_blank" class="btn btn-ghost" style="font-size:12px"><i class="fas fa-external-link-alt"></i> IRS Form</a>
+            </div>
+          </div>
+          <!-- T1135 -->
+          <div class="card" style="padding:20px">
+            <div style="display:flex;align-items:center;gap-10px;margin-bottom:12px">
+              <span style="background:#7c2d12;color:#fdba74;font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;margin-right:8px">CRA</span>
+              <span style="font-size:15px;font-weight:700;color:#e2e8f0">T1135 Worksheet</span>
+            </div>
+            <p style="font-size:12px;color:#64748b;margin-bottom:12px">Foreign Income Verification. Required if cost of foreign property &gt; CAD $100,000 at any time in the year.</p>
+            <div id="formt1135-data" style="font-size:13px;color:#94a3b8;line-height:2">Loading...</div>
+            <div style="margin-top:14px;display:flex;gap:8px">
+              <a href="https://www.canada.ca/en/revenue-agency/services/forms-publications/forms/t1135.html" target="_blank" class="btn btn-ghost" style="font-size:12px"><i class="fas fa-external-link-alt"></i> CRA Form T1135</a>
+            </div>
+          </div>
+          <!-- FBAR -->
+          <div class="card" style="padding:20px">
+            <div style="display:flex;align-items:center;gap-10px;margin-bottom:12px">
+              <span style="background:#1e3a5f;color:#93c5fd;font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;margin-right:8px">FinCEN</span>
+              <span style="font-size:15px;font-weight:700;color:#e2e8f0">FBAR Checklist</span>
+            </div>
+            <p style="font-size:12px;color:#64748b;margin-bottom:12px">FinCEN Form 114. Required if US account balance exceeded $10,000 USD at any point during the year.</p>
+            <div id="fbar-data" style="font-size:13px;color:#94a3b8;line-height:2">Loading...</div>
+            <div style="margin-top:14px;display:flex;gap:8px">
+              <a href="https://bsaefiling.fincen.treas.gov/main.html" target="_blank" class="btn btn-ghost" style="font-size:12px"><i class="fas fa-external-link-alt"></i> File FBAR (FinCEN)</a>
+            </div>
+          </div>
+          <!-- Treaty Summary -->
+          <div class="card" style="padding:20px">
+            <div style="display:flex;align-items:center;gap-10px;margin-bottom:12px">
+              <span style="background:#14532d;color:#86efac;font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;margin-right:8px">TREATY</span>
+              <span style="font-size:15px;font-weight:700;color:#e2e8f0">Canada-US Tax Treaty</span>
+            </div>
+            <div style="font-size:12px;color:#94a3b8;line-height:1.8">
+              <div>✅ <strong style="color:#e2e8f0">ECI Income:</strong> Taxed in the US at regular rates — treaty reduces withholding</div>
+              <div>✅ <strong style="color:#e2e8f0">SaaS Revenue:</strong> Generally classified as ECI (business income)</div>
+              <div>✅ <strong style="color:#e2e8f0">Withholding Rate:</strong> Reduced from 30% → 0% for ECI with ITIN/W-8BEN-E</div>
+              <div>✅ <strong style="color:#e2e8f0">Foreign Tax Credit:</strong> US taxes paid can offset Canadian taxes owing</div>
+              <div>⚠️ <strong style="color:#fcd34d">ITIN Required:</strong> Apply via Form W-7 if not already obtained</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- EXCHANGE RATES -->
+      <div id="taxtab-rates-content" style="display:none">
+        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+          <span style="font-size:13px;color:#94a3b8">Manual override:</span>
+          <input type="date" id="rate-manual-date" class="input" style="width:150px">
+          <input type="number" id="rate-manual-val" class="input" step="0.0001" placeholder="e.g. 1.3650" style="width:130px">
+          <button class="btn btn-primary" style="font-size:12px" onclick="saveManualRate()"><i class="fas fa-save"></i> Save Rate</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="tbl">
+            <thead>
+              <tr style="background:#0c1322">
+                <th style="text-align:left;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Date</th>
+                <th style="text-align:right;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">USD/CAD Rate</th>
+                <th style="text-align:left;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Source</th>
+              </tr>
+            </thead>
+            <tbody id="tax-rates-tbody">
+              <tr><td colspan="3" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- AUDIT LOG -->
+      <div id="taxtab-audit-content" style="display:none">
+        <div style="overflow-x:auto">
+          <table class="tbl">
+            <thead>
+              <tr style="background:#0c1322">
+                <th style="text-align:left;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Timestamp</th>
+                <th style="text-align:left;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Action</th>
+                <th style="text-align:left;padding:10px 12px;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase">Details</th>
+              </tr>
+            </thead>
+            <tbody id="tax-audit-tbody">
+              <tr><td colspan="3" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- /page-tax -->
+
   </div><!-- /content -->
 </div><!-- /app -->
+
+<!-- ══════════════════════════════════════════════════════════════════
+     TAX PAGE — injected outside #app so it overlays full viewport
+     ══════════════════════════════════════════════════════════════════ -->
 
 <!-- TICKET DETAIL MODAL -->
 <div class="modal-bg" id="ticket-modal" onclick="if(event.target===this)closeTicketModal()">
@@ -12395,6 +13042,7 @@ function showPage(name) {
   if (name === 'revenue')     loadRevenue()
   if (name === 'support')     loadTickets()
   if (name === 'platform')    loadPlatformUrls()
+  if (name === 'tax')         loadTax()
 }
 
 function toggleSidebar() {
@@ -13105,6 +13753,370 @@ function showToast(msg, isError=false) {
   t.style.borderColor = isError ? '#dc2626' : '#4f46e5'
   t.style.display = 'block'
   setTimeout(()=>{ t.style.display='none' }, 3500)
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── TAX COMPLIANCE MODULE ────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+let _taxSummary = null
+let _taxLedgerPage = 1
+let _activeTaxTab = 'monthly'
+
+function fmtUSD(n) { return '$' + (n||0).toLocaleString('en-CA', {minimumFractionDigits:2,maximumFractionDigits:2}) }
+function fmtCAD(n) { return 'CA$' + (n||0).toLocaleString('en-CA', {minimumFractionDigits:2,maximumFractionDigits:2}) }
+function fmtRate(n) { return n ? n.toFixed(4) : '—' }
+
+async function loadTax() {
+  const year = document.getElementById('tax-year-select')?.value || new Date().getFullYear()
+  // Update export link
+  const exportLink = document.getElementById('tax-export-link')
+  if (exportLink) exportLink.href = '/api/super/tax/export?year=' + year
+  // Update Form 5472 CSV link
+  const f5472 = document.getElementById('form5472-csv')
+  if (f5472) f5472.href = '/api/super/tax/export?year=' + year
+
+  try {
+    const d = await api('/api/super/tax/summary?year=' + year)
+    _taxSummary = d
+    // KPI cards
+    document.getElementById('tax-ytd-usd').textContent  = fmtUSD(d.ytd.gross_usd)
+    document.getElementById('tax-ytd-cad').textContent  = fmtCAD(d.ytd.gross_cad)
+    document.getElementById('tax-fees-usd').textContent = fmtUSD(d.ytd.fees_usd)
+    document.getElementById('tax-net-usd').textContent  = fmtUSD(d.ytd.net_usd)
+    document.getElementById('tax-pending-count').textContent = d.ytd.pending_count
+    document.getElementById('tax-rate-today').textContent = d.latest_rate ? fmtRate(d.latest_rate.usd_cad) + ' (' + d.latest_rate.rate_date + ')' : 'No rate yet'
+
+    // Alert banners + nav badge
+    const t1135Banner = document.getElementById('tax-alert-t1135')
+    const fbarBanner  = document.getElementById('tax-alert-fbar')
+    const navBadge    = document.getElementById('tax-alert-badge')
+    if (t1135Banner) t1135Banner.style.display = d.alerts.t1135_triggered ? 'block' : 'none'
+    if (fbarBanner)  fbarBanner.style.display  = d.alerts.fbar_triggered  ? 'block' : 'none'
+    if (navBadge) {
+      if (d.alerts.t1135_triggered || d.alerts.fbar_triggered || d.ytd.pending_count > 0) {
+        navBadge.style.display = 'inline'
+        navBadge.textContent = d.ytd.pending_count > 0 ? d.ytd.pending_count : '!'
+      } else { navBadge.style.display = 'none' }
+    }
+
+    // Threshold bars
+    const t1135Bar = document.getElementById('tax-t1135-bar')
+    const fbarBar  = document.getElementById('tax-fbar-bar')
+    if (t1135Bar) {
+      t1135Bar.style.width = d.alerts.t1135_pct + '%'
+      t1135Bar.style.background = d.alerts.t1135_triggered ? '#ef4444' : '#818cf8'
+    }
+    if (fbarBar) {
+      fbarBar.style.width = d.alerts.fbar_pct + '%'
+      fbarBar.style.background = d.alerts.fbar_triggered ? '#ef4444' : '#60a5fa'
+    }
+    document.getElementById('tax-t1135-label').textContent = fmtCAD(d.ytd.gross_cad) + ' / CA$100,000'
+    document.getElementById('tax-fbar-label').textContent  = fmtUSD(d.ytd.gross_usd) + ' / $10,000'
+
+    // Render active sub-tab
+    showTaxTab(_activeTaxTab, d)
+  } catch(e) { showToast('❌ Failed to load tax data: ' + e.message, true) }
+}
+
+function showTaxTab(tab, data) {
+  _activeTaxTab = tab
+  const tabs = ['monthly','ledger','deadlines','forms','rates','audit']
+  tabs.forEach(t => {
+    const btn = document.getElementById('taxtab-' + t)
+    const content = document.getElementById('taxtab-' + t + '-content')
+    if (btn) { btn.className = t === tab ? 'btn btn-primary' : 'btn btn-ghost'; btn.style.fontSize = '12px'; btn.style.padding = '6px 14px' }
+    if (content) content.style.display = t === tab ? 'block' : 'none'
+  })
+
+  const d = data || _taxSummary
+  if (tab === 'monthly' && d)   renderTaxMonthly(d.monthly)
+  if (tab === 'ledger')         loadTaxLedger()
+  if (tab === 'deadlines' && d) renderTaxDeadlines(d.deadlines)
+  if (tab === 'forms' && d)     renderTaxForms(d)
+  if (tab === 'rates')          loadTaxRates()
+  if (tab === 'audit')          loadTaxAudit()
+}
+
+function renderTaxMonthly(monthly) {
+  const tbody = document.getElementById('tax-monthly-tbody')
+  if (!tbody) return
+  if (!monthly?.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:30px;color:#475569">No transactions yet — click "Sync Stripe" to import</td></tr>'
+    return
+  }
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  tbody.innerHTML = monthly.map(m => {
+    const [y, mo] = m.month.split('-')
+    const label = (months[parseInt(mo)-1] || mo) + ' ' + y
+    return \`<tr style="border-bottom:1px solid #1e293b">
+      <td style="padding:10px 12px;color:#e2e8f0;font-weight:600">\${label}</td>
+      <td style="padding:10px 12px;text-align:right;color:#34d399;font-weight:600">\${fmtUSD(m.usd_revenue)}</td>
+      <td style="padding:10px 12px;text-align:right;color:#94a3b8">\${fmtRate(m.avg_rate)}</td>
+      <td style="padding:10px 12px;text-align:right;color:#818cf8;font-weight:600">\${fmtCAD(m.cad_revenue)}</td>
+      <td style="padding:10px 12px;text-align:right;color:#64748b">\${m.tx_count}</td>
+    </tr>\`
+  }).join('')
+}
+
+async function loadTaxLedger() {
+  const year   = document.getElementById('tax-year-select')?.value || new Date().getFullYear()
+  const cat    = document.getElementById('tax-cat-filter')?.value || ''
+  const status = document.getElementById('tax-status-filter')?.value || ''
+  const tbody  = document.getElementById('tax-ledger-tbody')
+  if (!tbody) return
+  tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:30px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>'
+  try {
+    const d = await api(\`/api/super/tax/transactions?year=\${year}&page=\${_taxLedgerPage}&category=\${cat}&status=\${status}\`)
+    const txs = d.transactions || []
+    if (!txs.length) {
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:30px;color:#475569">No transactions found</td></tr>'
+      return
+    }
+    const catColors = { eci:'color:#34d399', fee:'color:#f87171', refund:'color:#f59e0b', manual:'color:#818cf8' }
+    tbody.innerHTML = txs.map(t => {
+      const isNeg = t.usd_amount < 0
+      const usdColor = isNeg ? 'color:#f87171' : 'color:#34d399'
+      const statusPill = t.status === 'reconciled'
+        ? '<span style="background:#065f46;color:#6ee7b7;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px">✓ RECONCILED</span>'
+        : '<span style="background:#78350f;color:#fcd34d;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px">PENDING</span>'
+      return \`<tr style="border-bottom:1px solid #1e293b">
+        <td style="padding:8px 12px;color:#94a3b8;font-size:12px">\${t.date}</td>
+        <td style="padding:8px 12px;color:#e2e8f0;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="\${t.description||''}">\${t.description||'—'}</td>
+        <td style="padding:8px 12px;color:#64748b;font-size:12px">\${t.processor||'—'}</td>
+        <td style="padding:8px 12px;font-size:11px;font-weight:700;text-transform:uppercase;\${catColors[t.category]||'color:#94a3b8'}">\${t.category||'—'}</td>
+        <td style="padding:8px 12px;text-align:right;font-weight:600;\${usdColor}">\${fmtUSD(t.usd_amount)}</td>
+        <td style="padding:8px 12px;text-align:right;color:#475569;font-size:11px">\${t.exchange_rate ? t.exchange_rate.toFixed(4) : '—'}</td>
+        <td style="padding:8px 12px;text-align:right;color:#818cf8;font-size:12px">\${t.cad_amount ? fmtCAD(t.cad_amount) : '—'}</td>
+        <td style="padding:8px 12px;text-align:center">\${statusPill}</td>
+        <td style="padding:8px 12px;text-align:right;display:flex;gap:4px;justify-content:flex-end">
+          \${t.status === 'pending' ? \`<button onclick="reconcileTx(\${t.id})" class="btn btn-ghost" style="font-size:11px;padding:3px 8px" title="Mark reconciled"><i class="fas fa-check"></i></button>\` : ''}
+          <button onclick="deleteTx(\${t.id})" class="btn btn-danger" style="font-size:11px;padding:3px 8px" title="Delete"><i class="fas fa-trash"></i></button>
+        </td>
+      </tr>\`
+    }).join('')
+  } catch(e) {
+    tbody.innerHTML = \`<tr><td colspan="9" style="text-align:center;padding:30px;color:#ef4444">\${e.message}</td></tr>\`
+  }
+}
+
+function renderTaxDeadlines(deadlines) {
+  const grid = document.getElementById('tax-deadlines-grid')
+  if (!grid) return
+  const now = new Date()
+  if (!deadlines?.length) {
+    grid.innerHTML = '<p style="color:#64748b;font-size:13px">Load tax summary first to see deadlines.</p>'
+    return
+  }
+  const statusColors = {
+    pending: { bg:'#1e293b', border:'#334155', label:'UPCOMING', lc:'#94a3b8' },
+    filed:   { bg:'#065f46', border:'#059669', label:'FILED ✓',  lc:'#6ee7b7' },
+    overdue: { bg:'#7f1d1d', border:'#dc2626', label:'OVERDUE',  lc:'#fca5a5' }
+  }
+  grid.innerHTML = deadlines.map(d => {
+    const due = new Date(d.due_date)
+    const daysLeft = Math.ceil((due - now) / 86400000)
+    const isPast = daysLeft < 0
+    const effectiveStatus = d.status === 'filed' ? 'filed' : (isPast ? 'overdue' : 'pending')
+    const sc = statusColors[effectiveStatus]
+    const urgency = daysLeft <= 14 && effectiveStatus !== 'filed' ? 'border-color:#f59e0b!important' : ''
+    return \`<div class="card" style="padding:16px;background:\${sc.bg};border-color:\${sc.border};\${urgency}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div style="font-size:14px;font-weight:700;color:#e2e8f0">\${d.form_type}</div>
+        <span style="background:\${sc.border};color:\${sc.lc};font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px">\${sc.label}</span>
+      </div>
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:4px"><i class="fas fa-calendar" style="width:14px"></i> Due: \${d.due_date}</div>
+      \${d.extended_date ? \`<div style="font-size:12px;color:#64748b;margin-bottom:4px"><i class="fas fa-calendar-plus" style="width:14px"></i> Extended: \${d.extended_date}</div>\` : ''}
+      \${d.status !== 'filed' ? \`<div style="font-size:12px;font-weight:700;color:\${daysLeft <= 14 ? '#f59e0b' : '#64748b'};margin-bottom:10px">\${isPast ? '⚠️ OVERDUE' : daysLeft + ' days remaining'}</div>\` : \`<div style="font-size:12px;color:#34d399;margin-bottom:10px">Filed: \${d.filed_date||'—'}\${d.filed_by ? ' by ' + d.filed_by : ''}</div>\`}
+      \${d.status !== 'filed' ? \`<button onclick="markDeadlineFiled(\${d.id})" class="btn btn-success" style="font-size:11px;padding:4px 10px;width:100%"><i class="fas fa-check"></i> Mark as Filed</button>\` : \`<button onclick="resetDeadline(\${d.id})" class="btn btn-ghost" style="font-size:11px;padding:4px 10px;width:100%"><i class="fas fa-undo"></i> Reset to Pending</button>\`}
+    </div>\`
+  }).join('')
+}
+
+function renderTaxForms(d) {
+  const year = document.getElementById('tax-year-select')?.value || new Date().getFullYear()
+  const ytd = d.ytd
+  const alerts = d.alerts
+
+  // Form 5472
+  const f5472 = document.getElementById('form5472-data')
+  if (f5472) f5472.innerHTML = \`
+    <div>📋 <strong>Entity:</strong> Wyoming LLC (Foreign-Owned SMLLC)</div>
+    <div>🗓 <strong>Fiscal Year:</strong> \${year} (Jan 1 – Dec 31)</div>
+    <div>💰 <strong>Gross US Revenue (ECI):</strong> \${fmtUSD(ytd.gross_usd)}</div>
+    <div>💸 <strong>Processor Fees (Deductible):</strong> \${fmtUSD(ytd.fees_usd)}</div>
+    <div>🔄 <strong>Refunds/Chargebacks:</strong> \${fmtUSD(Math.abs(ytd.refunds_usd||0))}</div>
+    <div>✅ <strong>Net Reportable Income:</strong> \${fmtUSD(ytd.net_usd)}</div>
+    <div>📝 <strong>Ownership:</strong> 100% (Single-Member)</div>
+    <div style="margin-top:8px;padding:8px;background:#0f172a;border-radius:6px;font-size:11px;color:#64748b">
+      Filed with pro-forma Form 1120 — due April 15 each year (extension: October 15 via Form 7004)
+    </div>\`
+
+  // T1135
+  const t1135 = document.getElementById('formt1135-data')
+  if (t1135) t1135.innerHTML = \`
+    <div>🍁 <strong>Reporting Currency:</strong> CAD</div>
+    <div>💰 <strong>YTD CAD Equivalent:</strong> \${fmtCAD(ytd.gross_cad)}</div>
+    <div>⚠️ <strong>Threshold:</strong> CA$100,000</div>
+    <div style="margin-top:8px;padding:8px;background:\${alerts.t1135_triggered ? '#7c2d12' : '#0f172a'};border-radius:6px">
+      <strong style="color:\${alerts.t1135_triggered ? '#fb923c' : '#34d399'}">\${alerts.t1135_triggered ? '🚨 T1135 REQUIRED — File with Canadian return' : '✅ Below threshold — T1135 not required yet'}</strong>
+    </div>\`
+
+  // FBAR
+  const fbar = document.getElementById('fbar-data')
+  if (fbar) fbar.innerHTML = \`
+    <div>🏦 <strong>YTD USD Revenue:</strong> \${fmtUSD(ytd.gross_usd)}</div>
+    <div>⚠️ <strong>Threshold:</strong> $10,000 USD</div>
+    <div>📅 <strong>Due:</strong> April 15 (auto-extended to Oct 15)</div>
+    <div style="margin-top:8px;padding:8px;background:\${alerts.fbar_triggered ? '#1e3a5f' : '#0f172a'};border-radius:6px">
+      <strong style="color:\${alerts.fbar_triggered ? '#60a5fa' : '#34d399'}">\${alerts.fbar_triggered ? '⚠️ FBAR REQUIRED — File at bsaefiling.fincen.treas.gov' : '✅ Below $10K threshold — FBAR not required'}</strong>
+    </div>\`
+}
+
+async function loadTaxRates() {
+  const tbody = document.getElementById('tax-rates-tbody')
+  if (!tbody) return
+  try {
+    const d = await api('/api/super/tax/rates')
+    const rates = d.rates || []
+    if (!rates.length) {
+      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:30px;color:#475569">No rates stored yet — click "Get Today\'s Rate"</td></tr>'
+      return
+    }
+    tbody.innerHTML = rates.map(r => \`<tr style="border-bottom:1px solid #1e293b">
+      <td style="padding:8px 12px;color:#e2e8f0">\${r.rate_date}</td>
+      <td style="padding:8px 12px;text-align:right;color:#34d399;font-weight:600">\${r.usd_cad.toFixed(4)}</td>
+      <td style="padding:8px 12px;color:#64748b;font-size:12px">\${r.source}</td>
+    </tr>\`).join('')
+  } catch(e) { tbody.innerHTML = \`<tr><td colspan="3" style="text-align:center;padding:30px;color:#ef4444">\${e.message}</td></tr>\` }
+}
+
+async function loadTaxAudit() {
+  const tbody = document.getElementById('tax-audit-tbody')
+  if (!tbody) return
+  try {
+    const d = await api('/api/super/tax/audit-log')
+    const logs = d.logs || []
+    if (!logs.length) {
+      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:30px;color:#475569">No audit events yet</td></tr>'
+      return
+    }
+    tbody.innerHTML = logs.map(l => \`<tr style="border-bottom:1px solid #1e293b">
+      <td style="padding:8px 12px;color:#64748b;font-size:12px;white-space:nowrap">\${l.created_at}</td>
+      <td style="padding:8px 12px;color:#818cf8;font-size:12px;font-weight:600">\${l.action}</td>
+      <td style="padding:8px 12px;color:#94a3b8;font-size:12px">\${l.details||'—'}</td>
+    </tr>\`).join('')
+  } catch(e) { tbody.innerHTML = \`<tr><td colspan="3" style="text-align:center;padding:30px;color:#ef4444">\${e.message}</td></tr>\` }
+}
+
+async function syncStripe() {
+  const btn = document.getElementById('stripe-sync-btn')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...' }
+  try {
+    const d = await api('/api/super/tax/sync-stripe', { method: 'POST' })
+    showToast(\`✅ Stripe sync complete — \${d.added} new, \${d.skipped} already imported\`)
+    loadTax()
+  } catch(e) { showToast('❌ Stripe sync failed: ' + e.message, true)
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sync"></i> Sync Stripe' }
+  }
+}
+
+async function fetchTodayRate() {
+  const btn = document.getElementById('rate-fetch-btn')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Fetching...' }
+  try {
+    const d = await api('/api/super/tax/fetch-rate', { method: 'POST' })
+    showToast(\`✅ Rate for \${d.date}: 1 USD = \${d.rate} CAD\`)
+    loadTax()
+  } catch(e) { showToast('❌ ' + e.message, true)
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-exchange-alt"></i> Get Today\'s Rate' }
+  }
+}
+
+async function saveManualRate() {
+  const date = document.getElementById('rate-manual-date')?.value
+  const val  = parseFloat(document.getElementById('rate-manual-val')?.value)
+  if (!date || !val) { showToast('❌ Date and rate are required', true); return }
+  await api('/api/super/tax/rates', { method: 'POST', body: JSON.stringify({ rate_date: date, usd_cad: val }) })
+  showToast('✅ Rate saved: ' + date + ' = ' + val)
+  loadTaxRates()
+}
+
+async function reconcileTx(id) {
+  await api('/api/super/tax/reconcile/' + id, { method: 'POST', body: JSON.stringify({}) })
+  showToast('✅ Marked as reconciled')
+  loadTaxLedger()
+}
+
+async function deleteTx(id) {
+  if (!confirm('Delete this transaction? This cannot be undone.')) return
+  await api('/api/super/tax/transactions/' + id, { method: 'DELETE' })
+  showToast('🗑 Transaction deleted')
+  loadTaxLedger()
+}
+
+async function markDeadlineFiled(id) {
+  const filedBy = prompt('Who filed this form? (Your name or initials)')
+  if (filedBy === null) return
+  const filedDate = new Date().toISOString().split('T')[0]
+  await api('/api/super/tax/deadlines/' + id, { method: 'PUT', body: JSON.stringify({ status: 'filed', filed_date: filedDate, filed_by: filedBy }) })
+  showToast('✅ Marked as filed')
+  loadTax()
+}
+
+async function resetDeadline(id) {
+  await api('/api/super/tax/deadlines/' + id, { method: 'PUT', body: JSON.stringify({ status: 'pending', filed_date: null, filed_by: null }) })
+  showToast('↩ Reset to pending')
+  loadTax()
+}
+
+// Add Manual Transaction Modal
+function showAddTxModal() {
+  const today = new Date().toISOString().split('T')[0]
+  const modal = document.createElement('div')
+  modal.id = 'add-tx-modal'
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px'
+  modal.innerHTML = \`<div style="background:#1e293b;border:1px solid #334155;border-radius:14px;padding:24px;width:100%;max-width:420px">
+    <h3 style="font-size:16px;font-weight:700;color:#e2e8f0;margin-bottom:16px"><i class="fas fa-plus-circle" style="color:#818cf8;margin-right:8px"></i>Add Manual Transaction</h3>
+    <div style="display:grid;gap:10px">
+      <div><label style="font-size:11px;color:#64748b;display:block;margin-bottom:4px">Date</label><input type="date" id="ntx-date" class="input" value="\${today}"></div>
+      <div><label style="font-size:11px;color:#64748b;display:block;margin-bottom:4px">Description</label><input type="text" id="ntx-desc" class="input" placeholder="e.g. Stripe payout, manual adjustment"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div><label style="font-size:11px;color:#64748b;display:block;margin-bottom:4px">USD Amount</label><input type="number" id="ntx-usd" class="input" step="0.01" placeholder="e.g. 99.00"></div>
+        <div><label style="font-size:11px;color:#64748b;display:block;margin-bottom:4px">Category</label>
+          <select id="ntx-cat" class="input">
+            <option value="eci">ECI Revenue</option>
+            <option value="fee">Processor Fee</option>
+            <option value="refund">Refund</option>
+            <option value="manual">Manual / Other</option>
+          </select>
+        </div>
+      </div>
+      <div><label style="font-size:11px;color:#64748b;display:block;margin-bottom:4px">Notes (optional)</label><input type="text" id="ntx-notes" class="input" placeholder="Audit notes..."></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button onclick="saveNewTx()" class="btn btn-primary" style="flex:1"><i class="fas fa-save"></i> Save Transaction</button>
+      <button onclick="document.getElementById('add-tx-modal').remove()" class="btn btn-ghost">Cancel</button>
+    </div>
+  </div>\`
+  document.body.appendChild(modal)
+}
+
+async function saveNewTx() {
+  const date   = document.getElementById('ntx-date')?.value
+  const desc   = document.getElementById('ntx-desc')?.value
+  const usd    = parseFloat(document.getElementById('ntx-usd')?.value)
+  const cat    = document.getElementById('ntx-cat')?.value
+  const notes  = document.getElementById('ntx-notes')?.value
+  if (!date || !desc || isNaN(usd)) { showToast('❌ Date, description, and amount are required', true); return }
+  try {
+    const r = await api('/api/super/tax/transactions', { method: 'POST', body: JSON.stringify({ date, description: desc, usd_amount: usd, category: cat, notes }) })
+    showToast(\`✅ Transaction saved\${r.cad_amount ? ' — CAD: ' + fmtCAD(r.cad_amount) : ' (no rate on file for this date)'}\`)
+    document.getElementById('add-tx-modal')?.remove()
+    loadTax()
+  } catch(e) { showToast('❌ ' + e.message, true) }
 }
 </script>
 </body>
