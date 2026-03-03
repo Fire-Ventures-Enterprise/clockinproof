@@ -5859,7 +5859,7 @@ function renderEncircleCards(jobs) {
                 class="inline-flex items-center gap-1 text-[11px] font-semibold text-white bg-violet-500 hover:bg-violet-600 px-2.5 py-1 rounded-lg transition-colors">
                 <i class="fas fa-paper-plane text-[10px]"></i>Dispatch
               </button>
-              <button onclick="event.stopPropagation(); closeEncircleJob('${j.encircle_claim_id}')"
+              <button onclick="event.stopPropagation(); closeEncircleJob('${j.encircle_claim_id}', '${(j.policyholder_name||'').replace(/'/g,"\\'")}' )"
                 class="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-500 bg-white hover:bg-red-50 hover:text-red-600 border border-gray-200 hover:border-red-200 px-2.5 py-1 rounded-lg transition-colors">
                 <i class="fas fa-times-circle text-[10px]"></i>Close Job
               </button>`
@@ -5879,17 +5879,28 @@ function renderEncircleCards(jobs) {
 let _encircleJobsCache = []
 
 // Manually close an Encircle job — CIP is source of truth, survives all future syncs
-async function closeEncircleJob(claimId) {
-  if (!confirm('Close this job in CIP?\n\nIt will be removed from active jobs and GPS geofence.\nEncircle will keep syncing but CIP will ignore it.\n\nYou can reopen it anytime.')) return
+async function closeEncircleJob(claimId, jobName) {
+  // Quick inline prompt — reason is optional but useful for audit trail
+  const reason = prompt(
+    `Close "${jobName || 'this job'}" in CIP?\n\n` +
+    `NOTE: Encircle's API does not expose job status.\n` +
+    `Closing here removes it from GPS geofence and active jobs.\n` +
+    `Sync will never re-activate it.\n\n` +
+    `Reason (optional — press OK to skip):`,
+    'Closed in Encircle'
+  )
+  // null = user pressed Cancel
+  if (reason === null) return
+
   try {
     const res = await fetch(`/api/encircle/jobs/${claimId}/close`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ note: '' })
+      body: JSON.stringify({ note: reason.trim() || 'Closed in CIP' })
     })
     const data = await res.json().catch(() => ({}))
     if (res.ok && data.success) {
-      showAdminToast('Job closed in CIP ✅ — protected from re-sync', 'success')
+      showAdminToast('Job closed in CIP ✅ — sync will ignore it permanently', 'success')
       loadEncircleStatus()
     } else {
       showAdminToast('Failed to close job — try again', 'error')

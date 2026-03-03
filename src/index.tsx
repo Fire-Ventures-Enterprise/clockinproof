@@ -9950,6 +9950,19 @@ function getAdminHTML(): string {
             </button>
           </div>
         </div>
+        <!-- Encircle API limitation notice -->
+        <div class="mx-1 mb-3 flex items-start gap-2.5 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+          <i class="fas fa-exclamation-triangle text-amber-500 text-sm mt-0.5 flex-shrink-0"></i>
+          <div>
+            <p class="text-xs font-bold text-amber-700">Encircle API does not send job status</p>
+            <p class="text-xs text-amber-600 mt-0.5 leading-relaxed">
+              Closing or leaving a job in Encircle does <strong>not</strong> remove it from CIP sync —
+              Encircle's API returns all jobs with no status field.
+              To remove a job from CIP, use the <strong>Close Job</strong> button on the card below.
+              CIP will permanently ignore it on all future syncs.
+            </p>
+          </div>
+        </div>
         <p id="encircle-last-sync" class="hidden text-xs text-gray-400 mt-3 pt-3 border-t border-gray-100">
           <i class="fas fa-clock mr-1"></i> Last synced: <span id="encircle-last-sync-time"></span>
         </p>
@@ -11072,7 +11085,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260303h"></script>
+<script src="/static/admin.js?v=20260303i"></script>
 
 </body>
 </html>`
