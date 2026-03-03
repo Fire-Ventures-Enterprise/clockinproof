@@ -4121,21 +4121,22 @@ app.get('/api/super/tenants/:id/profile', async (c) => {
   const workers = await db.prepare(`
     SELECT id, name, phone, status, device_id, created_at,
       (SELECT COUNT(*) FROM sessions WHERE worker_id = workers.id) as session_count,
-      (SELECT MAX(clock_in) FROM sessions WHERE worker_id = workers.id) as last_session
+      (SELECT MAX(clock_in_time) FROM sessions WHERE worker_id = workers.id) as last_session
     FROM workers WHERE tenant_id = ? ORDER BY name
   `).bind(id).all()
 
   // Recent sessions (last 10)
   const sessions = await db.prepare(`
-    SELECT s.id, s.clock_in, s.clock_out, s.total_hours, s.status,
+    SELECT s.id, s.clock_in_time as clock_in, s.clock_out_time as clock_out,
+           s.total_hours, s.status,
            w.name as worker_name, w.phone as worker_phone
     FROM sessions s
     JOIN workers w ON s.worker_id = w.id
     WHERE s.tenant_id = ?
-    ORDER BY s.clock_in DESC LIMIT 10
+    ORDER BY s.clock_in_time DESC LIMIT 10
   `).bind(id).all()
 
-  // Open support tickets
+  // Open support tickets (graceful if table missing)
   const tickets = await db.prepare(`
     SELECT id, subject, status, priority, created_at
     FROM support_tickets WHERE tenant_id = ? AND status != 'closed'
@@ -4150,41 +4151,41 @@ app.get('/api/super/tenants/:id/profile', async (c) => {
     WHERE dr.tenant_id = ? AND dr.status = 'pending'
   `).bind(id).all().catch(() => ({ results: [] }))
 
-  // Stats
+  // Worker stats
   const stats = await db.prepare(`
     SELECT
-      COUNT(CASE WHEN status='active' THEN 1 END)     as active_workers,
+      COUNT(CASE WHEN status='active'     THEN 1 END) as active_workers,
       COUNT(CASE WHEN status='on_holiday' THEN 1 END) as on_holiday,
       COUNT(CASE WHEN status='sick_leave' THEN 1 END) as sick_leave,
-      COUNT(CASE WHEN status='suspended' THEN 1 END)  as suspended,
+      COUNT(CASE WHEN status='suspended'  THEN 1 END) as suspended,
       COUNT(CASE WHEN status='terminated' THEN 1 END) as terminated,
       COUNT(*) as total_workers
     FROM workers WHERE tenant_id = ?
   `).bind(id).first() as any
 
+  // Session stats — 'active' means currently clocked in
   const sessionStats = await db.prepare(`
     SELECT
-      COUNT(CASE WHEN status='clocked_in' THEN 1 END) as currently_in,
+      COUNT(CASE WHEN status='active' THEN 1 END) as currently_in,
       COUNT(*) as total_sessions,
       ROUND(SUM(total_hours),1) as total_hours
     FROM sessions WHERE tenant_id = ?
   `).bind(id).first() as any
 
-  // Days since created
-  const createdAt = tenant.created_at ? new Date(tenant.created_at) : null
-  const daysSince = createdAt ? Math.floor((Date.now() - createdAt.getTime()) / 86400000) : null
+  const createdAt  = tenant.created_at ? new Date(tenant.created_at) : null
+  const daysSince  = createdAt ? Math.floor((Date.now() - createdAt.getTime()) / 86400000) : null
 
   return c.json({
     tenant: {
       ...tenant,
       days_active: daysSince,
       admin_url: `https://admin.clockinproof.com/?tenant=${tenant.slug}`,
-      app_url: `https://${tenant.slug}.clockinproof.com`
+      app_url:   `https://${tenant.slug}.clockinproof.com`
     },
-    stats: { ...stats, ...sessionStats },
-    workers: workers.results,
-    recent_sessions: sessions.results,
-    open_tickets: tickets.results,
+    stats:                { ...stats, ...sessionStats },
+    workers:              workers.results,
+    recent_sessions:      sessions.results,
+    open_tickets:         tickets.results,
     pending_device_resets: deviceResets.results
   })
 })
