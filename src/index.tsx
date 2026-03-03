@@ -116,11 +116,11 @@ async function ensureSchema(db: D1Database) {
       active INTEGER DEFAULT 1
     )`,
     `INSERT OR IGNORE INTO stripe_plans (id, name, stripe_price_id, price_monthly, max_workers, features) VALUES
-      (1, 'Starter', '', 2900, 10, 'GPS tracking,Payroll export,Email reports')`,
+      (1, 'Starter', '', 3900, 5, 'GPS clock-in proof,Geofence detection,Auto clock-out,Live GPS map,SMS+email alerts,Payroll reports,Job dispatch,QuickBooks sync')`,
     `INSERT OR IGNORE INTO stripe_plans (id, name, stripe_price_id, price_monthly, max_workers, features) VALUES
-      (2, 'Growth', '', 5900, 25, 'GPS tracking,Payroll export,Email reports,QuickBooks sync')`,
+      (2, 'Growing Business', '', 5900, 10, 'Everything in Starter,Up to 10 workers,Multi-site management,Accountant export,Worker disputes,Calendar view,Custom branding')`,
     `INSERT OR IGNORE INTO stripe_plans (id, name, stripe_price_id, price_monthly, max_workers, features) VALUES
-      (3, 'Pro', '', 9900, 999, 'GPS tracking,Payroll export,Email reports,QuickBooks sync,Unlimited workers')`,
+      (3, 'All Grown Up', '', 7900, 25, 'Everything in Growing Business,Up to 25 workers,White-label branding,Custom logo,Priority support,Encircle integration,Advanced analytics')`,
     `CREATE TABLE IF NOT EXISTS workers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -6351,10 +6351,10 @@ function getLandingHTML(): string {
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>ClockInProof — GPS-Verified Time Tracking for Field Teams</title>
-  <meta name="description" content="Stop guessing when your crew showed up. ClockInProof uses GPS to verify every clock-in with proof — no hardware, no spreadsheets, no excuses."/>
-  <meta property="og:title" content="ClockInProof — GPS Time Tracking"/>
-  <meta property="og:description" content="GPS-verified clock-ins for field teams. Workers clock in on their phone, you see proof instantly."/>
+  <title>ClockInProof — Stop Time Piracy. GPS-Verified Time Tracking.</title>
+  <meta name="description" content="Workers faking clock-ins costs you thousands a year. ClockInProof uses GPS geofencing to prove every worker was actually on site — no hardware, no app downloads."/>
+  <meta property="og:title" content="ClockInProof — Stop Time Piracy"/>
+  <meta property="og:description" content="GPS-verified clock-ins for trades, restoration, HVAC, construction & field teams. Catch fraud before it happens."/>
   <meta property="og:image" content="/static/icon-512.png"/>
   <link rel="icon" href="/static/icon-180.png"/>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -6362,207 +6362,346 @@ function getLandingHTML(): string {
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
     * { font-family: 'Inter', sans-serif; }
-    .gradient-hero { background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f172a 100%); }
+    .gradient-hero { background: linear-gradient(135deg, #0a0f1e 0%, #0f2040 40%, #0a0f1e 100%); }
     .gradient-card { background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%); }
-    .glow { box-shadow: 0 0 40px rgba(59,130,246,0.3); }
-    .feature-card:hover { transform: translateY(-4px); transition: all 0.3s ease; }
+    .gradient-red { background: linear-gradient(135deg, #7f1d1d 0%, #dc2626 100%); }
+    .glow-blue { box-shadow: 0 0 40px rgba(59,130,246,0.35); }
+    .glow-red  { box-shadow: 0 0 40px rgba(220,38,38,0.35); }
+    .feature-card { transition: transform 0.3s ease, box-shadow 0.3s ease; }
+    .feature-card:hover { transform: translateY(-5px); box-shadow: 0 20px 40px rgba(0,0,0,0.4); }
     .pricing-popular { border: 2px solid #3b82f6; position: relative; }
-    .pricing-popular::before { content: 'MOST POPULAR'; position: absolute; top: -12px; left: 50%; transform: translateX(-50%); background: #3b82f6; color: white; font-size: 11px; font-weight: 700; padding: 2px 12px; border-radius: 20px; letter-spacing: 1px; }
-    .nav-blur { backdrop-filter: blur(12px); background: rgba(15,23,42,0.85); }
+    .pricing-popular::before { content: 'MOST POPULAR'; position: absolute; top: -13px; left: 50%; transform: translateX(-50%); background: #3b82f6; color: white; font-size: 10px; font-weight: 800; padding: 3px 14px; border-radius: 20px; letter-spacing: 1.5px; white-space:nowrap; }
+    .nav-blur { backdrop-filter: blur(14px); background: rgba(10,15,30,0.88); }
     html { scroll-behavior: smooth; }
+    .pirate-strike { position:relative; display:inline-block; }
+    .pirate-strike::after { content:''; position:absolute; left:0; right:0; top:50%; height:3px; background:#ef4444; transform:rotate(-4deg); border-radius:2px; }
+    .stat-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); }
+    .industry-pill { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); transition: all 0.2s; }
+    .industry-pill:hover { background: rgba(59,130,246,0.15); border-color: rgba(59,130,246,0.4); }
+    @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+    .float { animation: float 3s ease-in-out infinite; }
+    @keyframes pulse-ring { 0%{transform:scale(1);opacity:0.6} 100%{transform:scale(1.8);opacity:0} }
+    .pulse-ring::before { content:''; position:absolute; inset:-6px; border-radius:50%; border:2px solid #22c55e; animation: pulse-ring 1.5s ease-out infinite; }
   </style>
 </head>
 <body class="bg-gray-950 text-white">
 
-<!-- ── NAV ─────────────────────────────────────────────────────────────── -->
+<!-- ── NAV ──────────────────────────────────────────────────────────────────── -->
 <nav class="fixed top-0 left-0 right-0 z-50 nav-blur border-b border-white/10">
-  <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-    <div class="flex items-center gap-2">
-      <img src="/static/icon-180.png" class="w-8 h-8 rounded-lg" alt="ClockInProof"/>
-      <span class="font-bold text-lg">ClockIn<span class="text-blue-400">Proof</span></span>
+  <div class="max-w-6xl mx-auto px-5 py-3.5 flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <img src="/static/icon-180.png" class="w-8 h-8 rounded-lg" alt="ClockInProof" onerror="this.style.display='none'"/>
+      <span class="font-black text-lg tracking-tight">ClockIn<span class="text-blue-400">Proof</span></span>
     </div>
-    <div class="hidden md:flex items-center gap-8 text-sm text-gray-300">
+    <div class="hidden md:flex items-center gap-7 text-sm text-gray-300">
+      <a href="#problem" class="hover:text-white transition">The Problem</a>
       <a href="#features" class="hover:text-white transition">Features</a>
-      <a href="#how-it-works" class="hover:text-white transition">How it works</a>
+      <a href="#how-it-works" class="hover:text-white transition">How It Works</a>
       <a href="#pricing" class="hover:text-white transition">Pricing</a>
       <a href="#faq" class="hover:text-white transition">FAQ</a>
     </div>
-    <div class="flex items-center gap-3">
-      <a href="https://app.clockinproof.com" class="text-sm text-gray-300 hover:text-white transition hidden md:block">Worker Login</a>
-      <a href="https://admin.clockinproof.com" class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold px-4 py-2 rounded-lg transition">Admin Login</a>
+    <div class="flex items-center gap-2">
+      <a href="https://admin.clockinproof.com" class="hidden md:block text-sm text-gray-400 hover:text-white transition px-3 py-1.5">Sign In</a>
+      <a href="#pricing" class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold px-4 py-2 rounded-lg transition glow-blue">Start Free Trial</a>
     </div>
   </div>
 </nav>
 
-<!-- ── HERO ─────────────────────────────────────────────────────────────── -->
-<section class="gradient-hero min-h-screen flex items-center pt-20">
-  <div class="max-w-6xl mx-auto px-6 py-24 text-center">
-    <div class="inline-flex items-center gap-2 bg-blue-600/20 border border-blue-500/30 rounded-full px-4 py-1.5 text-blue-300 text-sm font-medium mb-8">
-      <i class="fas fa-map-pin text-xs"></i>
-      GPS-Verified Time Tracking
-    </div>
-    <h1 class="text-5xl md:text-7xl font-black mb-6 leading-tight">
-      Know exactly<br/>
-      <span class="text-blue-400">when & where</span><br/>
-      your crew clocked in
-    </h1>
-    <p class="text-xl md:text-2xl text-gray-300 mb-12 max-w-2xl mx-auto leading-relaxed">
-      Workers clock in on their phone. You get GPS-stamped proof instantly. No hardware. No spreadsheets. No arguments.
-    </p>
-    <div class="flex flex-col sm:flex-row gap-4 justify-center">
-      <a href="/admin" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-8 py-4 rounded-xl text-lg transition glow">
-        <i class="fas fa-rocket mr-2"></i>Start Free Trial
-      </a>
-      <a href="#how-it-works" class="border border-white/20 hover:border-white/40 text-white font-semibold px-8 py-4 rounded-xl text-lg transition">
-        <i class="fas fa-play mr-2 text-blue-400"></i>See How It Works
-      </a>
-    </div>
-    <p class="text-gray-500 text-sm mt-6">No credit card required · Setup in 5 minutes · Cancel anytime</p>
+<!-- ── HERO ──────────────────────────────────────────────────────────────────── -->
+<section class="gradient-hero min-h-screen flex items-center pt-20 relative overflow-hidden">
+  <!-- Background grid -->
+  <div class="absolute inset-0 opacity-5" style="background-image:linear-gradient(rgba(99,102,241,0.5) 1px,transparent 1px),linear-gradient(90deg,rgba(99,102,241,0.5) 1px,transparent 1px);background-size:60px 60px"></div>
 
-    <!-- Mock phone UI -->
-    <div class="mt-20 relative max-w-xs mx-auto">
-      <div class="bg-gray-900 rounded-3xl border border-white/10 p-6 glow">
-        <div class="flex items-center justify-between mb-4">
-          <div>
-            <p class="text-xs text-gray-400">Good morning</p>
-            <p class="font-bold text-lg">John Martinez</p>
+  <div class="max-w-6xl mx-auto px-5 py-24 relative z-10">
+    <div class="grid lg:grid-cols-2 gap-16 items-center">
+
+      <!-- Left copy -->
+      <div>
+        <div class="inline-flex items-center gap-2 bg-red-600/20 border border-red-500/30 rounded-full px-4 py-1.5 text-red-300 text-xs font-bold mb-6 uppercase tracking-wider">
+          <i class="fas fa-exclamation-triangle"></i>
+          Time Theft Is Costing You Thousands
+        </div>
+        <h1 class="text-5xl md:text-6xl font-black mb-5 leading-[1.05]">
+          Stop <span class="pirate-strike text-gray-400">Time</span><br/>
+          <span class="text-blue-400">Piracy.</span>
+        </h1>
+        <p class="text-xl text-gray-300 mb-4 leading-relaxed">
+          Your workers are clocking in from home, the truck, or the Tim Hortons down the street — and you're paying for every minute.
+        </p>
+        <p class="text-lg text-gray-400 mb-8 leading-relaxed">
+          ClockInProof GPS-locks every clock-in to the job site. <strong class="text-white">No GPS match = no clock-in.</strong> Simple as that.
+        </p>
+
+        <!-- Stats row -->
+        <div class="grid grid-cols-3 gap-3 mb-10">
+          <div class="stat-card rounded-xl p-4 text-center">
+            <div class="text-2xl font-black text-red-400">4.5 hrs</div>
+            <div class="text-xs text-gray-500 mt-1">avg. time theft/week per employee*</div>
           </div>
-          <div class="w-10 h-10 bg-green-500/20 rounded-full flex items-center justify-center">
-            <i class="fas fa-user-hard-hat text-green-400"></i>
+          <div class="stat-card rounded-xl p-4 text-center">
+            <div class="text-2xl font-black text-yellow-400">$5,200</div>
+            <div class="text-xs text-gray-500 mt-1">annual cost per dishonest worker*</div>
+          </div>
+          <div class="stat-card rounded-xl p-4 text-center">
+            <div class="text-2xl font-black text-green-400">5 min</div>
+            <div class="text-xs text-gray-500 mt-1">to set up ClockInProof</div>
           </div>
         </div>
-        <div class="bg-green-500/10 border border-green-500/30 rounded-xl p-4 mb-3">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
-            <span class="text-green-400 text-sm font-semibold">CLOCKED IN — 07:52 AM</span>
-          </div>
-          <p class="text-xs text-gray-400"><i class="fas fa-map-pin mr-1 text-blue-400"></i>2310 Ryan Dr, Ottawa ON</p>
-          <p class="text-xs text-gray-400 mt-1"><i class="fas fa-shield-alt mr-1 text-green-400"></i>GPS verified · 48m from site</p>
+
+        <div class="flex flex-col sm:flex-row gap-3">
+          <a href="#pricing" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-8 py-4 rounded-xl text-base transition glow-blue text-center">
+            <i class="fas fa-shield-alt mr-2"></i>Start Free — 14 Days
+          </a>
+          <a href="#how-it-works" class="border border-white/20 hover:border-blue-400/50 text-white font-semibold px-8 py-4 rounded-xl text-base transition text-center">
+            <i class="fas fa-play mr-2 text-blue-400"></i>See How It Works
+          </a>
         </div>
-        <div class="text-center">
-          <div class="text-3xl font-black text-white">6h 24m</div>
-          <p class="text-xs text-gray-500">On-site today</p>
+        <p class="text-gray-600 text-xs mt-4">No credit card · No app download · Works on any phone</p>
+      </div>
+
+      <!-- Right: phone mockup -->
+      <div class="flex justify-center">
+        <div class="relative float">
+          <!-- Phone frame -->
+          <div class="bg-gray-900 rounded-3xl border border-white/10 p-5 w-72 glow-blue">
+            <!-- Status bar mock -->
+            <div class="flex justify-between items-center mb-5 px-1">
+              <span class="text-xs text-gray-500">9:41 AM</span>
+              <div class="flex gap-1 text-gray-500 text-xs"><i class="fas fa-signal"></i><i class="fas fa-wifi"></i><i class="fas fa-battery-three-quarters"></i></div>
+            </div>
+            <!-- Worker card -->
+            <div class="mb-4">
+              <div class="flex items-center justify-between mb-3">
+                <div>
+                  <p class="text-xs text-gray-500">Good morning</p>
+                  <p class="font-bold">Marcus Johnson</p>
+                </div>
+                <div class="relative">
+                  <div class="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center pulse-ring">
+                    <span class="font-bold text-sm">MJ</span>
+                  </div>
+                </div>
+              </div>
+              <!-- Clock-in status -->
+              <div class="bg-green-500/10 border border-green-500/30 rounded-2xl p-4 mb-3">
+                <div class="flex items-center gap-2 mb-2">
+                  <div class="w-2.5 h-2.5 rounded-full bg-green-400" style="animation:pulse 1.5s infinite"></div>
+                  <span class="text-green-400 text-xs font-bold tracking-wide">CLOCKED IN — 7:52 AM</span>
+                </div>
+                <p class="text-xs text-gray-300 mb-1"><i class="fas fa-map-marker-alt text-blue-400 mr-1.5 w-3"></i>2310 Ryan Dr, Ottawa ON</p>
+                <p class="text-xs text-gray-300 mb-1"><i class="fas fa-shield-alt text-green-400 mr-1.5 w-3"></i>GPS verified · 22m from site ✓</p>
+                <p class="text-xs text-gray-400"><i class="fas fa-hard-hat text-yellow-400 mr-1.5 w-3"></i>Water damage restoration</p>
+              </div>
+              <!-- Timer -->
+              <div class="text-center py-2">
+                <div class="text-4xl font-black text-white">6:24:11</div>
+                <p class="text-xs text-gray-500 mt-1">Time on site today</p>
+                <p class="text-sm text-green-400 font-semibold mt-1">$144.06 earned</p>
+              </div>
+            </div>
+            <!-- Clock out button -->
+            <button class="w-full bg-red-600/20 border border-red-500/30 text-red-400 font-bold py-3 rounded-xl text-sm">
+              <i class="fas fa-stop-circle mr-2"></i>Clock Out
+            </button>
+          </div>
+          <!-- Admin notification badge -->
+          <div class="absolute -top-3 -right-4 bg-blue-600 rounded-xl px-3 py-2 text-xs font-bold shadow-lg glow-blue">
+            <i class="fas fa-eye mr-1"></i>Admin sees this live
+          </div>
+          <!-- Blocked attempt badge -->
+          <div class="absolute -bottom-3 -left-4 bg-red-600 rounded-xl px-3 py-2 text-xs font-bold shadow-lg glow-red">
+            <i class="fas fa-ban mr-1"></i>Remote login blocked
+          </div>
         </div>
       </div>
-      <div class="absolute -top-3 -right-3 bg-blue-600 rounded-full px-3 py-1 text-xs font-bold">LIVE</div>
+
     </div>
   </div>
 </section>
 
-<!-- ── SOCIAL PROOF ──────────────────────────────────────────────────────── -->
-<section class="bg-gray-900 border-y border-white/5 py-12">
-  <div class="max-w-4xl mx-auto px-6 text-center">
-    <p class="text-gray-500 text-sm mb-8 uppercase tracking-wider font-medium">Built for field teams in</p>
-    <div class="flex flex-wrap justify-center gap-8 text-gray-400 text-sm font-semibold">
-      <span><i class="fas fa-hard-hat mr-2 text-yellow-500"></i>Construction</span>
-      <span><i class="fas fa-broom mr-2 text-blue-400"></i>Cleaning Services</span>
-      <span><i class="fas fa-leaf mr-2 text-green-400"></i>Landscaping</span>
-      <span><i class="fas fa-shield-alt mr-2 text-purple-400"></i>Security</span>
-      <span><i class="fas fa-wrench mr-2 text-orange-400"></i>Trades & HVAC</span>
-      <span><i class="fas fa-truck mr-2 text-red-400"></i>Delivery & Logistics</span>
+<!-- ── INDUSTRIES ─────────────────────────────────────────────────────────────── -->
+<section class="bg-gray-900 border-y border-white/5 py-10">
+  <div class="max-w-5xl mx-auto px-5">
+    <p class="text-center text-gray-500 text-xs font-bold uppercase tracking-widest mb-6">Built for every field service industry</p>
+    <div class="flex flex-wrap justify-center gap-3">
+      <span class="industry-pill rounded-full px-4 py-2 text-sm text-gray-300"><i class="fas fa-fire-extinguisher mr-2 text-red-400"></i>Restoration</span>
+      <span class="industry-pill rounded-full px-4 py-2 text-sm text-gray-300"><i class="fas fa-hard-hat mr-2 text-yellow-400"></i>Construction</span>
+      <span class="industry-pill rounded-full px-4 py-2 text-sm text-gray-300"><i class="fas fa-bolt mr-2 text-yellow-300"></i>Electrical</span>
+      <span class="industry-pill rounded-full px-4 py-2 text-sm text-gray-300"><i class="fas fa-wrench mr-2 text-blue-400"></i>Plumbing</span>
+      <span class="industry-pill rounded-full px-4 py-2 text-sm text-gray-300"><i class="fas fa-snowflake mr-2 text-cyan-400"></i>HVAC</span>
+      <span class="industry-pill rounded-full px-4 py-2 text-sm text-gray-300"><i class="fas fa-spray-can mr-2 text-purple-400"></i>Painting</span>
+      <span class="industry-pill rounded-full px-4 py-2 text-sm text-gray-300"><i class="fas fa-tint mr-2 text-blue-300"></i>Fire Suppression</span>
+      <span class="industry-pill rounded-full px-4 py-2 text-sm text-gray-300"><i class="fas fa-leaf mr-2 text-green-400"></i>Landscaping</span>
+      <span class="industry-pill rounded-full px-4 py-2 text-sm text-gray-300"><i class="fas fa-broom mr-2 text-indigo-400"></i>Cleaning</span>
+      <span class="industry-pill rounded-full px-4 py-2 text-sm text-gray-300"><i class="fas fa-shield-alt mr-2 text-gray-400"></i>Security</span>
+      <span class="industry-pill rounded-full px-4 py-2 text-sm text-gray-300"><i class="fas fa-tools mr-2 text-orange-400"></i>General Trades</span>
+      <span class="industry-pill rounded-full px-4 py-2 text-sm text-gray-300"><i class="fas fa-truck mr-2 text-red-300"></i>Delivery & Logistics</span>
     </div>
   </div>
 </section>
 
-<!-- ── FEATURES ──────────────────────────────────────────────────────────── -->
-<section id="features" class="py-24 bg-gray-950">
-  <div class="max-w-6xl mx-auto px-6">
-    <div class="text-center mb-16">
-      <h2 class="text-4xl font-black mb-4">Everything you need.<br/><span class="text-blue-400">Nothing you don't.</span></h2>
-      <p class="text-gray-400 text-lg max-w-xl mx-auto">Built lean and fast for business owners who want results, not software training sessions.</p>
+<!-- ── THE PROBLEM ───────────────────────────────────────────────────────────── -->
+<section id="problem" class="py-24 bg-gray-950">
+  <div class="max-w-5xl mx-auto px-5">
+    <div class="text-center mb-14">
+      <div class="inline-flex items-center gap-2 bg-red-600/10 border border-red-500/20 rounded-full px-4 py-1.5 text-red-400 text-xs font-bold uppercase tracking-wider mb-4">
+        <i class="fas fa-skull-crossbones"></i> The Time Piracy Problem
+      </div>
+      <h2 class="text-4xl font-black mb-4">How workers steal time<br/><span class="text-red-400">without you knowing</span></h2>
+      <p class="text-gray-400 text-lg max-w-2xl mx-auto">Field service businesses lose 2–8% of payroll to time theft every year. Here's how it happens:</p>
     </div>
     <div class="grid md:grid-cols-3 gap-6">
+      <div class="bg-red-950/30 border border-red-900/40 rounded-2xl p-6">
+        <div class="w-12 h-12 bg-red-600/20 rounded-xl flex items-center justify-center mb-4">
+          <i class="fas fa-home text-red-400 text-xl"></i>
+        </div>
+        <h3 class="font-bold text-lg mb-2 text-red-300">Clocking in from home</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Worker opens the app at home, logs 8 hours, shows up at 10am. You pay for 3 hours they weren't there. Happens every week.</p>
+      </div>
+      <div class="bg-red-950/30 border border-red-900/40 rounded-2xl p-6">
+        <div class="w-12 h-12 bg-red-600/20 rounded-xl flex items-center justify-center mb-4">
+          <i class="fas fa-users text-red-400 text-xl"></i>
+        </div>
+        <h3 class="font-bold text-lg mb-2 text-red-300">Buddy punching</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Worker A is running late, calls Worker B to clock them in. Classic. Costs the average trades company $850/month.</p>
+      </div>
+      <div class="bg-red-950/30 border border-red-900/40 rounded-2xl p-6">
+        <div class="w-12 h-12 bg-red-600/20 rounded-xl flex items-center justify-center mb-4">
+          <i class="fas fa-ghost text-red-400 text-xl"></i>
+        </div>
+        <h3 class="font-bold text-lg mb-2 text-red-300">Ghost hours</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Worker clocks out 2 hours after they actually left. You're still paying. No paper trail, no way to dispute it. Until now.</p>
+      </div>
+    </div>
+    <div class="mt-10 bg-blue-950/30 border border-blue-800/30 rounded-2xl p-6 text-center">
+      <p class="text-blue-300 font-semibold text-lg"><i class="fas fa-shield-alt mr-2 text-blue-400"></i>ClockInProof makes all three impossible. GPS location is required to clock in — and we verify it's real.</p>
+    </div>
+  </div>
+</section>
 
-      <div class="feature-card bg-gray-900 border border-white/5 rounded-2xl p-6">
+<!-- ── FEATURES ──────────────────────────────────────────────────────────────── -->
+<section id="features" class="py-24 bg-gray-900">
+  <div class="max-w-6xl mx-auto px-5">
+    <div class="text-center mb-14">
+      <h2 class="text-4xl font-black mb-4">Every feature you need.<br/><span class="text-blue-400">All included. Every plan.</span></h2>
+      <p class="text-gray-400 text-lg max-w-xl mx-auto">No feature tiers. No upsells. Every plan gets the full platform.</p>
+    </div>
+    <div class="grid md:grid-cols-3 gap-5">
+
+      <div class="feature-card bg-gray-950 border border-white/5 rounded-2xl p-6">
         <div class="w-12 h-12 bg-blue-600/20 rounded-xl flex items-center justify-center mb-4">
           <i class="fas fa-map-pin text-blue-400 text-xl"></i>
         </div>
         <h3 class="font-bold text-lg mb-2">GPS Clock-In Proof</h3>
-        <p class="text-gray-400 text-sm leading-relaxed">Every clock-in is stamped with GPS coordinates. You see exactly where your worker was — on a map, timestamped.</p>
+        <p class="text-gray-400 text-sm leading-relaxed">Every clock-in is GPS-stamped and mapped. You see exactly where your worker stood when they clocked in — timestamped forever.</p>
       </div>
 
-      <div class="feature-card bg-gray-900 border border-white/5 rounded-2xl p-6">
+      <div class="feature-card bg-gray-950 border border-white/5 rounded-2xl p-6">
         <div class="w-12 h-12 bg-green-600/20 rounded-xl flex items-center justify-center mb-4">
-          <i class="fas fa-shield-alt text-green-400 text-xl"></i>
+          <i class="fas fa-draw-polygon text-green-400 text-xl"></i>
         </div>
-        <h3 class="font-bold text-lg mb-2">Geofence Fraud Detection</h3>
-        <p class="text-gray-400 text-sm leading-relaxed">Set a job site radius. Workers outside the zone get flagged automatically. You approve or deny — with one tap.</p>
+        <h3 class="font-bold text-lg mb-2">Geofence Enforcement</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Set a radius around each job site. Workers outside the zone are blocked — or you get an instant alert to approve or deny.</p>
       </div>
 
-      <div class="feature-card bg-gray-900 border border-white/5 rounded-2xl p-6">
+      <div class="feature-card bg-gray-950 border border-white/5 rounded-2xl p-6">
+        <div class="w-12 h-12 bg-yellow-600/20 rounded-xl flex items-center justify-center mb-4">
+          <i class="fas fa-paper-plane text-yellow-400 text-xl"></i>
+        </div>
+        <h3 class="font-bold text-lg mb-2">Job Dispatch by SMS</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Send a worker to a job with one tap. They get an SMS with the address, Google Maps link, and job details. Clock-in modal auto-fills when they arrive.</p>
+      </div>
+
+      <div class="feature-card bg-gray-950 border border-white/5 rounded-2xl p-6">
         <div class="w-12 h-12 bg-purple-600/20 rounded-xl flex items-center justify-center mb-4">
-          <i class="fas fa-clock text-purple-400 text-xl"></i>
+          <i class="fas fa-robot text-purple-400 text-xl"></i>
         </div>
         <h3 class="font-bold text-lg mb-2">Auto Clock-Out</h3>
-        <p class="text-gray-400 text-sm leading-relaxed">Worker left the job site and forgot to clock out? System detects it and clocks them out automatically. No overpay.</p>
+        <p class="text-gray-400 text-sm leading-relaxed">Worker leaves the geofence for 30+ minutes? System clocks them out automatically. No overpay, no chasing workers for forgotten clock-outs.</p>
       </div>
 
-      <div class="feature-card bg-gray-900 border border-white/5 rounded-2xl p-6">
-        <div class="w-12 h-12 bg-yellow-600/20 rounded-xl flex items-center justify-center mb-4">
-          <i class="fas fa-file-invoice-dollar text-yellow-400 text-xl"></i>
-        </div>
-        <h3 class="font-bold text-lg mb-2">Instant Payroll Reports</h3>
-        <p class="text-gray-400 text-sm leading-relaxed">Weekly payroll summaries with hours, earnings, and statutory holiday pay — export to CSV or email straight to your accountant.</p>
-      </div>
-
-      <div class="feature-card bg-gray-900 border border-white/5 rounded-2xl p-6">
-        <div class="w-12 h-12 bg-red-600/20 rounded-xl flex items-center justify-center mb-4">
-          <i class="fas fa-bell text-red-400 text-xl"></i>
-        </div>
-        <h3 class="font-bold text-lg mb-2">Real-Time Alerts</h3>
-        <p class="text-gray-400 text-sm leading-relaxed">Get SMS or email alerts the moment a worker tries to clock in outside the allowed zone. Override from anywhere.</p>
-      </div>
-
-      <div class="feature-card bg-gray-900 border border-white/5 rounded-2xl p-6">
+      <div class="feature-card bg-gray-950 border border-white/5 rounded-2xl p-6">
         <div class="w-12 h-12 bg-cyan-600/20 rounded-xl flex items-center justify-center mb-4">
-          <i class="fas fa-map text-cyan-400 text-xl"></i>
+          <i class="fas fa-satellite-dish text-cyan-400 text-xl"></i>
         </div>
         <h3 class="font-bold text-lg mb-2">Live GPS Map</h3>
-        <p class="text-gray-400 text-sm leading-relaxed">See all active workers on a live map. Know who's on site, who drifted, and who went AWOL — in real time.</p>
+        <p class="text-gray-400 text-sm leading-relaxed">See all active workers on a live map right now. Know who's on site, who's drifted, and who's AWOL — updated every 5 minutes.</p>
+      </div>
+
+      <div class="feature-card bg-gray-950 border border-white/5 rounded-2xl p-6">
+        <div class="w-12 h-12 bg-orange-600/20 rounded-xl flex items-center justify-center mb-4">
+          <i class="fas fa-bell text-orange-400 text-xl"></i>
+        </div>
+        <h3 class="font-bold text-lg mb-2">Instant SMS + Email Alerts</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Get notified the second a worker tries to clock in from outside the zone. Approve or deny from your phone in one tap.</p>
+      </div>
+
+      <div class="feature-card bg-gray-950 border border-white/5 rounded-2xl p-6">
+        <div class="w-12 h-12 bg-emerald-600/20 rounded-xl flex items-center justify-center mb-4">
+          <i class="fas fa-file-invoice-dollar text-emerald-400 text-xl"></i>
+        </div>
+        <h3 class="font-bold text-lg mb-2">Automated Payroll Reports</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Weekly payroll with hours, earnings, stat holiday pay, and per-worker summaries. Export CSV or email directly to your accountant.</p>
+      </div>
+
+      <div class="feature-card bg-gray-950 border border-white/5 rounded-2xl p-6">
+        <div class="w-12 h-12 bg-indigo-600/20 rounded-xl flex items-center justify-center mb-4">
+          <i class="fas fa-link text-indigo-400 text-xl"></i>
+        </div>
+        <h3 class="font-bold text-lg mb-2">QuickBooks Integration</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Sync hours directly into QuickBooks Online. Map workers to QB employees and push time data with one click — no manual entry.</p>
+      </div>
+
+      <div class="feature-card bg-gray-950 border border-white/5 rounded-2xl p-6">
+        <div class="w-12 h-12 bg-pink-600/20 rounded-xl flex items-center justify-center mb-4">
+          <i class="fas fa-mobile-alt text-pink-400 text-xl"></i>
+        </div>
+        <h3 class="font-bold text-lg mb-2">No App Download Required</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Workers get a link by SMS. Open in any browser, enter PIN — done. No App Store, no Google Play, no IT support needed.</p>
       </div>
 
     </div>
   </div>
 </section>
 
-<!-- ── HOW IT WORKS ──────────────────────────────────────────────────────── -->
-<section id="how-it-works" class="py-24 bg-gray-900">
-  <div class="max-w-4xl mx-auto px-6">
-    <div class="text-center mb-16">
-      <h2 class="text-4xl font-black mb-4">Up and running<br/><span class="text-blue-400">in 5 minutes</span></h2>
-      <p class="text-gray-400 text-lg">No hardware. No app download required. Works on any phone.</p>
+<!-- ── HOW IT WORKS ───────────────────────────────────────────────────────────── -->
+<section id="how-it-works" class="py-24 bg-gray-950">
+  <div class="max-w-4xl mx-auto px-5">
+    <div class="text-center mb-14">
+      <h2 class="text-4xl font-black mb-4">Up and running<br/><span class="text-blue-400">in under 5 minutes</span></h2>
+      <p class="text-gray-400 text-lg">No IT. No training. No hardware. Works on the phone your workers already have.</p>
     </div>
-    <div class="space-y-8">
+    <div class="space-y-6">
 
-      <div class="flex gap-6 items-start">
+      <div class="flex gap-5 items-start bg-gray-900 rounded-2xl p-6 border border-white/5">
         <div class="w-12 h-12 gradient-card rounded-xl flex items-center justify-center flex-shrink-0 font-black text-xl">1</div>
         <div>
-          <h3 class="font-bold text-xl mb-2">You set up the job site</h3>
-          <p class="text-gray-400 leading-relaxed">Enter your job site address in the admin panel. Set the geofence radius (e.g., 300m). Add your workers with their phone numbers.</p>
+          <h3 class="font-bold text-xl mb-1.5">Create your account → Add your job sites</h3>
+          <p class="text-gray-400 leading-relaxed text-sm">Enter your business name and job site addresses. Set geofence radius per site (100m to 1km). Takes 3 minutes.</p>
         </div>
       </div>
 
-      <div class="flex gap-6 items-start">
+      <div class="flex gap-5 items-start bg-gray-900 rounded-2xl p-6 border border-white/5">
         <div class="w-12 h-12 gradient-card rounded-xl flex items-center justify-center flex-shrink-0 font-black text-xl">2</div>
         <div>
-          <h3 class="font-bold text-xl mb-2">Workers get an invite link</h3>
-          <p class="text-gray-400 leading-relaxed">Send workers a one-tap link. They open it on their phone, enter their name and PIN — that's their login. No app download, no account creation.</p>
+          <h3 class="font-bold text-xl mb-1.5">Add workers → Send them the link</h3>
+          <p class="text-gray-400 leading-relaxed text-sm">Enter each worker's name and phone number. Tap "Send Invite" — they get an SMS with a one-tap link. They set a PIN. That's their login. Forever.</p>
         </div>
       </div>
 
-      <div class="flex gap-6 items-start">
+      <div class="flex gap-5 items-start bg-gray-900 rounded-2xl p-6 border border-white/5">
         <div class="w-12 h-12 gradient-card rounded-xl flex items-center justify-center flex-shrink-0 font-black text-xl">3</div>
         <div>
-          <h3 class="font-bold text-xl mb-2">They clock in — you get proof</h3>
-          <p class="text-gray-400 leading-relaxed">Worker taps Clock In on their phone. GPS coordinates are captured instantly. You see their location on your admin map within seconds.</p>
+          <h3 class="font-bold text-xl mb-1.5">Workers clock in — GPS verified in real-time</h3>
+          <p class="text-gray-400 leading-relaxed text-sm">Worker taps Clock In on their phone. GPS is captured instantly. If they're at the site — approved. If they're not — blocked and you're notified.</p>
         </div>
       </div>
 
-      <div class="flex gap-6 items-start">
+      <div class="flex gap-5 items-start bg-gray-900 rounded-2xl p-6 border border-white/5">
         <div class="w-12 h-12 gradient-card rounded-xl flex items-center justify-center flex-shrink-0 font-black text-xl">4</div>
         <div>
-          <h3 class="font-bold text-xl mb-2">Payroll runs itself</h3>
-          <p class="text-gray-400 leading-relaxed">Hours are calculated automatically including breaks and statutory holidays. Export weekly payroll to CSV or email it directly to your accountant.</p>
+          <h3 class="font-bold text-xl mb-1.5">Payroll calculates itself — export when ready</h3>
+          <p class="text-gray-400 leading-relaxed text-sm">Every shift is tracked and calculated — hours, earnings, stat holiday pay. Export weekly payroll or push straight to QuickBooks. Your accountant will love it.</p>
         </div>
       </div>
 
@@ -6570,118 +6709,196 @@ function getLandingHTML(): string {
   </div>
 </section>
 
-<!-- ── PRICING ───────────────────────────────────────────────────────────── -->
-<section id="pricing" class="py-24 bg-gray-950">
-  <div class="max-w-5xl mx-auto px-6">
-    <div class="text-center mb-16">
-      <h2 class="text-4xl font-black mb-4">Simple, honest <span class="text-blue-400">pricing</span></h2>
-      <p class="text-gray-400 text-lg">Pay per month. Cancel anytime. No hidden fees.</p>
+<!-- ── PRICING ────────────────────────────────────────────────────────────────── -->
+<section id="pricing" class="py-24 bg-gray-900">
+  <div class="max-w-5xl mx-auto px-5">
+    <div class="text-center mb-14">
+      <h2 class="text-4xl font-black mb-3">Simple pricing.<br/><span class="text-blue-400">All features. Every plan.</span></h2>
+      <p class="text-gray-400 text-lg">No feature gating. No surprise fees. Pick your team size and go.</p>
     </div>
     <div class="grid md:grid-cols-3 gap-6">
 
-      <div class="bg-gray-900 border border-white/10 rounded-2xl p-8">
-        <h3 class="font-bold text-xl mb-2">Starter</h3>
-        <div class="text-4xl font-black mb-1">$29<span class="text-lg font-normal text-gray-400">/mo</span></div>
-        <p class="text-gray-500 text-sm mb-6">Up to 10 workers</p>
-        <ul class="space-y-3 text-sm text-gray-300 mb-8">
-          <li><i class="fas fa-check text-green-400 mr-2"></i>GPS clock-in proof</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Geofence detection</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Payroll reports (CSV)</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Email reports</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Your own subdomain</li>
-          <li><i class="fas fa-times text-gray-600 mr-2"></i>QuickBooks sync</li>
+      <!-- Starter -->
+      <div class="bg-gray-950 border border-white/10 rounded-2xl p-8 flex flex-col">
+        <div class="mb-6">
+          <div class="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">Starter</div>
+          <div class="text-5xl font-black mb-1">$39<span class="text-xl font-normal text-gray-400">/mo</span></div>
+          <p class="text-gray-400 text-sm">Up to <strong class="text-white">5 workers</strong></p>
+        </div>
+        <ul class="space-y-3 text-sm text-gray-300 mb-8 flex-1">
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>GPS clock-in proof</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Geofence fraud detection</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Auto clock-out</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Live GPS map</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>SMS + email alerts</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Payroll reports + CSV export</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Job dispatch by SMS</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>QuickBooks sync</li>
         </ul>
-        <a href="/signup?plan=starter" class="block text-center border border-white/20 hover:border-blue-500 text-white font-semibold py-3 rounded-xl transition">Start Free Trial</a>
+        <a href="/signup?plan=starter" class="block text-center border border-white/20 hover:border-blue-500 hover:bg-blue-600/10 text-white font-bold py-3.5 rounded-xl transition text-sm">
+          Start Free 14-Day Trial
+        </a>
       </div>
 
-      <div class="bg-gray-900 pricing-popular rounded-2xl p-8">
-        <h3 class="font-bold text-xl mb-2">Growth</h3>
-        <div class="text-4xl font-black mb-1 text-blue-400">$59<span class="text-lg font-normal text-gray-400">/mo</span></div>
-        <p class="text-gray-500 text-sm mb-6">Up to 25 workers</p>
-        <ul class="space-y-3 text-sm text-gray-300 mb-8">
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Everything in Starter</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>SMS worker invites</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Live GPS map</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>QuickBooks sync</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Job sites manager</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Worker dispute reports</li>
+      <!-- Growing Business — POPULAR -->
+      <div class="bg-gray-950 pricing-popular rounded-2xl p-8 flex flex-col">
+        <div class="mb-6">
+          <div class="text-xs font-bold text-blue-400 uppercase tracking-widest mb-2">Growing Business</div>
+          <div class="text-5xl font-black text-blue-400 mb-1">$59<span class="text-xl font-normal text-gray-400">/mo</span></div>
+          <p class="text-gray-400 text-sm"><strong class="text-white">6 to 10 workers</strong></p>
+        </div>
+        <ul class="space-y-3 text-sm text-gray-300 mb-8 flex-1">
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Everything in Starter</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Up to 10 workers</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Priority alert notifications</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Multi-site management</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Accountant email export</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Worker dispute system</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Calendar view + history</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Custom company branding</li>
         </ul>
-        <a href="/signup?plan=growth" class="block text-center bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-xl transition">Start Free Trial</a>
+        <a href="/signup?plan=growth" class="block text-center bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 rounded-xl transition text-sm glow-blue">
+          Start Free 14-Day Trial
+        </a>
       </div>
 
-      <div class="bg-gray-900 border border-white/10 rounded-2xl p-8">
-        <h3 class="font-bold text-xl mb-2">Pro</h3>
-        <div class="text-4xl font-black mb-1">$99<span class="text-lg font-normal text-gray-400">/mo</span></div>
-        <p class="text-gray-500 text-sm mb-6">Unlimited workers</p>
-        <ul class="space-y-3 text-sm text-gray-300 mb-8">
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Everything in Growth</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>White-label branding</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Custom logo + colors</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Priority support</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Accountant portal</li>
-          <li><i class="fas fa-check text-green-400 mr-2"></i>Unlimited workers</li>
+      <!-- All Grown Up -->
+      <div class="bg-gray-950 border border-white/10 rounded-2xl p-8 flex flex-col">
+        <div class="mb-6">
+          <div class="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">All Grown Up</div>
+          <div class="text-5xl font-black mb-1">$79<span class="text-xl font-normal text-gray-400">/mo</span></div>
+          <p class="text-gray-400 text-sm"><strong class="text-white">11 to 25 workers</strong></p>
+        </div>
+        <ul class="space-y-3 text-sm text-gray-300 mb-8 flex-1">
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Everything in Growing Business</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Up to 25 workers</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>White-label branding</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Custom logo + colors</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Dedicated onboarding call</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Priority support</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Encircle job integration</li>
+          <li class="flex gap-2"><i class="fas fa-check-circle text-green-400 mt-0.5 flex-shrink-0"></i>Advanced payroll analytics</li>
         </ul>
-        <a href="/signup?plan=pro" class="block text-center border border-white/20 hover:border-blue-500 text-white font-semibold py-3 rounded-xl transition">Start Free Trial</a>
+        <a href="/signup?plan=pro" class="block text-center border border-white/20 hover:border-blue-500 hover:bg-blue-600/10 text-white font-bold py-3.5 rounded-xl transition text-sm">
+          Start Free 14-Day Trial
+        </a>
       </div>
 
     </div>
-    <p class="text-center text-gray-500 text-sm mt-8">All plans include a 14-day free trial · No credit card required to start · Cancel anytime</p>
+
+    <!-- Money-back guarantee -->
+    <div class="mt-8 flex flex-col sm:flex-row items-center justify-center gap-6 text-sm text-gray-400">
+      <span><i class="fas fa-calendar-check text-green-400 mr-2"></i>14-day free trial — no credit card required</span>
+      <span><i class="fas fa-times-circle text-blue-400 mr-2"></i>Cancel anytime — no contracts</span>
+      <span><i class="fas fa-lock text-purple-400 mr-2"></i>Secure payments via Stripe</span>
+    </div>
+    <p class="text-center text-gray-600 text-xs mt-4">*Stats sourced from American Payroll Association and Robert Half workforce survey</p>
   </div>
 </section>
 
-<!-- ── FAQ ───────────────────────────────────────────────────────────────── -->
+<!-- ── PAIN POINT CALLOUT ─────────────────────────────────────────────────────── -->
+<section class="py-16 bg-gray-950 border-y border-white/5">
+  <div class="max-w-4xl mx-auto px-5 text-center">
+    <h2 class="text-3xl font-black mb-3">Still using paper timesheets?</h2>
+    <p class="text-gray-400 text-lg mb-8 max-w-2xl mx-auto">Paper timesheets are a worker's best friend — and your worst enemy. They're easy to fake, impossible to audit, and cost you more than you think.</p>
+    <div class="grid md:grid-cols-4 gap-4">
+      <div class="bg-gray-900 rounded-xl p-4 border border-white/5">
+        <div class="text-red-400 font-black text-2xl mb-1">❌</div>
+        <p class="text-sm text-gray-300 font-medium">Paper timesheets</p>
+        <p class="text-xs text-gray-500 mt-1">Easy to fake, no GPS, no audit trail</p>
+      </div>
+      <div class="bg-gray-900 rounded-xl p-4 border border-white/5">
+        <div class="text-red-400 font-black text-2xl mb-1">❌</div>
+        <p class="text-sm text-gray-300 font-medium">Basic clock-in apps</p>
+        <p class="text-xs text-gray-500 mt-1">No GPS = still faked from home</p>
+      </div>
+      <div class="bg-gray-900 rounded-xl p-4 border border-white/5">
+        <div class="text-red-400 font-black text-2xl mb-1">❌</div>
+        <p class="text-sm text-gray-300 font-medium">Punch clocks</p>
+        <p class="text-xs text-gray-500 mt-1">Expensive hardware, buddy punching</p>
+      </div>
+      <div class="bg-green-950/40 rounded-xl p-4 border border-green-800/40">
+        <div class="text-green-400 font-black text-2xl mb-1">✅</div>
+        <p class="text-sm text-white font-bold">ClockInProof</p>
+        <p class="text-xs text-green-400 mt-1">GPS verified · Fraud blocked · Proof stored</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FAQ ────────────────────────────────────────────────────────────────────── -->
 <section id="faq" class="py-24 bg-gray-900">
-  <div class="max-w-3xl mx-auto px-6">
-    <h2 class="text-4xl font-black text-center mb-16">Questions? <span class="text-blue-400">Answered.</span></h2>
-    <div class="space-y-4" id="faq-list">
+  <div class="max-w-3xl mx-auto px-5">
+    <h2 class="text-4xl font-black text-center mb-14">Questions? <span class="text-blue-400">Answered.</span></h2>
+    <div class="space-y-3" id="faq-list">
 
-      <div class="faq-item bg-gray-800 rounded-xl overflow-hidden">
-        <button onclick="toggleFaq(this)" class="w-full text-left px-6 py-5 font-semibold flex justify-between items-center hover:bg-gray-750 transition">
-          Do workers need to download an app?
-          <i class="fas fa-chevron-down text-gray-400 transition-transform"></i>
+      <div class="faq-item bg-gray-800 rounded-xl overflow-hidden border border-white/5">
+        <button onclick="toggleFaq(this)" class="w-full text-left px-6 py-4 font-semibold flex justify-between items-center hover:bg-gray-750 transition text-sm">
+          Do my workers need to download an app?
+          <i class="fas fa-chevron-down text-gray-400 transition-transform flex-shrink-0 ml-4"></i>
         </button>
         <div class="faq-body hidden px-6 pb-5 text-gray-400 text-sm leading-relaxed">
-          No. Workers receive a link via SMS or WhatsApp. They open it in their phone browser — that's it. No App Store, no Google Play, no account creation.
+          No. Workers receive a link via SMS. They open it in their phone's browser — Chrome, Safari, anything. No App Store, no Google Play, no passwords to remember. They set a 4-digit PIN and that's their login.
         </div>
       </div>
 
-      <div class="faq-item bg-gray-800 rounded-xl overflow-hidden">
-        <button onclick="toggleFaq(this)" class="w-full text-left px-6 py-5 font-semibold flex justify-between items-center hover:bg-gray-750 transition">
-          What if a worker clocks in from home?
-          <i class="fas fa-chevron-down text-gray-400 transition-transform"></i>
+      <div class="faq-item bg-gray-800 rounded-xl overflow-hidden border border-white/5">
+        <button onclick="toggleFaq(this)" class="w-full text-left px-6 py-4 font-semibold flex justify-between items-center hover:bg-gray-750 transition text-sm">
+          What if a worker tries to clock in from home?
+          <i class="fas fa-chevron-down text-gray-400 transition-transform flex-shrink-0 ml-4"></i>
         </button>
         <div class="faq-body hidden px-6 pb-5 text-gray-400 text-sm leading-relaxed">
-          The system flags them automatically. You get a notification showing their GPS location vs. the job site location. You can approve it (rare legitimate case) or deny it — and the worker is notified immediately.
+          They get blocked. You receive an instant alert showing their GPS location vs. the job site. You can approve it if there's a legitimate reason (e.g., material pickup offsite), or deny it. Your worker is notified immediately either way.
         </div>
       </div>
 
-      <div class="faq-item bg-gray-800 rounded-xl overflow-hidden">
-        <button onclick="toggleFaq(this)" class="w-full text-left px-6 py-5 font-semibold flex justify-between items-center hover:bg-gray-750 transition">
-          What happens if a worker forgets to clock out?
-          <i class="fas fa-chevron-down text-gray-400 transition-transform"></i>
+      <div class="faq-item bg-gray-800 rounded-xl overflow-hidden border border-white/5">
+        <button onclick="toggleFaq(this)" class="w-full text-left px-6 py-4 font-semibold flex justify-between items-center hover:bg-gray-750 transition text-sm">
+          What if a worker forgets to clock out?
+          <i class="fas fa-chevron-down text-gray-400 transition-transform flex-shrink-0 ml-4"></i>
         </button>
         <div class="faq-body hidden px-6 pb-5 text-gray-400 text-sm leading-relaxed">
-          ClockInProof monitors GPS pings. If a worker leaves the job site area for longer than your set threshold (e.g., 30 minutes), it automatically clocks them out and logs the reason. You can also manually clock out any worker from the admin panel.
+          ClockInProof auto clock-out kicks in. If the worker's GPS moves outside the job site for more than your threshold (default 30 min), they're automatically clocked out. You can also manually clock out any worker from the admin panel at any time.
         </div>
       </div>
 
-      <div class="faq-item bg-gray-800 rounded-xl overflow-hidden">
-        <button onclick="toggleFaq(this)" class="w-full text-left px-6 py-5 font-semibold flex justify-between items-center hover:bg-gray-750 transition">
-          Can I run multiple job sites at once?
-          <i class="fas fa-chevron-down text-gray-400 transition-transform"></i>
+      <div class="faq-item bg-gray-800 rounded-xl overflow-hidden border border-white/5">
+        <button onclick="toggleFaq(this)" class="w-full text-left px-6 py-4 font-semibold flex justify-between items-center hover:bg-gray-750 transition text-sm">
+          Can I manage multiple job sites at the same time?
+          <i class="fas fa-chevron-down text-gray-400 transition-transform flex-shrink-0 ml-4"></i>
         </button>
         <div class="faq-body hidden px-6 pb-5 text-gray-400 text-sm leading-relaxed">
-          Yes. You can save unlimited job sites in the Job Sites manager. Workers pick their site from a dropdown when clocking in — the system validates their GPS against that specific site's geofence.
+          Yes — unlimited job sites on all plans. Workers pick their site from a dropdown when clocking in. Each site has its own geofence, radius, and history. You can see all active workers across all sites on one live map.
         </div>
       </div>
 
-      <div class="faq-item bg-gray-800 rounded-xl overflow-hidden">
-        <button onclick="toggleFaq(this)" class="w-full text-left px-6 py-5 font-semibond flex justify-between items-center hover:bg-gray-750 transition">
-          Is the data secure?
-          <i class="fas fa-chevron-down text-gray-400 transition-transform"></i>
+      <div class="faq-item bg-gray-800 rounded-xl overflow-hidden border border-white/5">
+        <button onclick="toggleFaq(this)" class="w-full text-left px-6 py-4 font-semibold flex justify-between items-center hover:bg-gray-750 transition text-sm">
+          Can workers spoof their GPS location?
+          <i class="fas fa-chevron-down text-gray-400 transition-transform flex-shrink-0 ml-4"></i>
         </button>
         <div class="faq-body hidden px-6 pb-5 text-gray-400 text-sm leading-relaxed">
-          All data is stored on Cloudflare's global edge network with enterprise-grade security. Your admin panel is PIN-protected. Worker data is isolated per account and never shared.
+          ClockInProof has built-in GPS spoofing detection. It checks for mock location apps, impossible travel speeds (clocked out in Ottawa, clocked in 200km away 10 minutes later), and GPS drift patterns. Suspicious sessions are flagged for admin review.
+        </div>
+      </div>
+
+      <div class="faq-item bg-gray-800 rounded-xl overflow-hidden border border-white/5">
+        <button onclick="toggleFaq(this)" class="w-full text-left px-6 py-4 font-semibold flex justify-between items-center hover:bg-gray-750 transition text-sm">
+          How does the 14-day free trial work?
+          <i class="fas fa-chevron-down text-gray-400 transition-transform flex-shrink-0 ml-4"></i>
+        </button>
+        <div class="faq-body hidden px-6 pb-5 text-gray-400 text-sm leading-relaxed">
+          Sign up with your company name and email. No credit card required. You get full access to all features for 14 days. At the end of the trial, enter your payment info to continue — or simply don't, and your account pauses. No automatic charges.
+        </div>
+      </div>
+
+      <div class="faq-item bg-gray-800 rounded-xl overflow-hidden border border-white/5">
+        <button onclick="toggleFaq(this)" class="w-full text-left px-6 py-4 font-semibold flex justify-between items-center hover:bg-gray-750 transition text-sm">
+          Does it work in Canada and the US?
+          <i class="fas fa-chevron-down text-gray-400 transition-transform flex-shrink-0 ml-4"></i>
+        </button>
+        <div class="faq-body hidden px-6 pb-5 text-gray-400 text-sm leading-relaxed">
+          Yes. ClockInProof works anywhere. Canadian statutory holiday pay rules are built in for all provinces. US federal and state overtime rules are on the roadmap. GPS works globally.
         </div>
       </div>
 
@@ -6689,82 +6906,87 @@ function getLandingHTML(): string {
   </div>
 </section>
 
-<!-- ── CTA ───────────────────────────────────────────────────────────────── -->
+<!-- ── FINAL CTA ───────────────────────────────────────────────────────────────── -->
 <section class="gradient-hero py-24 border-t border-white/10">
-  <div class="max-w-2xl mx-auto px-6 text-center">
-    <h2 class="text-4xl md:text-5xl font-black mb-6">Ready to stop<br/><span class="text-blue-400">guessing?</span></h2>
-    <p class="text-gray-300 text-lg mb-10">Set up in 5 minutes. First 14 days free. No credit card required.</p>
+  <div class="max-w-3xl mx-auto px-5 text-center">
+    <div class="inline-flex items-center gap-2 bg-red-600/20 border border-red-500/30 rounded-full px-4 py-1.5 text-red-300 text-xs font-bold uppercase tracking-wider mb-6">
+      <i class="fas fa-stop-circle"></i> Stop Losing Money Today
+    </div>
+    <h2 class="text-4xl md:text-5xl font-black mb-5 leading-tight">
+      Your crew clocks in tomorrow.<br/>
+      <span class="text-blue-400">You'll know exactly where they are.</span>
+    </h2>
+    <p class="text-gray-300 text-lg mb-10 max-w-xl mx-auto">14 days free. No credit card. Setup in 5 minutes. Cancel if you don't catch time theft within a month — we'd be shocked.</p>
     <div class="flex flex-col sm:flex-row gap-4 justify-center">
-      <a href="/admin" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-10 py-4 rounded-xl text-lg transition glow">
-        <i class="fas fa-rocket mr-2"></i>Start Free Trial
+      <a href="/signup?plan=growth" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-10 py-4 rounded-xl text-lg transition glow-blue">
+        <i class="fas fa-shield-alt mr-2"></i>Start Free Trial
       </a>
-      <a href="/app" class="border border-white/20 hover:border-white/40 text-white font-semibold px-10 py-4 rounded-xl text-lg transition">
-        <i class="fas fa-mobile-alt mr-2 text-blue-400"></i>Worker Demo
+      <a href="https://admin.clockinproof.com" class="border border-white/20 hover:border-white/40 text-white font-semibold px-10 py-4 rounded-xl text-lg transition">
+        <i class="fas fa-sign-in-alt mr-2 text-blue-400"></i>Existing Customer Login
       </a>
     </div>
+    <p class="text-gray-600 text-xs mt-5">Serving restoration, construction, HVAC, electrical, plumbing, fire suppression & all trades across Canada and the US</p>
   </div>
 </section>
 
-<!-- ── FOOTER ────────────────────────────────────────────────────────────── -->
-<footer class="bg-gray-950 border-t border-white/5 py-12">
-  <div class="max-w-6xl mx-auto px-6">
-    <div class="grid md:grid-cols-4 gap-8 mb-8">
-      <div>
+<!-- ── FOOTER ─────────────────────────────────────────────────────────────────── -->
+<footer class="bg-gray-950 border-t border-white/5 py-14">
+  <div class="max-w-6xl mx-auto px-5">
+    <div class="grid md:grid-cols-5 gap-8 mb-10">
+      <div class="md:col-span-2">
         <div class="flex items-center gap-2 mb-4">
-          <img src="/static/icon-180.png" class="w-7 h-7 rounded-md" alt="ClockInProof"/>
-          <span class="font-bold">ClockIn<span class="text-blue-400">Proof</span></span>
+          <img src="/static/icon-180.png" class="w-7 h-7 rounded-md" alt="ClockInProof" onerror="this.style.display='none'"/>
+          <span class="font-black text-lg">ClockIn<span class="text-blue-400">Proof</span></span>
         </div>
-        <p class="text-gray-500 text-sm leading-relaxed">GPS-verified time tracking for field teams. Built for trades, cleaning, landscaping, and security.</p>
+        <p class="text-gray-500 text-sm leading-relaxed mb-4">GPS-verified time tracking that stops time theft for trades, restoration, HVAC, construction, and every field service industry.</p>
+        <div class="flex gap-3">
+          <span class="text-xs text-gray-600 bg-gray-900 px-2 py-1 rounded">🇨🇦 Canada</span>
+          <span class="text-xs text-gray-600 bg-gray-900 px-2 py-1 rounded">🇺🇸 USA</span>
+        </div>
       </div>
       <div>
-        <h4 class="font-semibold mb-4 text-sm uppercase tracking-wider text-gray-400">Product</h4>
-        <ul class="space-y-2 text-sm text-gray-500">
+        <h4 class="font-bold mb-4 text-xs uppercase tracking-wider text-gray-400">Product</h4>
+        <ul class="space-y-2.5 text-sm text-gray-500">
           <li><a href="#features" class="hover:text-white transition">Features</a></li>
           <li><a href="#pricing" class="hover:text-white transition">Pricing</a></li>
-          <li><a href="#how-it-works" class="hover:text-white transition">How it works</a></li>
+          <li><a href="#how-it-works" class="hover:text-white transition">How It Works</a></li>
           <li><a href="#faq" class="hover:text-white transition">FAQ</a></li>
         </ul>
       </div>
       <div>
-        <h4 class="font-semibold mb-4 text-sm uppercase tracking-wider text-gray-400">Access</h4>
-        <ul class="space-y-2 text-sm text-gray-500">
-          <li><a href="/admin" class="hover:text-white transition">Admin Portal</a></li>
-          <li><a href="/app" class="hover:text-white transition">Worker App</a></li>
+        <h4 class="font-bold mb-4 text-xs uppercase tracking-wider text-gray-400">Access</h4>
+        <ul class="space-y-2.5 text-sm text-gray-500">
+          <li><a href="/signup" class="hover:text-white transition">Start Free Trial</a></li>
+          <li><a href="https://admin.clockinproof.com" class="hover:text-white transition">Admin Login</a></li>
+          <li><a href="https://app.clockinproof.com" class="hover:text-white transition">Worker Login</a></li>
         </ul>
       </div>
       <div>
-        <h4 class="font-semibold mb-4 text-sm uppercase tracking-wider text-gray-400">Legal</h4>
-        <ul class="space-y-2 text-sm text-gray-500">
+        <h4 class="font-bold mb-4 text-xs uppercase tracking-wider text-gray-400">Company</h4>
+        <ul class="space-y-2.5 text-sm text-gray-500">
           <li><a href="/privacy" class="hover:text-white transition">Privacy Policy</a></li>
           <li><a href="/terms" class="hover:text-white transition">Terms of Service</a></li>
-        </ul>
-      </div>
-      <div>
-        <h4 class="font-semibold mb-4 text-sm uppercase tracking-wider text-gray-400">Support</h4>
-        <ul class="space-y-2 text-sm text-gray-500">
-          <li><a href="mailto:support@clockinproof.com" class="hover:text-white transition"><i class="fas fa-envelope mr-1"></i>support@clockinproof.com</a></li>
-          <li><a href="mailto:admin@clockinproof.com" class="hover:text-white transition"><i class="fas fa-user-shield mr-1"></i>admin@clockinproof.com</a></li>
+          <li><a href="mailto:support@clockinproof.com" class="hover:text-white transition">support@clockinproof.com</a></li>
         </ul>
       </div>
     </div>
-    <div class="border-t border-white/5 pt-8 flex flex-col md:flex-row justify-between items-center gap-4">
-      <p class="text-gray-600 text-sm">© 2026 ClockInProof Inc. All rights reserved.</p>
-      <p class="text-gray-700 text-xs">Powered by Cloudflare · GPS by OpenStreetMap</p>
+    <div class="border-t border-white/5 pt-8 flex flex-col md:flex-row justify-between items-center gap-3">
+      <p class="text-gray-600 text-xs">© 2026 ClockInProof Inc. All rights reserved. · timepiracy.com · stoptimepiracy.com</p>
+      <p class="text-gray-700 text-xs">Built on Cloudflare Edge · GPS by OpenStreetMap · Payments by Stripe</p>
     </div>
   </div>
 </footer>
 
 <script>
 function toggleFaq(btn) {
-  const body = btn.nextElementSibling;
-  const icon = btn.querySelector('i');
-  const isOpen = !body.classList.contains('hidden');
-  // close all
-  document.querySelectorAll('.faq-body').forEach(b => b.classList.add('hidden'));
-  document.querySelectorAll('.faq-item button i').forEach(i => i.style.transform = '');
+  const body = btn.nextElementSibling
+  const icon = btn.querySelector('i.fa-chevron-down')
+  const isOpen = !body.classList.contains('hidden')
+  document.querySelectorAll('.faq-body').forEach(b => b.classList.add('hidden'))
+  document.querySelectorAll('.faq-item button i.fa-chevron-down').forEach(i => i.style.transform = '')
   if (!isOpen) {
-    body.classList.remove('hidden');
-    icon.style.transform = 'rotate(180deg)';
+    body.classList.remove('hidden')
+    if (icon) icon.style.transform = 'rotate(180deg)'
   }
 }
 </script>
@@ -6772,6 +6994,7 @@ function toggleFaq(btn) {
 </body>
 </html>`
 }
+
 
 // ─── WORKER APP ───────────────────────────────────────────────────────────────
 function getWorkerHTML(tenant?: any): string {
@@ -7442,7 +7665,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260303c"></script>
+<script src="/static/worker.js?v=20260303d"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -10442,7 +10665,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260303c"></script>
+<script src="/static/admin.js?v=20260303d"></script>
 
 </body>
 </html>`
