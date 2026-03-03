@@ -6701,8 +6701,12 @@ function getLandingHTML(): string {
       <a href="#faq" class="hover:text-white transition">FAQ</a>
     </div>
     <div class="flex items-center gap-2">
-      <a href="https://admin.clockinproof.com" class="hidden md:block text-sm text-gray-400 hover:text-white transition px-3 py-1.5">Sign In</a>
-      <a href="#pricing" class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold px-4 py-2 rounded-lg transition glow-blue">Start Free Trial</a>
+      <a href="https://admin.clockinproof.com" class="text-sm text-gray-400 hover:text-white transition px-3 py-2 rounded-lg border border-white/20 hover:border-white/40 hover:bg-white/10">
+        <i class="fas fa-sign-in-alt mr-1.5"></i>Sign In
+      </a>
+      <a href="#pricing" class="hidden sm:inline-flex bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold px-4 py-2 rounded-lg transition glow-blue">
+        Start Free Trial
+      </a>
     </div>
   </div>
 </nav>
