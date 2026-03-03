@@ -5850,10 +5850,20 @@ function renderEncircleCards(jobs) {
       <div class="px-4 py-2.5 bg-gray-50 flex items-center justify-between text-[11px] text-gray-400 border-t border-gray-100">
         <span class="flex items-center gap-1"><i class="fas fa-hashtag text-[9px]"></i>Claim ${j.encircle_claim_id}</span>
         <div class="flex items-center gap-2">
-          <button onclick="event.stopPropagation(); dispatchEncircleJob('${claimKey}')"
-            class="inline-flex items-center gap-1 text-[11px] font-semibold text-white bg-violet-500 hover:bg-violet-600 px-2.5 py-1 rounded-lg transition-colors">
-            <i class="fas fa-paper-plane text-[10px]"></i>Dispatch
-          </button>
+          ${j.status !== 'closed'
+            ? `<button onclick="event.stopPropagation(); dispatchEncircleJob('${claimKey}')"
+                class="inline-flex items-center gap-1 text-[11px] font-semibold text-white bg-violet-500 hover:bg-violet-600 px-2.5 py-1 rounded-lg transition-colors">
+                <i class="fas fa-paper-plane text-[10px]"></i>Dispatch
+              </button>
+              <button onclick="event.stopPropagation(); closeEncircleJob('${j.encircle_claim_id}')"
+                class="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-500 bg-white hover:bg-red-50 hover:text-red-600 border border-gray-200 hover:border-red-200 px-2.5 py-1 rounded-lg transition-colors">
+                <i class="fas fa-times-circle text-[10px]"></i>Close Job
+              </button>`
+            : `<button onclick="event.stopPropagation(); reopenEncircleJob('${j.encircle_claim_id}')"
+                class="inline-flex items-center gap-1 text-[11px] font-semibold text-green-600 bg-white hover:bg-green-50 border border-green-200 px-2.5 py-1 rounded-lg transition-colors">
+                <i class="fas fa-redo text-[10px]"></i>Reopen
+              </button>`
+          }
           <span>${created ? `<i class="fas fa-calendar text-[9px]"></i>Created ${created}` : ''}</span>
         </div>
       </div>
@@ -5863,6 +5873,33 @@ function renderEncircleCards(jobs) {
 
 // Cache for Encircle tab cards (populated by renderEncircleCards)
 let _encircleJobsCache = []
+
+// Manually close an Encircle job — prevents re-sync from re-activating it
+async function closeEncircleJob(claimId) {
+  if (!confirm('Close this job? It will be hidden from active jobs and won\'t be re-synced from Encircle.')) return
+  try {
+    const res = await fetch(`/api/encircle/jobs/${claimId}/close`, { method: 'POST' })
+    if (res.ok) {
+      showAdminToast('Job closed ✅ — won\'t re-sync', 'success')
+      loadEncircleJobs()
+    } else {
+      showAdminToast('Failed to close job', 'error')
+    }
+  } catch(e) { showAdminToast('Connection error', 'error') }
+}
+
+// Reopen a manually closed Encircle job
+async function reopenEncircleJob(claimId) {
+  try {
+    const res = await fetch(`/api/encircle/jobs/${claimId}/reopen`, { method: 'POST' })
+    if (res.ok) {
+      showAdminToast('Job reopened ✅', 'success')
+      loadEncircleJobs()
+    } else {
+      showAdminToast('Failed to reopen job', 'error')
+    }
+  } catch(e) { showAdminToast('Connection error', 'error') }
+}
 
 // Reveal a masked field inside an Encircle card
 function revealEncircleCardField(elemId, val) {

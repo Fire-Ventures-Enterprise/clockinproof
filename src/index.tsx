@@ -437,6 +437,8 @@ async function ensureSchema(db: D1Database) {
     `ALTER TABLE job_sites ADD COLUMN encircle_job_id TEXT`,
     `ALTER TABLE job_sites ADD COLUMN encircle_synced_at DATETIME`,
     `ALTER TABLE job_sites ADD COLUMN encircle_status TEXT`,
+    `ALTER TABLE encircle_jobs ADD COLUMN manually_closed INTEGER DEFAULT 0`,
+    `ALTER TABLE job_sites ADD COLUMN manually_closed INTEGER DEFAULT 0`,
     `CREATE TABLE IF NOT EXISTS encircle_settings (
       id INTEGER PRIMARY KEY,
       bearer_token TEXT,
@@ -3202,7 +3204,10 @@ async function runEncircleSync(db: D1Database): Promise<{
         if (geo) { lat = geo.lat; lng = geo.lng }
       } catch (_) {}
 
-      // ── 1. Upsert into encircle_jobs (full contact data) ──────────────────────
+      // ── 1. Upsert into encircle_jobs (full contact data) — skip if manually closed ──
+      const existingJob = await db.prepare(`SELECT manually_closed FROM encircle_jobs WHERE encircle_claim_id=?`).bind(encId).first() as any
+      if (existingJob?.manually_closed) continue
+
       await db.prepare(`
         INSERT INTO encircle_jobs (
           encircle_claim_id, policyholder_name, policyholder_phone, policyholder_email,
@@ -3256,8 +3261,11 @@ async function runEncircleSync(db: D1Database): Promise<{
 
       // ── 2. Upsert into job_sites (for GPS geofencing) ─────────────────────────
       const existing = await db.prepare(
-        `SELECT id, name, lat, lng FROM job_sites WHERE encircle_job_id = ?`
+        `SELECT id, name, lat, lng, manually_closed FROM job_sites WHERE encircle_job_id = ?`
       ).bind(encId).first() as any
+
+      // Never re-activate a job the admin manually closed
+      if (existing?.manually_closed) continue
 
       if (!existing) {
         await db.prepare(
@@ -3391,6 +3399,26 @@ app.delete('/api/encircle/settings', async (c) => {
   // Deactivate all Encircle-synced job sites
   await db.prepare(`UPDATE job_sites SET active = 0 WHERE encircle_job_id IS NOT NULL`).run()
   return c.json({ success: true, message: 'Encircle disconnected. Synced job sites have been deactivated.' })
+})
+
+// POST /api/encircle/jobs/:claimId/close — manually close a job (won't re-sync)
+app.post('/api/encircle/jobs/:claimId/close', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const claimId = c.req.param('claimId')
+  await db.prepare(`UPDATE encircle_jobs SET status='closed', manually_closed=1 WHERE encircle_claim_id=?`).bind(claimId).run()
+  await db.prepare(`UPDATE job_sites SET active=0, manually_closed=1, encircle_status='Closed' WHERE encircle_job_id=?`).bind(claimId).run()
+  return c.json({ success: true })
+})
+
+// POST /api/encircle/jobs/:claimId/reopen — reopen a manually closed job
+app.post('/api/encircle/jobs/:claimId/reopen', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const claimId = c.req.param('claimId')
+  await db.prepare(`UPDATE encircle_jobs SET status='active', manually_closed=0 WHERE encircle_claim_id=?`).bind(claimId).run()
+  await db.prepare(`UPDATE job_sites SET active=1, manually_closed=0, encircle_status='active' WHERE encircle_job_id=?`).bind(claimId).run()
+  return c.json({ success: true })
 })
 
 // ─── FEATURE 3: WORKER DISPUTE / ISSUE REPORTS ───────────────────────────────
@@ -11006,7 +11034,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260303e"></script>
+<script src="/static/admin.js?v=20260303f"></script>
 
 </body>
 </html>`
