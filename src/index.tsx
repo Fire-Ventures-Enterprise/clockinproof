@@ -9124,22 +9124,6 @@ function getAdminHTML(): string {
       fixed lg:static inset-y-0 left-0 z-40 transform -translate-x-full lg:translate-x-0 transition-transform duration-200"
       style="top:56px;height:calc(100vh - 56px)">
 
-      <!-- Sidebar tenant identity header -->
-      <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-3 bg-gray-50" id="sidebar-tenant-header">
-        <!-- Logo / initials -->
-        <div class="w-9 h-9 rounded-xl overflow-hidden bg-indigo-100 flex items-center justify-center flex-shrink-0" id="sidebar-logo-wrap">
-          <img id="sidebar-logo-img" src="" alt="" class="w-full h-full object-contain hidden" />
-          <span id="sidebar-logo-initials" class="text-indigo-700 font-bold text-sm">C</span>
-        </div>
-        <div class="min-w-0 flex-1">
-          <p class="text-sm font-bold text-gray-800 truncate" id="sidebar-company-name">ClockInProof</p>
-          <p class="text-[10px] text-gray-400 truncate" id="sidebar-last-updated-sub" style="display:none"></p>
-          <div class="flex items-center gap-1 mt-0.5">
-            <span class="text-[9px] font-bold uppercase tracking-wide text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded-full">Admin</span>
-          </div>
-        </div>
-      </div>
-
       <!-- Sidebar scroll area -->
       <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1">
 
