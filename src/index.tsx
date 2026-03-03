@@ -6414,14 +6414,57 @@ app.get('/', async (c) => {
   if (sub === 'admin') return c.html(getAdminHTML())
   if (sub === 'app')   return c.html(getWorkerHTML())
   if (sub === 'super' || sub === 'superadmin') return c.html(getSuperAdminHTML())
-  // Tenant subdomain — e.g. acme.clockinproof.com → worker app for that tenant
+  // Tenant subdomain — e.g. acme.clockinproof.com → smart landing: worker OR admin
   const reserved = ['admin', 'app', 'www', 'superadmin', 'super', 'api', 'mail', '']
   if (sub && !reserved.includes(sub)) {
     const db = c.env.DB
     await ensureSchema(db)
     const tenant = await getTenantBySlug(db, sub) as any
     if (tenant && tenant.status === 'active') {
-      return c.html(getWorkerHTML(tenant))
+      const logoHtml = tenant.logo_url
+        ? `<img src="${tenant.logo_url}" alt="${tenant.company_name}" class="h-14 w-auto object-contain mx-auto mb-2">`
+        : `<div class="w-14 h-14 rounded-2xl bg-indigo-600 flex items-center justify-center mx-auto mb-2 text-white text-2xl font-black">${(tenant.company_name||'C')[0].toUpperCase()}</div>`
+      return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>${tenant.company_name} — ClockInProof</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+  <link rel="manifest" href="/manifest.json"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+</head>
+<body class="bg-gray-950 min-h-screen flex items-center justify-center px-4">
+  <div class="w-full max-w-sm text-center">
+    <!-- Logo / company initial -->
+    ${logoHtml}
+    <h1 class="text-2xl font-black text-white mb-1">${tenant.company_name}</h1>
+    <p class="text-gray-400 text-sm mb-10">Powered by <span class="text-indigo-400 font-semibold">ClockInProof</span></p>
+
+    <!-- Worker clock-in -->
+    <a href="/app" class="flex items-center justify-between w-full bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white rounded-2xl px-6 py-5 mb-4 transition group shadow-lg shadow-indigo-900/40">
+      <div class="text-left">
+        <p class="font-bold text-lg leading-tight">Clock In / Clock Out</p>
+        <p class="text-indigo-200 text-sm mt-0.5">For workers — track your time</p>
+      </div>
+      <i class="fas fa-clock text-2xl text-indigo-200 group-hover:scale-110 transition-transform"></i>
+    </a>
+
+    <!-- Admin panel -->
+    <a href="/admin" class="flex items-center justify-between w-full bg-gray-800 hover:bg-gray-700 active:bg-gray-600 text-white rounded-2xl px-6 py-5 transition group shadow-lg shadow-gray-900/40 border border-gray-700">
+      <div class="text-left">
+        <p class="font-bold text-lg leading-tight">Admin Panel</p>
+        <p class="text-gray-400 text-sm mt-0.5">For managers — view sessions &amp; workers</p>
+      </div>
+      <i class="fas fa-shield-alt text-2xl text-gray-400 group-hover:scale-110 transition-transform"></i>
+    </a>
+
+    <p class="text-gray-600 text-xs mt-8">© ${new Date().getFullYear()} ClockInProof</p>
+  </div>
+</body>
+</html>`)
     }
     return c.html(`<html><body style="font-family:sans-serif;text-align:center;padding:60px">
       <h2>Company not found</h2>
@@ -6434,12 +6477,28 @@ app.get('/', async (c) => {
 })
 
 // Worker app — primary path used in sandbox AND sent to workers as invite link
-app.get('/app', (c) => {
+app.get('/app', async (c) => {
+  const sub = getSubdomain(c)
+  const reserved = ['admin', 'app', 'www', 'superadmin', 'super', 'api', 'mail', '']
+  if (sub && !reserved.includes(sub)) {
+    const db = c.env.DB
+    await ensureSchema(db)
+    const tenant = await getTenantBySlug(db, sub) as any
+    if (tenant && tenant.status === 'active') return c.html(getWorkerHTML(tenant))
+  }
   return c.html(getWorkerHTML())
 })
 
 // Admin dashboard — accessible via /admin path OR admin.* subdomain
-app.get('/admin', (c) => {
+app.get('/admin', async (c) => {
+  const sub = getSubdomain(c)
+  const reserved = ['admin', 'app', 'www', 'superadmin', 'super', 'api', 'mail', '']
+  if (sub && !reserved.includes(sub)) {
+    const db = c.env.DB
+    await ensureSchema(db)
+    const tenant = await getTenantBySlug(db, sub) as any
+    if (tenant && tenant.status === 'active') return c.html(getAdminHTML())
+  }
   return c.html(getAdminHTML())
 })
 
