@@ -2929,6 +2929,33 @@ app.post('/api/stripe/checkout', async (c) => {
   }
 })
 
+// ── Stripe webhook signature verification (Web Crypto — no npm needed) ────────
+async function verifyStripeSignature(payload: string, sigHeader: string, secret: string): Promise<boolean> {
+  try {
+    const parts: Record<string, string> = {}
+    for (const part of sigHeader.split(',')) {
+      const [k, v] = part.split('=')
+      parts[k] = v
+    }
+    const timestamp = parts['t']
+    const sig       = parts['v1']
+    if (!timestamp || !sig) return false
+
+    // Reject if older than 5 minutes
+    const now = Math.floor(Date.now() / 1000)
+    if (Math.abs(now - parseInt(timestamp)) > 300) return false
+
+    const signedPayload = `${timestamp}.${payload}`
+    const enc     = new TextEncoder()
+    const key     = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+    const sigBuf  = await crypto.subtle.sign('HMAC', key, enc.encode(signedPayload))
+    const computed = Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2,'0')).join('')
+    return computed === sig
+  } catch {
+    return false
+  }
+}
+
 // POST /api/stripe/webhook — Stripe sends events here on subscription changes
 // Configure in Stripe Dashboard: Developers → Webhooks → Add endpoint
 // URL: https://admin.clockinproof.com/api/stripe/webhook
@@ -2936,12 +2963,21 @@ app.post('/api/stripe/checkout', async (c) => {
 app.post('/api/stripe/webhook', async (c) => {
   const db  = c.env.DB
   const env = c.env
-  const stripeKey = env.STRIPE_SECRET_KEY || ''
+  const stripeKey    = env.STRIPE_SECRET_KEY || ''
+  const webhookSecret = env.STRIPE_WEBHOOK_SECRET || ''
   if (!stripeKey) return c.text('Not configured', 500)
+
+  const body      = await c.req.text()
+  const sigHeader = c.req.header('stripe-signature') || ''
+
+  // Verify signature if secret is configured (reject unsigned events in production)
+  if (webhookSecret) {
+    const valid = await verifyStripeSignature(body, sigHeader, webhookSecret)
+    if (!valid) return c.text('Invalid signature', 400)
+  }
 
   let event: any
   try {
-    const body = await c.req.text()
     event = JSON.parse(body)
   } catch {
     return c.text('Invalid payload', 400)
