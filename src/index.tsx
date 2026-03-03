@@ -3414,14 +3414,29 @@ app.get('/api/tenant/current', async (c) => {
   await ensureSchema(db)
   const slug = getTenantSlug(c.req.raw)
   if (!slug) {
-    // Platform URL (admin.clockinproof.com / app.clockinproof.com)
-    // Return tenant 1 (911 Restoration) as default for existing URLs
     const tenant = await db.prepare(`SELECT id, slug, company_name, company_address, company_phone, company_website, logo_url, primary_color, plan, status, max_workers FROM tenants WHERE id = 1`).first()
     return c.json({ tenant, is_platform_url: true })
   }
   const tenant = await getTenantBySlug(db, slug)
   if (!tenant) return c.json({ error: 'Company not found' }, 404)
   return c.json({ tenant, is_platform_url: false })
+})
+
+// POST /api/tenant/logo — upload logo as base64 data URL, stored directly in tenants.logo_url
+// Max size enforced at ~500KB (base64 ~680KB string). Supports PNG, JPG, SVG, WebP.
+app.post('/api/tenant/logo', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const body = await c.req.json() as any
+  const { data_url, tenant_id } = body
+  if (!data_url) return c.json({ error: 'data_url required' }, 400)
+  // Basic validation
+  if (!data_url.startsWith('data:image/')) return c.json({ error: 'Invalid image format' }, 400)
+  // Enforce ~500KB limit (base64 strings are ~1.37x raw size)
+  if (data_url.length > 700000) return c.json({ error: 'Image too large — please use an image under 500KB' }, 400)
+  const id = tenant_id || 1
+  await db.prepare(`UPDATE tenants SET logo_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(data_url, id).run()
+  return c.json({ success: true, logo_url: data_url })
 })
 
 // GET /api/plans — public pricing plans
@@ -7427,7 +7442,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260303a"></script>
+<script src="/static/worker.js?v=20260303c"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -7581,22 +7596,28 @@ function getAdminHTML(): string {
   <!-- ── Top Navbar ─────────────────────────────────────────────────────────── -->
   <div class="bg-indigo-700 text-white shadow-lg flex-shrink-0">
     <div class="px-4 py-3 flex items-center justify-between">
-      <!-- Left: hamburger + logo -->
+      <!-- Left: hamburger + tenant brand -->
       <div class="flex items-center gap-3">
         <button onclick="toggleSidebar()" class="w-9 h-9 flex items-center justify-center rounded-xl hover:bg-indigo-600 transition-colors lg:hidden" id="sidebar-hamburger">
           <i class="fas fa-bars text-lg"></i>
         </button>
-        <div class="flex items-center gap-2">
-          <div class="w-8 h-8 bg-white bg-opacity-20 rounded-lg flex items-center justify-center">
+        <!-- Tenant brand block — swapped in by applyTenantBranding() -->
+        <div class="flex items-center gap-2.5" id="navbar-brand">
+          <!-- Tenant logo (shown when logo set) -->
+          <div id="navbar-logo-wrap" class="w-8 h-8 rounded-lg overflow-hidden bg-white bg-opacity-20 flex items-center justify-center flex-shrink-0 hidden">
+            <img id="navbar-logo-img" src="" alt="" class="w-full h-full object-contain" />
+          </div>
+          <!-- Fallback clock icon (shown when no logo) -->
+          <div id="navbar-logo-fallback" class="w-8 h-8 bg-white bg-opacity-20 rounded-lg flex items-center justify-center flex-shrink-0">
             <i class="fas fa-clock text-sm"></i>
           </div>
           <div>
-            <h1 class="text-base font-bold leading-tight">ClockInProof</h1>
+            <h1 class="text-base font-bold leading-tight" id="navbar-company-name">ClockInProof</h1>
             <p class="text-indigo-300 text-[10px] leading-tight" id="admin-last-updated"></p>
           </div>
         </div>
       </div>
-      <!-- Right: stat pills + actions -->
+      <!-- Right: stat pills + "Powered by" badge + actions -->
       <div class="flex items-center gap-2">
         <!-- Mini stat pills (always visible) -->
         <div class="hidden sm:flex items-center gap-2">
@@ -7614,6 +7635,11 @@ function getAdminHTML(): string {
             <span class="text-xs font-bold" id="stat-total-hours">–</span>
             <span class="text-xs text-indigo-200">hrs</span>
           </div>
+        </div>
+        <!-- Powered by ClockInProof badge -->
+        <div class="hidden md:flex items-center gap-1.5 bg-white bg-opacity-10 border border-white border-opacity-20 rounded-lg px-2.5 py-1" id="powered-by-badge">
+          <i class="fas fa-clock text-indigo-300 text-[10px]"></i>
+          <span class="text-[10px] text-indigo-200 font-medium whitespace-nowrap">Powered by <span class="text-white font-bold">ClockInProof</span></span>
         </div>
         <!-- Period selector compact -->
         <select onchange="changePeriod(this.value)" id="period-select" class="hidden sm:block bg-indigo-600 border border-indigo-500 text-white text-xs rounded-xl px-2 py-1.5 focus:outline-none">
@@ -7639,6 +7665,22 @@ function getAdminHTML(): string {
     <aside id="admin-sidebar" class="w-64 bg-white border-r border-gray-200 flex-shrink-0 flex flex-col shadow-sm
       fixed lg:static inset-y-0 left-0 z-40 transform -translate-x-full lg:translate-x-0 transition-transform duration-200"
       style="top:56px;height:calc(100vh - 56px)">
+
+      <!-- Sidebar tenant identity header -->
+      <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-3 bg-gray-50" id="sidebar-tenant-header">
+        <!-- Logo / initials -->
+        <div class="w-9 h-9 rounded-xl overflow-hidden bg-indigo-100 flex items-center justify-center flex-shrink-0" id="sidebar-logo-wrap">
+          <img id="sidebar-logo-img" src="" alt="" class="w-full h-full object-contain hidden" />
+          <span id="sidebar-logo-initials" class="text-indigo-700 font-bold text-sm">C</span>
+        </div>
+        <div class="min-w-0 flex-1">
+          <p class="text-sm font-bold text-gray-800 truncate" id="sidebar-company-name">ClockInProof</p>
+          <p class="text-[10px] text-gray-400 truncate" id="sidebar-last-updated-sub" style="display:none"></p>
+          <div class="flex items-center gap-1 mt-0.5">
+            <span class="text-[9px] font-bold uppercase tracking-wide text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded-full">Admin</span>
+          </div>
+        </div>
+      </div>
 
       <!-- Sidebar scroll area -->
       <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1">
@@ -8136,17 +8178,37 @@ function getAdminHTML(): string {
             <p class="text-xs text-gray-400 mt-1">Shown on the worker app and all outbound communications.</p>
           </div>
           <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Company Logo URL</label>
-            <div class="flex gap-2">
-              <input id="s-logo-url" type="url" placeholder="https://example.com/logo.png"
-                class="flex-1 px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-                oninput="previewSettingsLogo(this.value)" />
-              <button type="button" onclick="previewSettingsLogo(document.getElementById('s-logo-url').value)"
-                class="px-3 py-2.5 bg-indigo-50 border border-indigo-200 rounded-xl text-indigo-600 text-sm hover:bg-indigo-100">
-                <i class="fas fa-eye"></i>
-              </button>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Company Logo</label>
+            <!-- Upload zone -->
+            <div id="logo-upload-zone"
+              class="relative border-2 border-dashed border-indigo-200 rounded-2xl bg-indigo-50 hover:bg-indigo-100 hover:border-indigo-400 transition-colors cursor-pointer"
+              onclick="document.getElementById('logo-file-input').click()"
+              ondragover="event.preventDefault();this.classList.add('border-indigo-500','bg-indigo-100')"
+              ondragleave="this.classList.remove('border-indigo-500','bg-indigo-100')"
+              ondrop="handleLogoDrop(event)">
+              <input type="file" id="logo-file-input" accept="image/png,image/jpeg,image/svg+xml,image/webp" class="hidden" onchange="handleLogoFileSelect(event)" />
+              <!-- Preview state (hidden until image loaded) -->
+              <div id="logo-preview-state" class="hidden flex flex-col items-center py-3 px-4 gap-2">
+                <img id="logo-preview-img" src="" alt="Logo preview" class="max-h-16 max-w-full object-contain rounded-lg shadow-sm" />
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-green-600 font-medium"><i class="fas fa-check-circle mr-1"></i>Logo ready</span>
+                  <button type="button" onclick="event.stopPropagation();clearLogoUpload()" class="text-xs text-red-400 hover:text-red-600"><i class="fas fa-times mr-1"></i>Remove</button>
+                </div>
+              </div>
+              <!-- Empty state -->
+              <div id="logo-empty-state" class="flex flex-col items-center py-5 px-4 gap-2">
+                <div class="w-12 h-12 rounded-xl bg-indigo-100 flex items-center justify-center">
+                  <i class="fas fa-cloud-upload-alt text-indigo-400 text-xl"></i>
+                </div>
+                <div class="text-center">
+                  <p class="text-sm font-medium text-indigo-700">Click or drag image here</p>
+                  <p class="text-xs text-gray-400 mt-0.5">PNG, JPG, SVG or WebP · Max 500KB</p>
+                </div>
+              </div>
             </div>
-            <p class="text-xs text-gray-400 mt-1">PNG or SVG recommended. Displayed in the header above.</p>
+            <!-- Hidden field to store the final value (base64 or URL) -->
+            <input type="hidden" id="s-logo-url" />
+            <p class="text-xs text-gray-400 mt-2"><i class="fas fa-info-circle mr-1"></i>Shown in the top bar and sidebar of this dashboard.</p>
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Worker App URL</label>
@@ -10380,7 +10442,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260303a"></script>
+<script src="/static/admin.js?v=20260303c"></script>
 
 </body>
 </html>`

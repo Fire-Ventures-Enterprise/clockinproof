@@ -2409,13 +2409,26 @@ async function loadSettings() {
     if (workerAppDisplay) { workerAppDisplay.textContent = workerAppUrl }
     if (logoUrlInput && tenant.logo_url) logoUrlInput.value = tenant.logo_url
 
-    // Show logo image if available
+    // Show logo image in settings header
     if (tenant.logo_url && logoImg && logoIcon) {
       logoImg.src = tenant.logo_url
       logoImg.classList.remove('hidden')
       logoIcon.classList.add('hidden')
       logoImg.onerror = () => { logoImg.classList.add('hidden'); logoIcon.classList.remove('hidden') }
     }
+
+    // Show logo in upload zone preview if a logo already exists
+    if (tenant.logo_url) {
+      const previewState = document.getElementById('logo-preview-state')
+      const emptyState   = document.getElementById('logo-empty-state')
+      const previewImg   = document.getElementById('logo-preview-img')
+      if (previewImg)   previewImg.src = tenant.logo_url
+      if (previewState) previewState.classList.remove('hidden')
+      if (emptyState)   emptyState.classList.add('hidden')
+    }
+
+    // Apply branding to navbar + sidebar
+    applyTenantBranding(tenant.logo_url || '', tenant.company_name || '')
 
     // ── Load global settings ──────────────────────────────────────────────────
     const res = await fetch('/api/settings')
@@ -2647,6 +2660,151 @@ function previewSettingsLogo(url) {
   logoImg.src = url.trim()
   logoImg.onload  = () => { logoImg.classList.remove('hidden'); logoIcon.classList.add('hidden') }
   logoImg.onerror = () => { logoImg.classList.add('hidden'); logoIcon.classList.remove('hidden') }
+}
+
+// ── Logo Upload (drag-and-drop / file picker) ─────────────────────────────────
+
+function handleLogoDrop(event) {
+  event.preventDefault()
+  const zone = document.getElementById('logo-upload-zone')
+  if (zone) zone.classList.remove('border-indigo-500', 'bg-indigo-100')
+  const file = event.dataTransfer?.files?.[0]
+  if (file) _processLogoFile(file)
+}
+
+function handleLogoFileSelect(event) {
+  const file = event.target?.files?.[0]
+  if (file) _processLogoFile(file)
+}
+
+function _processLogoFile(file) {
+  // Validate type + size
+  const allowed = ['image/png', 'image/jpeg', 'image/svg+xml', 'image/webp']
+  if (!allowed.includes(file.type)) {
+    showAdminToast('Please upload a PNG, JPG, SVG or WebP image', 'error'); return
+  }
+  if (file.size > 512 * 1024) {
+    showAdminToast('Image too large — max 500 KB', 'error'); return
+  }
+
+  const reader = new FileReader()
+  reader.onload = async (e) => {
+    const dataUrl = e.target.result
+
+    // Show preview
+    const previewState = document.getElementById('logo-preview-state')
+    const emptyState   = document.getElementById('logo-empty-state')
+    const previewImg   = document.getElementById('logo-preview-img')
+    if (previewImg)   previewImg.src = dataUrl
+    if (previewState) previewState.classList.remove('hidden')
+    if (emptyState)   emptyState.classList.add('hidden')
+
+    // Update the settings header preview
+    previewSettingsLogo(dataUrl)
+
+    // Upload to backend — stores as base64 data URL in tenants.logo_url
+    try {
+      const res = await fetch('/api/tenant/logo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data_url: dataUrl, mime_type: file.type })
+      })
+      const result = await res.json()
+      if (res.ok && result.success) {
+        // Store in hidden field for saveSettings reference
+        const hiddenInput = document.getElementById('s-logo-url')
+        if (hiddenInput) hiddenInput.value = result.logo_url || dataUrl
+        showAdminToast('Logo uploaded! ✅ Save Settings to apply.', 'success')
+        // Apply branding immediately across the dashboard
+        applyTenantBranding(result.logo_url || dataUrl, null)
+      } else {
+        showAdminToast('Logo upload failed — try again', 'error')
+      }
+    } catch (err) {
+      // Optimistic: still store locally so saveSettings can push it
+      const hiddenInput = document.getElementById('s-logo-url')
+      if (hiddenInput) hiddenInput.value = dataUrl
+      showAdminToast('Logo ready — will save with Settings', 'success')
+    }
+  }
+  reader.readAsDataURL(file)
+}
+
+function clearLogoUpload() {
+  const previewState = document.getElementById('logo-preview-state')
+  const emptyState   = document.getElementById('logo-empty-state')
+  const previewImg   = document.getElementById('logo-preview-img')
+  const hiddenInput  = document.getElementById('s-logo-url')
+  const fileInput    = document.getElementById('logo-file-input')
+  if (previewImg)   previewImg.src = ''
+  if (previewState) previewState.classList.add('hidden')
+  if (emptyState)   emptyState.classList.remove('hidden')
+  if (hiddenInput)  hiddenInput.value = ''
+  if (fileInput)    fileInput.value = ''
+  previewSettingsLogo('')
+}
+
+// ── Apply Tenant Branding to Navbar + Sidebar ─────────────────────────────────
+// Call with (logoUrl, companyName) — pass null to skip either update
+
+function applyTenantBranding(logoUrl, companyName) {
+  // ── Navbar ────────────────────────────────────────────────────────────────
+  const navLogoWrap     = document.getElementById('navbar-logo-wrap')
+  const navLogoImg      = document.getElementById('navbar-logo-img')
+  const navLogoFallback = document.getElementById('navbar-logo-fallback')
+  const navName         = document.getElementById('navbar-company-name')
+
+  if (companyName != null && navName) {
+    navName.textContent = companyName || 'ClockInProof'
+  }
+
+  if (logoUrl != null) {
+    if (logoUrl) {
+      if (navLogoWrap)     navLogoWrap.classList.remove('hidden')
+      if (navLogoFallback) navLogoFallback.classList.add('hidden')
+      if (navLogoImg) {
+        navLogoImg.src = logoUrl
+        navLogoImg.onerror = () => {
+          navLogoWrap?.classList.add('hidden')
+          navLogoFallback?.classList.remove('hidden')
+        }
+      }
+    } else {
+      if (navLogoWrap)     navLogoWrap.classList.add('hidden')
+      if (navLogoFallback) navLogoFallback.classList.remove('hidden')
+    }
+  }
+
+  // ── Sidebar ───────────────────────────────────────────────────────────────
+  const sideLogoImg      = document.getElementById('sidebar-logo-img')
+  const sideLogoInitials = document.getElementById('sidebar-logo-initials')
+  const sideName         = document.getElementById('sidebar-company-name')
+
+  if (companyName != null && sideName) {
+    sideName.textContent = companyName || 'ClockInProof'
+    // Update initials fallback
+    if (sideLogoInitials) {
+      const initials = (companyName || 'C').trim().split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0,2)
+      sideLogoInitials.textContent = initials || 'C'
+    }
+  }
+
+  if (logoUrl != null) {
+    if (logoUrl) {
+      if (sideLogoImg) {
+        sideLogoImg.src = logoUrl
+        sideLogoImg.classList.remove('hidden')
+        sideLogoImg.onerror = () => {
+          sideLogoImg.classList.add('hidden')
+          if (sideLogoInitials) sideLogoInitials.classList.remove('hidden')
+        }
+      }
+      if (sideLogoInitials) sideLogoInitials.classList.add('hidden')
+    } else {
+      if (sideLogoImg) sideLogoImg.classList.add('hidden')
+      if (sideLogoInitials) sideLogoInitials.classList.remove('hidden')
+    }
+  }
 }
 
 // ── Export Tab ────────────────────────────────────────────────────────────────
@@ -5012,6 +5170,12 @@ async function loadQbSyncLog() {
 // ── Boot: check QB status on page load ───────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   setTimeout(updateQbSettingsStatus, 1500)
+
+  // Apply tenant branding immediately from injected __TENANT__ data
+  try {
+    const t = window.__TENANT__
+    if (t) applyTenantBranding(t.logo_url || '', t.company_name || '')
+  } catch (_) {}
 
   // Close modals with ESC key
   document.addEventListener('keydown', e => {
