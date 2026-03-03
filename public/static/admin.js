@@ -45,56 +45,72 @@ function isSystemNote(notes) {
 
 // ── Admin Login ───────────────────────────────────────────────────────────────
 async function adminLogin() {
-  const pin = document.getElementById('admin-pin-input').value.trim()
+  const email = (document.getElementById('admin-email-input')?.value || '').trim()
+  const pin   = document.getElementById('admin-pin-input').value.trim()
   const errEl = document.getElementById('admin-login-error')
-  const btn = document.querySelector('button[onclick="adminLogin()"]')
+  const btn   = document.querySelector('button[onclick="adminLogin()"]')
 
+  if (!email) {
+    errEl.textContent = 'Please enter your admin email.'
+    errEl.classList.remove('hidden'); return
+  }
   if (!pin) {
-    errEl.textContent = 'Please enter your PIN.'
-    errEl.classList.remove('hidden')
-    return
+    errEl.textContent = 'Please enter your admin PIN.'
+    errEl.classList.remove('hidden'); return
   }
 
-  // Disable button to prevent double-click
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Checking...' }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Signing in...' }
   errEl.classList.add('hidden')
 
-  let adminPin = '1965' // hard-coded fallback matching DB value
   try {
-    const res = await fetch('/api/settings')
-    if (res.ok) {
-      const data = await res.json()
-      adminPin = data.settings?.admin_pin || adminPin
+    const res  = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, pin })
+    })
+    const data = await res.json()
+
+    if (res.ok && data.success) {
+      // Store tenant context for this session
+      window.__TENANT__ = {
+        tenant_id:    data.tenant_id,
+        slug:         data.slug,
+        company_name: data.company_name,
+        logo_url:     data.logo_url || '',
+        primary_color: data.primary_color || '#4F46E5',
+        plan:         data.plan
+      }
+
+      // Show dashboard
+      document.getElementById('admin-login').classList.add('hidden')
+      document.getElementById('admin-dashboard').classList.remove('hidden')
+      errEl.classList.add('hidden')
+
+      // Apply tenant branding immediately
+      applyTenantBranding(data.logo_url || '', data.company_name || '')
+
+      // Start auto-refresh
+      if (!window._adminRefreshInterval) {
+        window._adminRefreshInterval = setInterval(refreshAll, 60000)
+      }
+      refreshAll().catch(() => {})
+
+      // Deep-link navigation
+      const hash = window.location.hash.replace('#', '')
+      const validTabs = ['live','workers','sessions','map','calendar','settings','export','overrides','job-sites','encircle','dispatch','disputes','support-tickets','payroll','accountant','quickbooks']
+      if (hash && validTabs.includes(hash)) showTab(hash)
+
+    } else {
+      errEl.textContent = data.error || 'Invalid email or PIN. Please try again.'
+      errEl.classList.remove('hidden')
+      document.getElementById('admin-pin-input').focus()
+      document.getElementById('admin-pin-input').select()
     }
   } catch(e) {
-    // Network error — use hardcoded fallback, still allow login
-    console.warn('Could not fetch settings, using fallback PIN check')
-  }
-
-  // Re-enable button
-  if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-unlock mr-2"></i>Access Dashboard' }
-
-  if (pin === adminPin) {
-    // SUCCESS — show dashboard immediately
-    document.getElementById('admin-login').classList.add('hidden')
-    document.getElementById('admin-dashboard').classList.remove('hidden')
-    errEl.classList.add('hidden')
-    // Start auto-refresh interval
-    if (!window._adminRefreshInterval) {
-      window._adminRefreshInterval = setInterval(refreshAll, 60000)
-    }
-    // Load data in background — don't await (don't block or risk hiding dashboard)
-    refreshAll().catch(() => {})
-    // Deep-link navigation
-    const hash = window.location.hash.replace('#', '')
-    if (hash && ['live','workers','sessions','map','calendar','settings','export','overrides','job-sites','encircle','dispatch','disputes','support-tickets','payroll','accountant','quickbooks'].includes(hash)) {
-      showTab(hash)
-    }
-  } else {
-    errEl.textContent = 'Incorrect PIN. Try again.'
+    errEl.textContent = 'Connection error — please try again.'
     errEl.classList.remove('hidden')
-    document.getElementById('admin-pin-input').focus()
-    document.getElementById('admin-pin-input').select()
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-unlock mr-2"></i>Access Dashboard' }
   }
 }
 
@@ -105,6 +121,9 @@ function adminLogout() {
 }
 
 document.getElementById('admin-pin-input').addEventListener('keyup', e => {
+  if (e.key === 'Enter') adminLogin()
+})
+document.getElementById('admin-email-input')?.addEventListener('keyup', e => {
   if (e.key === 'Enter') adminLogin()
 })
 

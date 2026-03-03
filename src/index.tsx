@@ -3597,6 +3597,36 @@ app.put('/api/settings', async (c) => {
   return c.json({ success: true })
 })
 
+// ─── ADMIN AUTH API ───────────────────────────────────────────────────────────
+// POST /api/admin/login — works from any domain (admin.clockinproof.com for ALL tenants)
+// Body: { email: string, pin: string }
+// Returns: { success, tenant_id, slug, company_name, logo_url }
+app.post('/api/admin/login', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const { email, pin } = await c.req.json() as { email?: string, pin?: string }
+  if (!email || !pin) return c.json({ error: 'Email and PIN required' }, 400)
+
+  // Look up tenant by admin_email + admin_pin
+  const tenant = await db.prepare(`
+    SELECT id, slug, company_name, logo_url, primary_color, plan, status
+    FROM tenants WHERE LOWER(admin_email) = LOWER(?) AND admin_pin = ? AND status != 'deleted'
+  `).bind(email.trim(), pin.trim()).first() as any
+
+  if (!tenant) return c.json({ error: 'Invalid email or PIN' }, 401)
+  if (tenant.status === 'suspended') return c.json({ error: 'Account suspended — contact support@clockinproof.com' }, 403)
+
+  return c.json({
+    success: true,
+    tenant_id: tenant.id,
+    slug: tenant.slug,
+    company_name: tenant.company_name,
+    logo_url: tenant.logo_url || '',
+    primary_color: tenant.primary_color || '#4F46E5',
+    plan: tenant.plan
+  })
+})
+
 // ─── TENANT API ───────────────────────────────────────────────────────────────
 // These endpoints power the signup flow + future super admin panel
 
@@ -8062,25 +8092,39 @@ function getAdminHTML(): string {
 <body class="bg-gray-100 min-h-screen">
 
 <!-- Admin Login -->
-<div id="admin-login" class="min-h-screen flex items-center justify-center p-4">
-  <div class="bg-white rounded-2xl shadow-sm p-8 w-full max-w-sm">
+<div id="admin-login" class="min-h-screen flex items-center justify-center p-4" style="background: linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #1e1b4b 100%)">
+  <div class="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm">
     <div class="text-center mb-6">
-      <div class="w-16 h-16 bg-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4">
-        <i class="fas fa-shield-alt text-white text-2xl"></i>
+      <div class="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
+        <i class="fas fa-clock text-white text-2xl"></i>
       </div>
-      <h2 class="text-2xl font-bold text-gray-800">Admin Panel</h2>
-      <p class="text-gray-500 text-sm">ClockInProof Dashboard</p>
+      <h2 class="text-2xl font-bold text-gray-800">Admin Dashboard</h2>
+      <p class="text-gray-500 text-sm mt-1">Sign in to your ClockInProof account</p>
     </div>
-    <div class="space-y-4">
-      <input id="admin-pin-input" type="password" placeholder="Admin PIN" maxlength="6"
-        class="w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
+    <div class="space-y-3">
+      <div>
+        <label class="block text-xs font-semibold text-gray-600 mb-1">Admin Email</label>
+        <input id="admin-email-input" type="email" placeholder="admin@yourcompany.com"
+          class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+      </div>
+      <div>
+        <label class="block text-xs font-semibold text-gray-600 mb-1">Admin PIN</label>
+        <input id="admin-pin-input" type="password" placeholder="Enter your PIN" maxlength="8"
+          class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
+      </div>
       <button onclick="adminLogin()"
-        class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl">
+        class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl transition-colors mt-1">
         <i class="fas fa-unlock mr-2"></i>Access Dashboard
       </button>
     </div>
-    <div id="admin-login-error" class="hidden mt-3 text-red-500 text-sm text-center"></div>
-    <p class="text-center text-xs text-gray-400 mt-4">Contact your administrator for the PIN</p>
+    <div id="admin-login-error" class="hidden mt-3 text-red-500 text-sm text-center bg-red-50 rounded-lg p-2"></div>
+    <div class="mt-5 pt-4 border-t border-gray-100 text-center">
+      <p class="text-xs text-gray-400">Your email and PIN were set during company signup</p>
+      <a href="mailto:support@clockinproof.com" class="text-xs text-indigo-500 hover:underline mt-1 inline-block">Need help? Contact support</a>
+    </div>
+    <div class="mt-4 text-center">
+      <p class="text-[10px] text-gray-300">Powered by <span class="font-bold text-gray-400">ClockInProof</span></p>
+    </div>
   </div>
 </div>
 
