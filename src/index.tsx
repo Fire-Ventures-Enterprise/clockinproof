@@ -13760,8 +13760,8 @@ function showToast(msg, isError=false) {
   setTimeout(()=>{ t.style.display='none' }, 3500)
 }
 
-<script src="/static/super-tax.js"></script>
 </script>
+<script src="/static/super-tax.js"></script>
 </body>
 </html>`
 }
