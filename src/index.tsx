@@ -7,6 +7,8 @@ type Bindings = {
   STRIPE_SECRET_KEY?: string
   STRIPE_WEBHOOK_SECRET?: string
   STRIPE_PUBLISHABLE_KEY?: string
+  CLOUDFLARE_API_TOKEN?: string
+  CF_ACCOUNT_ID?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -2996,16 +2998,38 @@ app.post('/api/stripe/webhook', async (c) => {
     const planLimits: Record<string, number> = { starter: 10, growth: 25, pro: 999 }
     const maxWorkers = planLimits[plan] || 10
 
+    // Resolve the actual slug used
+    let resolvedSlug = slug
     if (tenantId) {
       await db.prepare(`
         UPDATE tenants SET status='active', stripe_customer_id=?, stripe_subscription_id=?,
         plan=?, max_workers=?, updated_at=CURRENT_TIMESTAMP WHERE id=?
       `).bind(custId, subId, plan, maxWorkers, parseInt(tenantId)).run()
+      const t = await db.prepare(`SELECT slug FROM tenants WHERE id=?`).bind(parseInt(tenantId)).first() as any
+      resolvedSlug = t?.slug || slug
     } else if (slug) {
       await db.prepare(`
         UPDATE tenants SET status='active', stripe_customer_id=?, stripe_subscription_id=?,
         plan=?, max_workers=?, updated_at=CURRENT_TIMESTAMP WHERE slug=?
       `).bind(custId, subId, plan, maxWorkers, slug).run()
+    }
+
+    // Auto-provision the tenant subdomain on Cloudflare Pages
+    if (resolvedSlug && env.CLOUDFLARE_API_TOKEN && env.CF_ACCOUNT_ID) {
+      const subdomain = `${resolvedSlug}.clockinproof.com`
+      try {
+        await fetch(
+          `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/pages/projects/clockinproof/domains`,
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ name: subdomain })
+          }
+        )
+      } catch { /* non-fatal — subdomain can be added manually */ }
     }
   }
 
