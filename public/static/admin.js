@@ -6220,6 +6220,9 @@ function closeDispatchModal() {
   const modal = document.getElementById('dispatch-modal')
   if (modal) modal.classList.add('hidden')
   document.body.style.overflow = ''
+  // Clear the note so it doesn't carry over to the next dispatch
+  const notesField = document.getElementById('dispatch-notes')
+  if (notesField) notesField.value = ''
 }
 
 function setDispatchSource(src) {

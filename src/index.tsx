@@ -10984,7 +10984,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260303d"></script>
+<script src="/static/admin.js?v=20260303e"></script>
 
 </body>
 </html>`
