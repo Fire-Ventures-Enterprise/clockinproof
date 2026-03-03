@@ -3148,13 +3148,35 @@ async function runEncircleSync(db: D1Database): Promise<{
     const data = await resp.json() as any
     const allClaims = data.list || []
 
-    // ── Filter out closed/archived jobs — we only import active claims ──────
-    const CLOSED_STATUSES = ['closed', 'archived', 'cancelled', 'canceled', 'complete', 'completed']
+    // ── Filter out closed/archived/leave jobs — only import truly active claims ──
+    const CLOSED_STATUSES = [
+      'closed', 'archived', 'cancelled', 'canceled',
+      'complete', 'completed', 'done', 'finished',
+      'leave_job', 'leave job', 'leaving', 'left',
+      'inactive', 'void', 'voided', 'deleted'
+    ]
     const claims = allClaims.filter((c: any) => {
-      const s = (c.status || c.claim_status || c.project_status || '').toLowerCase()
-      return !CLOSED_STATUSES.includes(s)
+      // Check every possible status field Encircle might use
+      const statusFields = [
+        c.status, c.claim_status, c.project_status,
+        c.job_status, c.state, c.stage, c.phase
+      ]
+      return !statusFields.some((s: any) =>
+        s && CLOSED_STATUSES.includes(String(s).toLowerCase().trim())
+      )
     })
     const skippedClosed = allClaims.length - claims.length
+
+    // ── Immediately deactivate any jobs that came back as closed/leave_job ──
+    const closedClaims = allClaims.filter((c: any) => {
+      const statusFields = [c.status, c.claim_status, c.project_status, c.job_status, c.state, c.stage, c.phase]
+      return statusFields.some((s: any) => s && CLOSED_STATUSES.includes(String(s).toLowerCase().trim()))
+    })
+    for (const cc of closedClaims) {
+      const ccId = String(cc.id)
+      await db.prepare(`UPDATE job_sites SET active=0, encircle_status='Closed' WHERE encircle_job_id=?`).bind(ccId).run()
+      await db.prepare(`UPDATE encircle_jobs SET status='closed' WHERE encircle_claim_id=?`).bind(ccId).run()
+    }
 
     let added = 0, updated = 0, closed = 0
     const encircleIds: string[] = []
