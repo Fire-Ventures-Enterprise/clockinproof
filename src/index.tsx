@@ -12490,12 +12490,14 @@ function renderTenants(tenants) {
       <td style="color:#64748b;font-size:12px">\${la}</td>
       <td style="text-align:right">
         <div style="display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap">
-          <button class="btn btn-ghost" onclick='openEditModal(\${JSON.stringify(t).replace(/'/g,"&#39;")})' title="Edit"><i class="fas fa-edit"></i></button>
+          <button class="btn btn-ghost" onclick='openEditModal(\${JSON.stringify(t).replace(/'/g,"&#39;")})'  title="Edit"><i class="fas fa-edit"></i></button>
+          <a href="https://admin.clockinproof.com/?tenant=\${t.slug}" target="_blank" class="btn btn-ghost" title="Open Admin Panel"><i class="fas fa-external-link-alt"></i></a>
           <a href="https://\${t.slug}.clockinproof.com" target="_blank" class="btn btn-ghost" title="Worker App"><i class="fas fa-mobile-alt"></i></a>
           \${t.status==='active'
-            ? '<button class="btn btn-danger" onclick="suspendTenant('+t.id+')" title="Suspend"><i class="fas fa-pause"></i></button>'
+            ? '<button class="btn btn-warning" onclick="suspendTenant('+t.id+')" title="Suspend"><i class="fas fa-pause"></i></button>'
             : '<button class="btn btn-success" onclick="activateTenant('+t.id+')" title="Activate"><i class="fas fa-play"></i></button>'
           }
+          \${t.id !== 1 ? '<button class="btn btn-danger" onclick="deleteTenant('+t.id+',\''+t.company_name.replace(/'/g,"\'")+'\'  )" title="Delete / Archive"><i class="fas fa-trash"></i></button>' : ''}
         </div>
       </td>
     </tr>\`
@@ -12544,6 +12546,17 @@ async function suspendTenant(id) {
 async function activateTenant(id) {
   await api('/api/super/tenants/'+id, { method:'PUT', body:JSON.stringify({status:'active'}) })
   showToast('▶ Tenant activated'); loadTenants()
+}
+async function deleteTenant(id, name) {
+  const confirmed = confirm('Archive "' + name + '"?\n\nThis will soft-delete the tenant. Their data is preserved but workers will not be able to clock in.\n\nType DELETE to confirm:')
+  if (!confirmed) return
+  const typed = prompt('Type DELETE to confirm archiving "' + name + '":')
+  if ((typed || '').trim().toUpperCase() !== 'DELETE') { showToast('❌ Cancelled — nothing changed', true); return }
+  try {
+    await api('/api/super/tenants/'+id, { method:'DELETE' })
+    showToast('🗑 Tenant archived (data preserved)')
+    loadTenants()
+  } catch(e) { showToast('❌ Failed to archive tenant', true) }
 }
 
 // ── Create Tenant ───────────────────────────────────────────────────────────
