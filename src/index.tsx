@@ -4887,7 +4887,9 @@ app.post('/api/device-reset-request', async (c) => {
   const twilioToken = (env.TWILIO_AUTH_TOKEN     || settings.twilio_auth_token    || '').trim()
   const twilioMsgSvc= (env.TWILIO_MESSAGING_SERVICE || settings.twilio_messaging_service || '').trim()
   const twilioFrom  = (env.TWILIO_FROM_NUMBER   || settings.twilio_from_number   || '').trim()
-  const appHost     = (settings.app_host || 'admin.clockinproof.com').trim()
+  // Strip any existing protocol from app_host/admin_host so we never double up
+  const rawHost     = (settings.admin_host || settings.app_host || 'admin.clockinproof.com').trim()
+  const adminDashboardUrl = rawHost.startsWith('http') ? rawHost.replace(/\/$/, '') : `https://${rawHost.replace(/\/$/, '')}`
 
   // Email notification
   if (adminEmail && resendKey) {
@@ -4903,7 +4905,7 @@ app.post('/api/device-reset-request', async (c) => {
           <p><strong>${worker.name}</strong> (${worker.phone}) is requesting a device reset.</p>
           <p><strong>Reason:</strong> ${reason || 'New phone'}</p>
           <p>Log into your admin dashboard → Workers tab → find ${worker.name} → tap <strong>Approve Reset</strong>.</p>
-          <p><a href="https://${appHost}" style="background:#4F46E5;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;display:inline-block;margin-top:8px">Open Admin Dashboard →</a></p>
+          <p><a href="${adminDashboardUrl}/#workers" style="background:#4F46E5;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;display:inline-block;margin-top:8px">Open Admin Dashboard → Workers Tab</a></p>
           <p style="color:#dc2626;font-size:12px;margin-top:16px"><strong>Security:</strong> Only approve this if you have personally confirmed the request with the worker.</p>
         </div>`
       })
