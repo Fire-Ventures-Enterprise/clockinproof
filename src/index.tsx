@@ -12974,6 +12974,11 @@ select.input option{background:#1e293b}
       <span class="nav-badge" id="tax-alert-badge" style="display:none">!</span>
     </button>
 
+    <div class="section-header" style="margin-top:8px">Growth</div>
+    <button class="nav-item" id="nav-trial-links" onclick="showPage('trial-links')">
+      <i class="fas fa-link"></i> Trial Links
+    </button>
+
     <div class="section-header" style="margin-top:8px">Support</div>
     <button class="nav-item" id="nav-support" onclick="showPage('support')">
       <i class="fas fa-life-ring"></i> Support Tickets
@@ -13959,6 +13964,100 @@ select.input option{background:#1e293b}
       </div>
     </div>
   </div>
+
+    <!-- ── TRIAL LINKS ──────────────────────────────────────── -->
+    <div class="page" id="page-trial-links" style="padding:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">
+        <div>
+          <h1 style="font-size:20px;font-weight:800;color:#fff"><i class="fas fa-link" style="color:#818cf8;margin-right:8px"></i>Trial Links</h1>
+          <p style="color:#64748b;font-size:13px">Generate shareable links for prospects — 60-day free trial, no credit card required</p>
+        </div>
+      </div>
+
+      <!-- Quick copy card -->
+      <div class="card" style="padding:20px;margin-bottom:20px;background:linear-gradient(135deg,#1e1b4b,#0f172a);border-color:#312e81">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+          <div style="background:#4f46e5;border-radius:8px;padding:8px 12px">
+            <i class="fas fa-rocket" style="color:#a5b4fc;font-size:16px"></i>
+          </div>
+          <div>
+            <div style="font-weight:700;color:#fff">Standard Free-Trial Link</div>
+            <div style="font-size:12px;color:#64748b">Works anywhere — email, SMS, LinkedIn, landing page</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;background:#0f172a;border:1px solid #312e81;border-radius:8px;padding:10px 14px;margin-bottom:12px">
+          <i class="fas fa-link" style="color:#4f46e5;flex-shrink:0"></i>
+          <span id="trial-link-url" style="flex:1;color:#a5b4fc;font-size:13px;word-break:break-all">https://clockinproof.pages.dev/free-trial</span>
+          <button class="btn btn-primary" style="padding:5px 14px;font-size:12px;flex-shrink:0" onclick="copyTrialLink()"><i class="fas fa-copy"></i> Copy</button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <a href="https://clockinproof.pages.dev/free-trial" target="_blank" class="btn btn-ghost" style="font-size:12px">
+            <i class="fas fa-eye"></i> Preview
+          </a>
+          <button class="btn btn-ghost" style="font-size:12px" onclick="genEmailSnippet()">
+            <i class="fas fa-envelope"></i> Email Snippet
+          </button>
+          <button class="btn btn-ghost" style="font-size:12px" onclick="genSmsSnippet()">
+            <i class="fas fa-sms"></i> SMS Text
+          </button>
+        </div>
+      </div>
+
+      <!-- UTM Link Generator -->
+      <div class="card" style="padding:20px;margin-bottom:20px">
+        <h3 style="font-size:14px;font-weight:700;color:#fff;margin-bottom:14px"><i class="fas fa-sliders-h" style="color:#818cf8;margin-right:6px"></i>UTM Tracking Generator</h3>
+        <p style="font-size:12px;color:#64748b;margin-bottom:14px">Create tagged links to track where sign-ups come from (Google Ads, email campaigns, etc.)</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+          <div>
+            <label style="font-size:11px;color:#94a3b8;display:block;margin-bottom:4px">Campaign Source</label>
+            <input id="utm-source" class="input" placeholder="e.g. google, linkedin, email" />
+          </div>
+          <div>
+            <label style="font-size:11px;color:#94a3b8;display:block;margin-bottom:4px">Medium</label>
+            <input id="utm-medium" class="input" placeholder="e.g. cpc, email, social" />
+          </div>
+          <div>
+            <label style="font-size:11px;color:#94a3b8;display:block;margin-bottom:4px">Campaign Name</label>
+            <input id="utm-campaign" class="input" placeholder="e.g. spring2026, roofing-promo" />
+          </div>
+          <div>
+            <label style="font-size:11px;color:#94a3b8;display:block;margin-bottom:4px">Content (optional)</label>
+            <input id="utm-content" class="input" placeholder="e.g. banner-ad, cta-button" />
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="buildUtmLink()" style="margin-bottom:12px"><i class="fas fa-magic"></i> Generate Link</button>
+        <div id="utm-result" style="display:none;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:10px 14px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="utm-link-out" style="flex:1;color:#a5b4fc;font-size:12px;word-break:break-all"></span>
+            <button class="btn btn-primary" style="padding:4px 12px;font-size:12px;flex-shrink:0" onclick="copyUtmLink()"><i class="fas fa-copy"></i></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Snippet modal (hidden) -->
+      <div id="snippet-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:300;align-items:center;justify-content:center;padding:16px">
+        <div class="card" style="padding:24px;width:100%;max-width:520px;position:relative">
+          <button onclick="document.getElementById('snippet-modal').style.display='none'" style="position:absolute;top:12px;right:16px;background:none;border:none;color:#64748b;font-size:18px;cursor:pointer">✕</button>
+          <h3 id="snippet-title" style="font-size:15px;font-weight:700;color:#fff;margin-bottom:14px">Snippet</h3>
+          <textarea id="snippet-text" style="width:100%;height:160px;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:8px;padding:10px;font-size:12px;line-height:1.6;resize:vertical" readonly></textarea>
+          <button class="btn btn-primary" style="margin-top:12px;width:100%" onclick="copySnippet()"><i class="fas fa-copy"></i> Copy to Clipboard</button>
+        </div>
+      </div>
+
+      <!-- Recent sign-ups from trial -->
+      <div class="card" style="padding:20px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <h3 style="font-size:14px;font-weight:700;color:#fff"><i class="fas fa-users" style="color:#818cf8;margin-right:6px"></i>Recent Trial Sign-Ups</h3>
+          <button class="btn btn-ghost" style="font-size:11px" onclick="loadTrialSignups()"><i class="fas fa-sync"></i> Refresh</button>
+        </div>
+        <div id="trial-signups-list">
+          <div style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></div>
+        </div>
+      </div>
+    </div>
+    <!-- ── end TRIAL LINKS ── -->
+
+  </div>
 </div>
 
 <!-- TENANT PROFILE DRAWER -->
@@ -14143,6 +14242,103 @@ function showPage(name) {
   if (name === 'platform')    loadPlatformUrls()
   if (name === 'tax')         loadTax()
   if (name === 'plans')       loadPlansPage()
+  if (name === 'trial-links') loadTrialSignups()
+}
+
+// ── TRIAL LINKS ──────────────────────────────────────────────────────────
+const TRIAL_BASE = 'https://clockinproof.pages.dev/free-trial'
+
+function copyTrialLink() {
+  navigator.clipboard.writeText(TRIAL_BASE).then(() => showToast('✅ Link copied!'))
+}
+
+function buildUtmLink() {
+  const src = document.getElementById('utm-source').value.trim()
+  const med = document.getElementById('utm-medium').value.trim()
+  const cam = document.getElementById('utm-campaign').value.trim()
+  const con = document.getElementById('utm-content').value.trim()
+  if (!src && !med && !cam) { showToast('⚠️ Fill in at least one UTM field'); return }
+  const params = new URLSearchParams()
+  if (src) params.set('utm_source', src)
+  if (med) params.set('utm_medium', med)
+  if (cam) params.set('utm_campaign', cam)
+  if (con) params.set('utm_content', con)
+  const link = TRIAL_BASE + '?' + params.toString()
+  document.getElementById('utm-link-out').textContent = link
+  document.getElementById('utm-result').style.display = 'block'
+}
+
+function copyUtmLink() {
+  const txt = document.getElementById('utm-link-out').textContent
+  navigator.clipboard.writeText(txt).then(() => showToast('✅ UTM link copied!'))
+}
+
+function genEmailSnippet() {
+  const link = TRIAL_BASE
+  const txt = [
+    'Subject: Try ClockInProof free for 60 days',
+    '',
+    'Hi [Name],',
+    '',
+    "I wanted to share a tool that's been helping construction and trades businesses stop time theft and automate payroll — it's called ClockInProof.",
+    '',
+    'GPS-verified clock-in, geofence fraud detection, job dispatch, and payroll reports — all in one app.',
+    '',
+    'Start your free 60-day trial (no credit card):',
+    link,
+    '',
+    'Takes about 2 minutes to set up. Happy to answer any questions.',
+    '',
+    '— Nasser'
+  ].join('\\n')
+  document.getElementById('snippet-title').textContent = '📧 Email Snippet'
+  document.getElementById('snippet-text').value = txt
+  document.getElementById('snippet-modal').style.display = 'flex'
+}
+
+function genSmsSnippet() {
+  const txt = 'Hey! Try ClockInProof free for 60 days — GPS time tracking for your crew, no credit card needed. Takes 2 min to set up: ' + TRIAL_BASE
+  document.getElementById('snippet-title').textContent = '📱 SMS Text'
+  document.getElementById('snippet-text').value = txt
+  document.getElementById('snippet-modal').style.display = 'flex'
+}
+
+function copySnippet() {
+  const txt = document.getElementById('snippet-text').value
+  navigator.clipboard.writeText(txt).then(() => showToast('✅ Copied!'))
+}
+
+async function loadTrialSignups() {
+  const el = document.getElementById('trial-signups-list')
+  el.innerHTML = '<div style="text-align:center;padding:32px;color:#475569"><i class="fas fa-spinner fa-spin"></i></div>'
+  try {
+    const r = await fetch('/api/tenants?status=trial&limit=20', { headers: { 'X-Super-Admin': 'true' } })
+    const data = await r.json()
+    const tenants = data.tenants || data || []
+    const trials = tenants.filter(t => t.status === 'trial' || t.plan === 'trial')
+    if (!trials.length) {
+      el.innerHTML = '<div class="empty-state"><i class="fas fa-user-clock"></i><p>No trial sign-ups yet</p><p style="font-size:12px;margin-top:4px">Share the link above to get started</p></div>'
+      return
+    }
+    const rows = trials.map(function(t) {
+      const days = t.trial_ends_at ? Math.ceil((new Date(t.trial_ends_at) - Date.now()) / 86400000) : '?'
+      const daysColor = days < 7 ? '#ef4444' : days < 14 ? '#f59e0b' : '#22c55e'
+      const daysLabel = (typeof days === 'number' && days > 0) ? (days + ' days left') : 'Expired'
+      return '<tr>' +
+        '<td style="font-weight:600;color:#e2e8f0">' + t.company_name + '</td>' +
+        '<td><span style="color:#818cf8">' + t.slug + '.clockinproof.com</span></td>' +
+        '<td style="color:#94a3b8">' + t.admin_email + '</td>' +
+        '<td><span style="color:' + daysColor + ';font-weight:600">' + daysLabel + '</span></td>' +
+        '<td style="text-align:center">' + (t.worker_count || '\u2014') + '</td>' +
+        '<td><span class="pill badge-trial">trial</span></td>' +
+        '</tr>'
+    }).join('')
+    el.innerHTML = '<table class="tbl"><thead><tr>' +
+      '<th>Company</th><th>Subdomain</th><th>Email</th><th>Trial Ends</th><th>Workers</th><th>Status</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table>'
+  } catch(e) {
+    el.innerHTML = '<div class="empty-state"><i class="fas fa-exclamation-circle"></i><p>Failed to load</p></div>'
+  }
 }
 
 function toggleSidebar() {
