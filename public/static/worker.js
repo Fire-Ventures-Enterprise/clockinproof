@@ -99,9 +99,14 @@ window.onload = async () => {
 
 function showScreen(name) {
   ['register','login','main'].forEach(s => {
-    document.getElementById('screen-' + s).classList.add('hidden')
+    const el = document.getElementById('screen-' + s)
+    el.style.display = 'none'
+    el.classList.add('hidden')
   })
-  document.getElementById('screen-' + name).classList.remove('hidden')
+  const target = document.getElementById('screen-' + name)
+  target.classList.remove('hidden')
+  // screen-main needs flex layout for scroll to work correctly
+  target.style.display = (name === 'main') ? 'flex' : 'block'
 }
 function showLogin() { showScreen('login') }
 function showRegister() { showScreen('register') }
@@ -2019,7 +2024,9 @@ function wkShowTab(tab) {
     const btn   = document.getElementById('wk-nav-' + t)
     if (!panel || !btn) return
     const active = (t === tab)
-    panel.style.display = active ? '' : 'none'
+    // Use flex so the panel fills available height in the flex-column screen-main
+    panel.style.display  = active ? 'flex' : 'none'
+    panel.style.flexDirection = active ? 'column' : ''
     btn.style.color      = active ? WK_ACCENT : '#9ca3af'
     btn.style.fontWeight = active ? '700' : '600'
     btn.style.borderTop  = active ? '2px solid ' + WK_ACCENT : '2px solid transparent'

@@ -8235,7 +8235,7 @@ function getWorkerHTML(tenant?: any): string {
 </div>
 
 <!-- Main Worker Screen -->
-<div id="screen-main" class="hidden min-h-screen bg-gray-50">
+<div id="screen-main" class="hidden bg-gray-50" style="display:none;flex-direction:column;height:100dvh;height:100vh;overflow:hidden">
   <!-- Header -->
   <div class="bg-blue-600 text-white px-4 py-5 shadow-md">
     <div class="flex items-center justify-between">
@@ -8274,7 +8274,7 @@ function getWorkerHTML(tenant?: any): string {
   <!-- ── Tab Panels ──────────────────────────────────────────────────────── -->
 
   <!-- CLOCK TAB -->
-  <div id="wk-tab-clock" style="padding-bottom:72px">
+  <div id="wk-tab-clock" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:80px">
   <div class="p-4 space-y-4 max-w-lg mx-auto">
     <!-- Status Card -->
     <div id="status-card" class="bg-white rounded-2xl shadow-sm p-5 slide-up">
@@ -8560,7 +8560,7 @@ function getWorkerHTML(tenant?: any): string {
   </div><!-- /wk-tab-clock -->
 
   <!-- DISPATCHES TAB -->
-  <div id="wk-tab-dispatches" style="display:none;padding-bottom:72px">
+  <div id="wk-tab-dispatches" style="display:none;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:80px">
     <div class="p-4 max-w-lg mx-auto space-y-4">
       <div style="display:flex;align-items:center;justify-content:space-between;padding-top:4px">
         <div>
@@ -8591,7 +8591,7 @@ function getWorkerHTML(tenant?: any): string {
   </div><!-- /wk-tab-dispatches -->
 
   <!-- PAY HISTORY TAB -->
-  <div id="wk-tab-history" style="display:none;padding-bottom:72px">
+  <div id="wk-tab-history" style="display:none;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:80px">
     <div class="p-4 max-w-lg mx-auto space-y-4">
       <div style="padding-top:4px">
         <h2 style="font-size:17px;font-weight:800;color:#1e293b">Pay Period</h2>
@@ -8636,7 +8636,7 @@ function getWorkerHTML(tenant?: any): string {
   </div><!-- /wk-tab-history -->
 
   <!-- PROFILE TAB -->
-  <div id="wk-tab-profile" style="display:none;padding-bottom:72px">
+  <div id="wk-tab-profile" style="display:none;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:80px">
     <div class="p-4 max-w-lg mx-auto space-y-4">
       <div style="padding-top:4px">
         <h2 style="font-size:17px;font-weight:800;color:#1e293b">My Profile</h2>
@@ -8745,8 +8745,10 @@ function getWorkerHTML(tenant?: any): string {
   </div>
 </div>
 
-<div id="job-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 modal-bg flex items-center justify-center z-50 p-4">
-  <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl flex flex-col" style="max-height:calc(100vh - 100px);max-height:calc(100dvh - 100px)">
+<div id="job-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 modal-bg z-50 overflow-y-auto">
+  <!-- Outer scroll container — centers on tall screens, scrolls on small ones -->
+  <div class="flex items-center justify-center min-h-full p-4 pb-24">
+  <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl flex flex-col" style="width:100%">
 
     <!-- Sticky header -->
     <div class="flex-shrink-0 px-6 pt-5 pb-4 border-b border-gray-100">
@@ -8765,7 +8767,7 @@ function getWorkerHTML(tenant?: any): string {
     </div>
 
     <!-- Scrollable body -->
-    <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+    <div class="px-6 py-4 space-y-4">
 
       <!-- Job Location -->
       <div>
@@ -8950,7 +8952,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260305b"></script>
+<script src="/static/worker.js?v=20260305c"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
