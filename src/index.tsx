@@ -8745,79 +8745,87 @@ function getWorkerHTML(tenant?: any): string {
   </div>
 </div>
 
-<div id="job-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 modal-bg flex items-end justify-center z-50">
-  <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up" style="max-height:90vh;overflow-y:auto">
-    <div class="w-10 h-1 bg-gray-300 rounded-full mx-auto mb-5"></div>
-    <div class="flex items-center gap-3 mb-5">
-      <div class="w-12 h-12 bg-green-100 rounded-2xl flex items-center justify-center">
-        <i class="fas fa-briefcase text-green-600 text-xl"></i>
+<div id="job-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 modal-bg flex items-center justify-center z-50 p-4">
+  <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl flex flex-col" style="max-height:calc(100vh - 100px);max-height:calc(100dvh - 100px)">
+
+    <!-- Sticky header -->
+    <div class="flex-shrink-0 px-6 pt-5 pb-4 border-b border-gray-100">
+      <div class="flex items-center gap-3">
+        <div class="w-12 h-12 bg-green-100 rounded-2xl flex items-center justify-center flex-shrink-0">
+          <i class="fas fa-briefcase text-green-600 text-xl"></i>
+        </div>
+        <div>
+          <h3 class="text-lg font-bold text-gray-800">Where are you working?</h3>
+          <p class="text-gray-500 text-xs">Tell us about today's job before clocking in</p>
+        </div>
+        <button onclick="closeJobModal()" class="ml-auto w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-400 flex-shrink-0">
+          <i class="fas fa-times text-sm"></i>
+        </button>
       </div>
+    </div>
+
+    <!-- Scrollable body -->
+    <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+
+      <!-- Job Location -->
       <div>
-        <h3 class="text-lg font-bold text-gray-800">Where are you working?</h3>
-        <p class="text-gray-500 text-xs">Tell us about today's job before clocking in</p>
+        <label class="block text-sm font-semibold text-gray-700 mb-2">
+          <i class="fas fa-map-marker-alt text-red-500 mr-1"></i>Job Location / Address
+        </label>
+        <div id="saved-sites-row" class="hidden mb-2">
+          <select id="saved-sites-select" onchange="pickSavedSite(this.value)"
+            class="w-full px-4 py-3 border-2 border-emerald-200 rounded-xl focus:outline-none focus:border-emerald-500 text-gray-800 text-sm bg-emerald-50">
+            <option value="">📍 Pick a saved job site or activity...</option>
+          </select>
+        </div>
+        <input id="job-location-input" type="text"
+          placeholder="Start typing an address..."
+          autocomplete="off"
+          class="w-full px-4 py-3.5 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 text-gray-800 text-sm"
+          oninput="filterLocationSuggestions(this.value)"
+          onblur="setTimeout(()=>document.getElementById('location-suggestions').classList.add('hidden'),200)"/>
+        <div id="location-suggestions" class="hidden mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-20 max-h-40 overflow-y-auto"></div>
       </div>
-    </div>
 
-    <!-- Job Location -->
-    <div class="mb-4">
-      <label class="block text-sm font-semibold text-gray-700 mb-2">
-        <i class="fas fa-map-marker-alt text-red-500 mr-1"></i>Job Location / Address
-      </label>
-      <!-- Saved sites dropdown (shown when sites exist) -->
-      <div id="saved-sites-row" class="hidden mb-2">
-        <select id="saved-sites-select" onchange="pickSavedSite(this.value)"
-          class="w-full px-4 py-3 border-2 border-emerald-200 rounded-xl focus:outline-none focus:border-emerald-500 text-gray-800 text-sm bg-emerald-50">
-          <option value="">📍 Pick a saved job site...</option>
-        </select>
+      <!-- Tasks / Description -->
+      <div>
+        <label class="block text-sm font-semibold text-gray-700 mb-2">
+          <i class="fas fa-tasks text-blue-500 mr-1"></i>What are you doing today?
+        </label>
+        <textarea id="job-description-input" rows="3"
+          placeholder="e.g. Installing floor tiles in bedroom, drywall in bathroom, painting hallway"
+          class="w-full px-4 py-3.5 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 text-gray-800 text-sm resize-none"></textarea>
+        <p class="text-xs text-gray-400 mt-1">Be specific — this helps track what was done each day</p>
       </div>
-      <input id="job-location-input" type="text"
-        placeholder="Start typing an address..."
-        autocomplete="off"
-        class="w-full px-4 py-3.5 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 text-gray-800 text-sm"
-        oninput="filterLocationSuggestions(this.value)"
-        onblur="setTimeout(()=>document.getElementById('location-suggestions').classList.add('hidden'),200)"/>
-      <!-- Address suggestions dropdown -->
-      <div id="location-suggestions" class="hidden mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-20 max-h-52 overflow-y-auto"></div>
-    </div>
 
-    <!-- Tasks / Description -->
-    <div class="mb-5">
-      <label class="block text-sm font-semibold text-gray-700 mb-2">
-        <i class="fas fa-tasks text-blue-500 mr-1"></i>What are you doing today?
-      </label>
-      <textarea id="job-description-input" rows="3"
-        placeholder="e.g. Installing floor tiles in bedroom, drywall in bathroom, painting hallway"
-        class="w-full px-4 py-3.5 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 text-gray-800 text-sm resize-none"></textarea>
-      <p class="text-xs text-gray-400 mt-1">Be specific — this helps track what was done each day</p>
-    </div>
-
-    <!-- Quick task chips -->
-    <div class="mb-5">
-      <p class="text-xs text-gray-500 font-medium mb-2">Quick add tasks:</p>
-      <div class="flex flex-wrap gap-2" id="task-chips">
-        <button onclick="addChip('Flooring')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🪵 Flooring</button>
-        <button onclick="addChip('Drywall')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🧱 Drywall</button>
-        <button onclick="addChip('Painting')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🎨 Painting</button>
-        <button onclick="addChip('Plumbing')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🔧 Plumbing</button>
-        <button onclick="addChip('Electrical')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">⚡ Electrical</button>
-        <button onclick="addChip('Tiling')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🏗️ Tiling</button>
-        <button onclick="addChip('Cleanup')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🧹 Cleanup</button>
-        <button onclick="addChip('Inspection')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🔍 Inspection</button>
+      <!-- Quick task chips -->
+      <div>
+        <p class="text-xs text-gray-500 font-medium mb-2">Quick add tasks:</p>
+        <div class="flex flex-wrap gap-2" id="task-chips">
+          <button onclick="addChip('Flooring')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🪵 Flooring</button>
+          <button onclick="addChip('Drywall')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🧱 Drywall</button>
+          <button onclick="addChip('Painting')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🎨 Painting</button>
+          <button onclick="addChip('Plumbing')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🔧 Plumbing</button>
+          <button onclick="addChip('Electrical')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">⚡ Electrical</button>
+          <button onclick="addChip('Tiling')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🏗️ Tiling</button>
+          <button onclick="addChip('Cleanup')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🧹 Cleanup</button>
+          <button onclick="addChip('Inspection')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🔍 Inspection</button>
+        </div>
       </div>
-    </div>
 
-    <!-- GPS capture indicator -->
-    <div class="bg-gray-50 rounded-xl p-3 mb-5 flex items-center gap-3">
-      <i class="fas fa-map-marker-alt text-red-500"></i>
-      <div class="flex-1">
-        <p class="text-xs font-medium text-gray-700">GPS will be captured automatically</p>
-        <p id="modal-gps-status" class="text-xs text-gray-400 mt-0.5">
-          Getting your location...
-        </p>
+      <!-- GPS capture indicator -->
+      <div class="bg-gray-50 rounded-xl p-3 flex items-center gap-3">
+        <i class="fas fa-map-marker-alt text-red-500"></i>
+        <div class="flex-1">
+          <p class="text-xs font-medium text-gray-700">GPS will be captured automatically</p>
+          <p id="modal-gps-status" class="text-xs text-gray-400 mt-0.5">Getting your location...</p>
+        </div>
       </div>
+
     </div>
 
-    <div class="flex gap-3">
+    <!-- Sticky footer buttons — always visible -->
+    <div class="flex-shrink-0 px-6 py-4 border-t border-gray-100 flex gap-3">
       <button onclick="closeJobModal()" class="flex-1 border-2 border-gray-200 text-gray-600 font-semibold py-3.5 rounded-xl hover:bg-gray-50">
         Cancel
       </button>
@@ -8942,7 +8950,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260305a"></script>
+<script src="/static/worker.js?v=20260305b"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
