@@ -7352,10 +7352,9 @@ app.get('/admin', async (c) => {
   return c.html(getAdminHTML())
 })
 
-// Super Admin portal — private URL, not linked anywhere on the site
-// Old /super path now returns 404 to prevent enumeration
-app.get('/super', (c) => c.notFound())
-app.get('/cip-hq', (c) => {
+// Super Admin portal — accessible via super.clockinproof.com (subdomain handled above in '/' route)
+// Also accessible via /super path as fallback (e.g. during DNS propagation or direct URL access)
+app.get('/super', (c) => {
   return c.html(getSuperAdminHTML())
 })
 
