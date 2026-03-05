@@ -814,11 +814,18 @@ function openJobModal() {
   // Reset session type to regular on every open
   modal.dataset.sessionType = 'regular'
   modal.dataset.jobSiteId = ''
+  modal.dataset.pickupEtaMinutes = ''
   hideSessionTypeBanner()
+  hidePickupFields()
   document.getElementById('job-location-input').value = ''
   document.getElementById('job-location-input').placeholder = 'Start typing an address...'
   document.getElementById('job-description-input').value = ''
   document.getElementById('location-suggestions').classList.add('hidden')
+  // Clear pickup fields
+  const destInput = document.getElementById('pickup-destination-input')
+  const retInput  = document.getElementById('pickup-return-input')
+  if (destInput) destInput.value = ''
+  if (retInput)  retInput.value  = ''
   // Reset dropdown
   const sel = document.getElementById('saved-sites-select')
   if (sel) sel.value = ''
@@ -942,14 +949,14 @@ function pickSavedSite(value) {
   if (value === '__material_pickup__') {
     // Special: Material Pickup — worker is going off-site to get supplies
     locInput.value = ''
-    locInput.placeholder = 'Where are you picking up? (e.g. Home Depot, 123 Main St)'
-    locInput.focus()
+    locInput.placeholder = 'Job site address you left from (or current location)'
     // Pre-fill description if empty
     if (!descInput.value.trim()) descInput.value = 'Material pickup'
     // Tag the session type on the modal so it gets sent at clock-in
     document.getElementById('job-modal').dataset.sessionType = 'material_pickup'
-    // Show info banner
+    // Show type banner + pickup-specific fields
     showSessionTypeBanner('material_pickup')
+    showPickupFields()
     return
   }
 
@@ -961,6 +968,7 @@ function pickSavedSite(value) {
     if (!descInput.value.trim()) descInput.value = 'Emergency job call-out'
     document.getElementById('job-modal').dataset.sessionType = 'emergency_job'
     showSessionTypeBanner('emergency_job')
+    hidePickupFields()
     return
   }
 
@@ -974,6 +982,29 @@ function pickSavedSite(value) {
   const selectedOption = sel ? sel.options[sel.selectedIndex] : null
   document.getElementById('job-modal').dataset.jobSiteId = selectedOption ? (selectedOption.dataset.siteId || '') : ''
   hideSessionTypeBanner()
+  hidePickupFields()
+}
+
+function showPickupFields() {
+  const pf = document.getElementById('pickup-fields')
+  if (pf) pf.classList.remove('hidden')
+  // Pre-fill return address from recentLocations or saved sites
+  const returnInput = document.getElementById('pickup-return-input')
+  if (returnInput && !returnInput.value.trim() && recentLocations.length > 0) {
+    returnInput.value = recentLocations[0]
+  }
+  // Focus destination input
+  setTimeout(() => {
+    const d = document.getElementById('pickup-destination-input')
+    if (d) d.focus()
+  }, 100)
+}
+
+function hidePickupFields() {
+  const pf = document.getElementById('pickup-fields')
+  if (pf) pf.classList.add('hidden')
+  const etaCard = document.getElementById('pickup-eta-card')
+  if (etaCard) etaCard.classList.add('hidden')
 }
 
 function showSessionTypeBanner(type) {
@@ -986,7 +1017,7 @@ function showSessionTypeBanner(type) {
   }
   if (type === 'material_pickup') {
     banner.className = 'mb-4 flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-xl p-3'
-    banner.innerHTML = '<span class="text-2xl">📦</span><div><p class="font-semibold text-amber-800 text-sm">Material Pickup</p><p class="text-xs text-amber-600 mt-0.5">Geofence check is <strong>bypassed</strong>. Your manager will see you are off-site for pickups. Enter the destination below.</p></div>'
+    banner.innerHTML = '<span class="text-2xl">📦</span><div><p class="font-semibold text-amber-800 text-sm">Material Pickup</p><p class="text-xs text-amber-600 mt-0.5">Geofence check is <strong>bypassed</strong>. Your manager will see where you are going and estimated return time.</p></div>'
   } else if (type === 'emergency_job') {
     banner.className = 'mb-4 flex items-start gap-3 bg-red-50 border border-red-200 rounded-xl p-3'
     banner.innerHTML = '<span class="text-2xl">🚨</span><div><p class="font-semibold text-red-800 text-sm">Emergency Job</p><p class="text-xs text-red-600 mt-0.5">Geofence check is <strong>bypassed</strong>. Your manager is notified you have been called to an emergency job. Enter the location below.</p></div>'
@@ -999,8 +1030,142 @@ function hideSessionTypeBanner() {
   if (banner) banner.classList.add('hidden')
 }
 
+// ── Pickup destination address autocomplete ──────────────────────────────────
+let _pickupDestTimer = null
+let _pickupReturnTimer = null
+
+function filterPickupDestSuggestions(val) {
+  const box = document.getElementById('pickup-dest-suggestions')
+  clearTimeout(_pickupDestTimer)
+  if (!val || val.length < 3) { box.classList.add('hidden'); return }
+  box.innerHTML = '<div class="px-4 py-3 text-xs text-gray-400"><i class="fas fa-circle-notch fa-spin mr-2"></i>Searching...</div>'
+  box.classList.remove('hidden')
+  _pickupDestTimer = setTimeout(async () => {
+    const suggestions = await fetchAddressSuggestions(val)
+    renderSuggestions(suggestions, 'pickup-destination-input', 'pickup-dest-suggestions', 'selectPickupDest')
+  }, 350)
+}
+
+function filterPickupReturnSuggestions(val) {
+  const box = document.getElementById('pickup-return-suggestions')
+  clearTimeout(_pickupReturnTimer)
+  if (!val || val.length < 3) { box.classList.add('hidden'); return }
+  box.innerHTML = '<div class="px-4 py-3 text-xs text-gray-400"><i class="fas fa-circle-notch fa-spin mr-2"></i>Searching...</div>'
+  box.classList.remove('hidden')
+  _pickupReturnTimer = setTimeout(async () => {
+    const suggestions = await fetchAddressSuggestions(val)
+    renderSuggestions(suggestions, 'pickup-return-input', 'pickup-return-suggestions', 'selectPickupReturn')
+  }, 350)
+}
+
+function selectPickupDest(val) {
+  const input = document.getElementById('pickup-destination-input')
+  if (input) { input.value = val }
+  document.getElementById('pickup-dest-suggestions').classList.add('hidden')
+  // Trigger ETA calculation when both fields have values
+  calcPickupETA()
+}
+
+function selectPickupReturn(val) {
+  const input = document.getElementById('pickup-return-input')
+  if (input) { input.value = val }
+  document.getElementById('pickup-return-suggestions').classList.add('hidden')
+  calcPickupETA()
+}
+
+// ── GPS Travel Time Estimate ─────────────────────────────────────────────────
+// Route: worker current GPS → store → job site
+// Adds 30 min in-store time. Uses OSRM public routing API (free, no key).
+let _etaCalcTimer = null
+
+async function calcPickupETA() {
+  clearTimeout(_etaCalcTimer)
+  _etaCalcTimer = setTimeout(async () => {
+    const destVal   = (document.getElementById('pickup-destination-input')?.value || '').trim()
+    const returnVal = (document.getElementById('pickup-return-input')?.value || '').trim()
+    const etaCard   = document.getElementById('pickup-eta-card')
+    const etaContent = document.getElementById('pickup-eta-content')
+    if (!etaCard || !etaContent) return
+    if (!destVal || !returnVal) { etaCard.classList.add('hidden'); return }
+    if (!currentLat || !currentLng) { etaCard.classList.add('hidden'); return }
+
+    etaCard.classList.remove('hidden')
+    etaContent.innerHTML = '<span><i class="fas fa-circle-notch fa-spin mr-1"></i>Calculating route...</span>'
+
+    try {
+      // Geocode store address
+      const destCoords = await geocodeAddress(destVal)
+      if (!destCoords) { etaContent.innerHTML = '<span class="text-amber-600">⚠️ Could not find store address on map</span>'; return }
+
+      // Geocode return / job site address
+      const returnCoords = await geocodeAddress(returnVal)
+      if (!returnCoords) { etaContent.innerHTML = '<span class="text-amber-600">⚠️ Could not find return job site on map</span>'; return }
+
+      // OSRM route: worker → store → job site (two legs)
+      const leg1 = await getOSRMDuration(currentLat, currentLng, destCoords.lat, destCoords.lng)
+      const leg2 = await getOSRMDuration(destCoords.lat, destCoords.lng, returnCoords.lat, returnCoords.lng)
+
+      if (leg1 === null || leg2 === null) {
+        etaContent.innerHTML = '<span class="text-amber-600">⚠️ Could not calculate route — check addresses</span>'
+        return
+      }
+
+      const IN_STORE_MIN = 30
+      const totalMin = leg1 + IN_STORE_MIN + leg2
+      const returnETA = new Date(Date.now() + totalMin * 60000)
+      const timeStr = returnETA.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      const fmtMin = m => m < 60 ? `${m} min` : `${Math.floor(m/60)}h ${m%60}m`
+
+      // Store ETA minutes on modal dataset for sending at clock-in
+      document.getElementById('job-modal').dataset.pickupEtaMinutes = String(totalMin)
+
+      etaContent.innerHTML = `
+        <div class="flex items-center gap-1.5 text-blue-800"><i class="fas fa-map-marker-alt text-blue-500"></i><span>Your location → <strong>${destVal.split(',')[0]}</strong>: ${fmtMin(leg1)}</span></div>
+        <div class="flex items-center gap-1.5 text-amber-700 ml-4"><i class="fas fa-store text-amber-500"></i><span>In-store time: <strong>~30 min</strong></span></div>
+        <div class="flex items-center gap-1.5 text-green-700 ml-4"><i class="fas fa-hard-hat text-green-500"></i><span>Store → job site: <strong>${fmtMin(leg2)}</strong></span></div>
+        <div class="mt-2 pt-2 border-t border-blue-200 flex items-center gap-1.5 font-bold text-blue-900">
+          <i class="fas fa-clock text-blue-600"></i>
+          <span>Estimated return: <strong>~${fmtMin(totalMin)} total</strong> — back by ~${timeStr}</span>
+        </div>
+      `
+    } catch(e) {
+      etaContent.innerHTML = '<span class="text-amber-600">⚠️ Could not calculate route</span>'
+    }
+  }, 800) // debounce — wait until user stops typing
+}
+
+// Geocode an address string → {lat, lng} using Nominatim
+async function geocodeAddress(address) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`
+    const res = await fetch(url, { headers: { 'User-Agent': 'ClockInProof/1.0' } })
+    const data = await res.json()
+    if (!data || !data[0]) return null
+    return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) }
+  } catch { return null }
+}
+
+// Get driving duration in minutes between two GPS points using OSRM
+async function getOSRMDuration(lat1, lng1, lat2, lng2) {
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${lng1},${lat1};${lng2},${lat2}?overview=false`
+    const res = await fetch(url)
+    const data = await res.json()
+    if (!data?.routes?.[0]?.duration) return null
+    return Math.ceil(data.routes[0].duration / 60) // seconds → minutes, rounded up
+  } catch { return null }
+}
+
+// Trigger ETA recalc when user finishes typing in either field
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'pickup-destination-input' || e.target.id === 'pickup-return-input') {
+    calcPickupETA()
+  }
+})
+
 function closeJobModal() {
   document.getElementById('job-modal').classList.add('hidden')
+  hidePickupFields()
   // Clean up dispatch pre-fill banner for next open
   const b = document.getElementById('dispatch-prefill-banner')
   if (b) b.remove()
@@ -1134,6 +1299,21 @@ async function confirmClockIn() {
   if (!jobLocation) { showToast('Please enter the job location', 'error'); document.getElementById('job-location-input').focus(); return }
   if (!jobDescription) { showToast('Please describe what you are doing', 'error'); document.getElementById('job-description-input').focus(); return }
 
+  // Material pickup: validate store destination
+  let pickupDestination = ''
+  let pickupReturnTo = ''
+  let pickupEtaMinutes = null
+  if (sessionType === 'material_pickup') {
+    pickupDestination = (document.getElementById('pickup-destination-input')?.value || '').trim()
+    pickupReturnTo    = (document.getElementById('pickup-return-input')?.value || '').trim()
+    pickupEtaMinutes  = parseInt(document.getElementById('job-modal').dataset.pickupEtaMinutes || '0') || null
+    if (!pickupDestination) {
+      showToast('Please enter the store / supplier you are going to', 'error')
+      document.getElementById('pickup-destination-input')?.focus()
+      return
+    }
+  }
+
   const btn = document.getElementById('confirm-clock-in-btn')
   btn.disabled = true
   if (sessionType === 'material_pickup') {
@@ -1145,20 +1325,28 @@ async function confirmClockIn() {
   }
 
   try {
+    const payload = {
+      worker_id: currentWorker.id,
+      latitude: currentLat,
+      longitude: currentLng,
+      address: currentAddress,
+      job_location: jobLocation,
+      job_description: jobDescription,
+      session_type: sessionType,
+      device_id: getDeviceId(),
+      job_site_id: document.getElementById('job-modal').dataset.jobSiteId || null
+    }
+    // Add pickup fields if material_pickup
+    if (sessionType === 'material_pickup') {
+      payload.pickup_destination = pickupDestination
+      if (pickupReturnTo) payload.pickup_return_to = pickupReturnTo
+      if (pickupEtaMinutes) payload.pickup_eta_minutes = pickupEtaMinutes
+    }
+
     const res = await fetch('/api/sessions/clock-in', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        worker_id: currentWorker.id,
-        latitude: currentLat,
-        longitude: currentLng,
-        address: currentAddress,
-        job_location: jobLocation,
-        job_description: jobDescription,
-        session_type: sessionType,
-        device_id: getDeviceId(),
-        job_site_id: document.getElementById('job-modal').dataset.jobSiteId || null
-      })
+      body: JSON.stringify(payload)
     })
     const data = await res.json()
 

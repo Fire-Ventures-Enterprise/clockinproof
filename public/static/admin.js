@@ -375,7 +375,11 @@ async function openWorkerDrawer(workerId) {
       const cout = s.clock_out_time ? new Date(s.clock_out_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : null
       const isActive = s.status === 'active'
       const flags = []
-      if (s.session_type === 'material_pickup') flags.push('<span class="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-full">📦 Pickup</span>')
+      if (s.session_type === 'material_pickup') {
+        const dest = s.pickup_destination ? ' → ' + s.pickup_destination.split(',')[0] : ''
+        const eta  = s.pickup_eta_minutes ? ' (~' + (s.pickup_eta_minutes < 60 ? s.pickup_eta_minutes + 'm' : Math.floor(s.pickup_eta_minutes/60) + 'h' + s.pickup_eta_minutes%60 + 'm') + ')' : ''
+        flags.push('<span class="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-full">📦 Pickup' + dest + eta + '</span>')
+      }
       if (s.session_type === 'emergency_job')   flags.push('<span class="bg-rose-100 text-rose-700 text-[10px] px-1.5 py-0.5 rounded-full">🚨 Emergency</span>')
       if (s.drift_flag)    flags.push('<span class="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded-full">\u26a0 Left Site</span>')
       if (s.away_flag)     flags.push('<span class="bg-yellow-100 text-yellow-700 text-[10px] px-1.5 py-0.5 rounded-full">\u23f0 Away</span>')
@@ -745,7 +749,17 @@ function openSessionModal(s) {
     : ''
 
   const flags = []
-  if (s.session_type === 'material_pickup') flags.push('<span class="bg-amber-100 text-amber-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-shopping-cart mr-1"></i>Material Pickup</span>')
+  if (s.session_type === 'material_pickup') {
+    flags.push('<span class="bg-amber-100 text-amber-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-shopping-cart mr-1"></i>Material Pickup</span>')
+    if (s.pickup_destination) {
+      flags.push(`<span class="bg-amber-50 border border-amber-200 text-amber-800 px-2 py-1 rounded-lg text-xs"><i class="fas fa-store mr-1"></i>${escHtml(s.pickup_destination)}</span>`)
+    }
+    if (s.pickup_eta_minutes) {
+      const h = Math.floor(s.pickup_eta_minutes / 60), m = s.pickup_eta_minutes % 60
+      const etaStr = h > 0 ? `${h}h ${m}m` : `${m} min`
+      flags.push(`<span class="bg-blue-50 border border-blue-200 text-blue-800 px-2 py-1 rounded-lg text-xs"><i class="fas fa-clock mr-1"></i>Est. return: ~${etaStr}</span>`)
+    }
+  }
   if (s.session_type === 'emergency_job')   flags.push('<span class="bg-rose-100 text-rose-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-bolt mr-1"></i>Emergency Job</span>')
   if (s.drift_flag)    flags.push(`<span class="bg-orange-100 text-orange-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-exclamation-triangle mr-1"></i>Left Job Site${s.drift_distance_meters ? ' (' + (s.drift_distance_meters >= 1000 ? (s.drift_distance_meters/1000).toFixed(1)+'km' : Math.round(s.drift_distance_meters)+'m') + ')' : ''}</span>`)
   if (s.away_flag)     flags.push('<span class="bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-wifi mr-1"></i>Away / No GPS</span>')
@@ -5357,19 +5371,28 @@ function renderDeviceResetRequests(requests) {
   }
   if (banner) banner.classList.remove('hidden')
   el.innerHTML = pending.map(r => `
-<div class="flex items-center justify-between gap-3 bg-amber-50 border border-amber-200 rounded-xl p-3">
-  <div>
-    <p class="text-sm font-semibold text-gray-800"><i class="fas fa-mobile-alt text-amber-500 mr-1.5"></i>${escHtml(r.worker_name)}</p>
-    <p class="text-xs text-gray-500 mt-0.5">${escHtml(r.reason || 'New phone')} · Requested ${timeSince(new Date(r.requested_at + 'Z'))}</p>
+<div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
+  <!-- Worker identity — name + phone clearly visible -->
+  <div class="flex items-start gap-3 mb-3">
+    <div class="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0">
+      <i class="fas fa-mobile-alt text-amber-600 text-lg"></i>
+    </div>
+    <div class="flex-1 min-w-0">
+      <p class="text-sm font-bold text-gray-900 leading-tight">${escHtml(r.worker_name || 'Unknown Worker')}</p>
+      <p class="text-xs font-semibold text-amber-700 mt-0.5"><i class="fas fa-phone mr-1"></i>${escHtml(r.worker_phone || 'No phone')}</p>
+      <p class="text-xs text-gray-500 mt-1"><i class="fas fa-comment-alt mr-1 text-gray-400"></i>${escHtml(r.reason || 'New phone device')}</p>
+      <p class="text-xs text-gray-400 mt-0.5"><i class="fas fa-clock mr-1"></i>Requested ${timeSince(new Date(r.requested_at + 'Z'))}</p>
+    </div>
   </div>
-  <div class="flex gap-2 flex-shrink-0">
+  <!-- Action buttons -->
+  <div class="flex gap-2">
     <button onclick="approveDeviceReset(${r.id}, '${escHtml(r.worker_name)}')"
-      class="bg-green-600 hover:bg-green-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1">
-      <i class="fas fa-check"></i> Approve
+      class="flex-1 bg-green-600 hover:bg-green-700 text-white text-sm font-bold px-4 py-2 rounded-lg flex items-center justify-center gap-2">
+      <i class="fas fa-check"></i> Approve Reset
     </button>
     <button onclick="denyDeviceReset(${r.id})"
-      class="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold px-3 py-1.5 rounded-lg">
-      Deny
+      class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-bold px-4 py-2 rounded-lg flex items-center justify-center gap-2">
+      <i class="fas fa-times"></i> Deny
     </button>
   </div>
 </div>`).join('')

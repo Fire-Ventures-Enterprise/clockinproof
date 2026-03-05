@@ -350,6 +350,9 @@ async function ensureSchema(db: D1Database) {
     // Lets workers flag they are legitimately off-site (pickup, emergency call-out).
     // Geofence check is skipped for these types; admin sees a colored badge.
     `ALTER TABLE sessions ADD COLUMN session_type TEXT DEFAULT 'regular'`,
+    // ── Material pickup destination + ETA fields ───────────────────────────────
+    `ALTER TABLE sessions ADD COLUMN pickup_destination TEXT`,
+    `ALTER TABLE sessions ADD COLUMN pickup_eta_minutes INTEGER`,
     // ── Multi-tenant migrations ───────────────────────────────────────────────
     // Add tenant_id to all tables. Safe to run repeatedly — errors caught below.
     `ALTER TABLE workers ADD COLUMN tenant_id INTEGER DEFAULT 1`,
@@ -1603,7 +1606,7 @@ async function sendOverrideNotification(
 app.post('/api/sessions/clock-in', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const { worker_id, latitude, longitude, address, notes, job_location, job_description, session_type, device_id, job_site_id } = await c.req.json()
+  const { worker_id, latitude, longitude, address, notes, job_location, job_description, session_type, device_id, job_site_id, pickup_destination, pickup_return_to, pickup_eta_minutes } = await c.req.json()
 
   if (!worker_id) return c.json({ error: 'worker_id required' }, 400)
   if (!job_location || !job_location.trim()) return c.json({ error: 'Job location is required' }, 400)
@@ -1763,9 +1766,14 @@ app.post('/api/sessions/clock-in', async (c) => {
   const now = new Date().toISOString()
   const result = await db.prepare(
     `INSERT INTO sessions
-     (worker_id, clock_in_time, clock_in_lat, clock_in_lng, clock_in_address, notes, job_location, job_description, status, session_type)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`
-  ).bind(worker_id, now, latitude || null, longitude || null, address || null, notes || null, job_location.trim(), job_description.trim(), clockType).run()
+     (worker_id, clock_in_time, clock_in_lat, clock_in_lng, clock_in_address, notes, job_location, job_description, status, session_type, pickup_destination, pickup_eta_minutes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
+  ).bind(
+    worker_id, now, latitude || null, longitude || null, address || null,
+    notes || null, job_location.trim(), job_description.trim(), clockType,
+    clockType === 'material_pickup' ? (pickup_destination || null) : null,
+    clockType === 'material_pickup' ? (pickup_eta_minutes || null) : null
+  ).run()
 
   const session = await db.prepare('SELECT * FROM sessions WHERE id = ?').bind(result.meta.last_row_id).first()
 
@@ -8935,6 +8943,43 @@ function getWorkerHTML(tenant?: any): string {
         </div>
       </div>
 
+      <!-- Material Pickup: Destination + Return-to + ETA (hidden by default, shown via JS) -->
+      <div id="pickup-fields" class="hidden space-y-3">
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-3">
+          <p class="text-xs font-bold text-amber-800"><i class="fas fa-store mr-1"></i>Material Pickup Details</p>
+          <p class="text-xs text-amber-600 mt-0.5">Enter the store and the job site you are returning to</p>
+        </div>
+        <!-- Store / destination -->
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-1.5">
+            <i class="fas fa-store text-amber-500 mr-1"></i>Where are you going? (store / supplier)
+          </label>
+          <input id="pickup-destination-input" type="text" placeholder="e.g. Home Depot, 1234 Baseline Rd"
+            autocomplete="off" maxlength="200"
+            class="w-full px-4 py-3 border-2 border-amber-200 rounded-xl focus:outline-none focus:border-amber-500 text-gray-800 text-sm bg-amber-50"
+            oninput="filterPickupDestSuggestions(this.value)"
+            onblur="setTimeout(()=>document.getElementById('pickup-dest-suggestions').classList.add('hidden'),200)"/>
+          <div id="pickup-dest-suggestions" class="hidden mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-20 max-h-40 overflow-y-auto"></div>
+        </div>
+        <!-- Return-to job site -->
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-1.5">
+            <i class="fas fa-hard-hat text-blue-500 mr-1"></i>Returning to which job site?
+          </label>
+          <input id="pickup-return-input" type="text" placeholder="e.g. 45 Main St (current job site)"
+            autocomplete="off" maxlength="200"
+            class="w-full px-4 py-3 border-2 border-blue-200 rounded-xl focus:outline-none focus:border-blue-500 text-gray-800 text-sm"
+            oninput="filterPickupReturnSuggestions(this.value)"
+            onblur="setTimeout(()=>document.getElementById('pickup-return-suggestions').classList.add('hidden'),200)"/>
+          <div id="pickup-return-suggestions" class="hidden mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-20 max-h-40 overflow-y-auto"></div>
+        </div>
+        <!-- GPS Travel Time Estimate -->
+        <div id="pickup-eta-card" class="hidden bg-blue-50 border border-blue-200 rounded-xl p-3">
+          <p class="text-xs font-bold text-blue-800 mb-2"><i class="fas fa-route mr-1"></i>Estimated Trip Time</p>
+          <div id="pickup-eta-content" class="text-xs text-blue-700 space-y-1"></div>
+        </div>
+      </div>
+
     </div>
 
     <!-- Sticky footer buttons — always visible -->
@@ -9063,7 +9108,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl text-sm font-medium max-w-xs text-center" style="bottom:88px;z-index:9999"></div>
 
-<script src="/static/worker.js?v=20260305h"></script>
+<script src="/static/worker.js?v=20260305i"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 flex items-end justify-center" style="z-index:9990;padding:0 16px 88px" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -12142,7 +12187,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260305d"></script>
+<script src="/static/admin.js?v=20260305e"></script>
 
 </body>
 </html>`
