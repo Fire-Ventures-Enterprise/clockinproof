@@ -7679,7 +7679,7 @@ function getLandingHTML(): string {
                   <div class="w-2.5 h-2.5 rounded-full bg-green-400" style="animation:pulse 1.5s infinite"></div>
                   <span class="text-green-400 text-xs font-bold tracking-wide">CLOCKED IN — 7:52 AM</span>
                 </div>
-                <p class="text-xs text-gray-300 mb-1"><i class="fas fa-map-marker-alt text-blue-400 mr-1.5 w-3"></i>2310 Ryan Dr, Ottawa ON</p>
+                <p class="text-xs text-gray-300 mb-1"><i class="fas fa-map-marker-alt text-blue-400 mr-1.5 w-3"></i>2310 Easy St, Ottawa ON</p>
                 <p class="text-xs text-gray-300 mb-1"><i class="fas fa-shield-alt text-green-400 mr-1.5 w-3"></i>GPS verified · 22m from site ✓</p>
                 <p class="text-xs text-gray-400"><i class="fas fa-hard-hat text-yellow-400 mr-1.5 w-3"></i>Water damage restoration</p>
               </div>
