@@ -13903,6 +13903,97 @@ select.input option{background:#1e293b}
       </div>
     </div><!-- /page-tax -->
 
+    <!-- ── TRIAL LINKS (inside #content) ─────────────────────────────── -->
+    <div class="page" id="page-trial-links" style="padding:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">
+        <div>
+          <h1 style="font-size:20px;font-weight:800;color:#fff"><i class="fas fa-link" style="color:#818cf8;margin-right:8px"></i>Trial Links</h1>
+          <p style="color:#64748b;font-size:13px">Generate shareable links for prospects — 60-day free trial, no credit card required</p>
+        </div>
+      </div>
+
+      <!-- Quick copy card -->
+      <div class="card" style="padding:20px;margin-bottom:20px;background:linear-gradient(135deg,#1e1b4b,#0f172a);border-color:#312e81">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+          <div style="background:#4f46e5;border-radius:8px;padding:8px 12px">
+            <i class="fas fa-rocket" style="color:#a5b4fc;font-size:16px"></i>
+          </div>
+          <div>
+            <div style="font-weight:700;color:#fff">Standard Free-Trial Link</div>
+            <div style="font-size:12px;color:#64748b">Works anywhere — email, SMS, LinkedIn, landing page</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;background:#0f172a;border:1px solid #312e81;border-radius:8px;padding:10px 14px;margin-bottom:12px">
+          <i class="fas fa-link" style="color:#4f46e5;flex-shrink:0"></i>
+          <span id="trial-link-url" style="flex:1;color:#a5b4fc;font-size:13px;word-break:break-all">https://clockinproof.pages.dev/free-trial</span>
+          <button class="btn btn-primary" style="padding:5px 14px;font-size:12px;flex-shrink:0" onclick="copyTrialLink()"><i class="fas fa-copy"></i> Copy</button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <a href="https://clockinproof.pages.dev/free-trial" target="_blank" class="btn btn-ghost" style="font-size:12px">
+            <i class="fas fa-eye"></i> Preview
+          </a>
+          <button class="btn btn-ghost" style="font-size:12px" onclick="genEmailSnippet()">
+            <i class="fas fa-envelope"></i> Email Snippet
+          </button>
+          <button class="btn btn-ghost" style="font-size:12px" onclick="genSmsSnippet()">
+            <i class="fas fa-sms"></i> SMS Text
+          </button>
+        </div>
+      </div>
+
+      <!-- UTM Link Generator -->
+      <div class="card" style="padding:20px;margin-bottom:20px">
+        <h3 style="font-size:14px;font-weight:700;color:#fff;margin-bottom:14px"><i class="fas fa-sliders-h" style="color:#818cf8;margin-right:6px"></i>UTM Tracking Generator</h3>
+        <p style="font-size:12px;color:#64748b;margin-bottom:14px">Create tagged links to track where sign-ups come from</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+          <div>
+            <label style="font-size:11px;color:#94a3b8;display:block;margin-bottom:4px">Source</label>
+            <input id="utm-source" class="input" placeholder="google, linkedin, email" />
+          </div>
+          <div>
+            <label style="font-size:11px;color:#94a3b8;display:block;margin-bottom:4px">Medium</label>
+            <input id="utm-medium" class="input" placeholder="cpc, email, social" />
+          </div>
+          <div>
+            <label style="font-size:11px;color:#94a3b8;display:block;margin-bottom:4px">Campaign</label>
+            <input id="utm-campaign" class="input" placeholder="spring2026, roofing-promo" />
+          </div>
+          <div>
+            <label style="font-size:11px;color:#94a3b8;display:block;margin-bottom:4px">Content (optional)</label>
+            <input id="utm-content" class="input" placeholder="banner-ad, cta-button" />
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="buildUtmLink()" style="margin-bottom:12px"><i class="fas fa-magic"></i> Generate Link</button>
+        <div id="utm-result" style="display:none;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:10px 14px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="utm-link-out" style="flex:1;color:#a5b4fc;font-size:12px;word-break:break-all"></span>
+            <button class="btn btn-primary" style="padding:4px 12px;font-size:12px;flex-shrink:0" onclick="copyUtmLink()"><i class="fas fa-copy"></i></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Snippet modal -->
+      <div id="snippet-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:300;align-items:center;justify-content:center;padding:16px">
+        <div class="card" style="padding:24px;width:100%;max-width:520px;position:relative">
+          <button onclick="document.getElementById('snippet-modal').style.display='none'" style="position:absolute;top:12px;right:16px;background:none;border:none;color:#64748b;font-size:18px;cursor:pointer">&#x2715;</button>
+          <h3 id="snippet-title" style="font-size:15px;font-weight:700;color:#fff;margin-bottom:14px">Snippet</h3>
+          <textarea id="snippet-text" style="width:100%;height:160px;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:8px;padding:10px;font-size:12px;line-height:1.6;resize:vertical" readonly></textarea>
+          <button class="btn btn-primary" style="margin-top:12px;width:100%" onclick="copySnippet()"><i class="fas fa-copy"></i> Copy to Clipboard</button>
+        </div>
+      </div>
+
+      <!-- Recent trial sign-ups -->
+      <div class="card" style="padding:20px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <h3 style="font-size:14px;font-weight:700;color:#fff"><i class="fas fa-users" style="color:#818cf8;margin-right:6px"></i>Recent Trial Sign-Ups</h3>
+          <button class="btn btn-ghost" style="font-size:11px" onclick="loadTrialSignups()"><i class="fas fa-sync"></i> Refresh</button>
+        </div>
+        <div id="trial-signups-list">
+          <div style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></div>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /content -->
 </div><!-- /app -->
 
@@ -13964,101 +14055,6 @@ select.input option{background:#1e293b}
       </div>
     </div>
   </div>
-
-    <!-- ── TRIAL LINKS ──────────────────────────────────────── -->
-    <div class="page" id="page-trial-links" style="padding:24px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">
-        <div>
-          <h1 style="font-size:20px;font-weight:800;color:#fff"><i class="fas fa-link" style="color:#818cf8;margin-right:8px"></i>Trial Links</h1>
-          <p style="color:#64748b;font-size:13px">Generate shareable links for prospects — 60-day free trial, no credit card required</p>
-        </div>
-      </div>
-
-      <!-- Quick copy card -->
-      <div class="card" style="padding:20px;margin-bottom:20px;background:linear-gradient(135deg,#1e1b4b,#0f172a);border-color:#312e81">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-          <div style="background:#4f46e5;border-radius:8px;padding:8px 12px">
-            <i class="fas fa-rocket" style="color:#a5b4fc;font-size:16px"></i>
-          </div>
-          <div>
-            <div style="font-weight:700;color:#fff">Standard Free-Trial Link</div>
-            <div style="font-size:12px;color:#64748b">Works anywhere — email, SMS, LinkedIn, landing page</div>
-          </div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;background:#0f172a;border:1px solid #312e81;border-radius:8px;padding:10px 14px;margin-bottom:12px">
-          <i class="fas fa-link" style="color:#4f46e5;flex-shrink:0"></i>
-          <span id="trial-link-url" style="flex:1;color:#a5b4fc;font-size:13px;word-break:break-all">https://clockinproof.pages.dev/free-trial</span>
-          <button class="btn btn-primary" style="padding:5px 14px;font-size:12px;flex-shrink:0" onclick="copyTrialLink()"><i class="fas fa-copy"></i> Copy</button>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <a href="https://clockinproof.pages.dev/free-trial" target="_blank" class="btn btn-ghost" style="font-size:12px">
-            <i class="fas fa-eye"></i> Preview
-          </a>
-          <button class="btn btn-ghost" style="font-size:12px" onclick="genEmailSnippet()">
-            <i class="fas fa-envelope"></i> Email Snippet
-          </button>
-          <button class="btn btn-ghost" style="font-size:12px" onclick="genSmsSnippet()">
-            <i class="fas fa-sms"></i> SMS Text
-          </button>
-        </div>
-      </div>
-
-      <!-- UTM Link Generator -->
-      <div class="card" style="padding:20px;margin-bottom:20px">
-        <h3 style="font-size:14px;font-weight:700;color:#fff;margin-bottom:14px"><i class="fas fa-sliders-h" style="color:#818cf8;margin-right:6px"></i>UTM Tracking Generator</h3>
-        <p style="font-size:12px;color:#64748b;margin-bottom:14px">Create tagged links to track where sign-ups come from (Google Ads, email campaigns, etc.)</p>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
-          <div>
-            <label style="font-size:11px;color:#94a3b8;display:block;margin-bottom:4px">Campaign Source</label>
-            <input id="utm-source" class="input" placeholder="e.g. google, linkedin, email" />
-          </div>
-          <div>
-            <label style="font-size:11px;color:#94a3b8;display:block;margin-bottom:4px">Medium</label>
-            <input id="utm-medium" class="input" placeholder="e.g. cpc, email, social" />
-          </div>
-          <div>
-            <label style="font-size:11px;color:#94a3b8;display:block;margin-bottom:4px">Campaign Name</label>
-            <input id="utm-campaign" class="input" placeholder="e.g. spring2026, roofing-promo" />
-          </div>
-          <div>
-            <label style="font-size:11px;color:#94a3b8;display:block;margin-bottom:4px">Content (optional)</label>
-            <input id="utm-content" class="input" placeholder="e.g. banner-ad, cta-button" />
-          </div>
-        </div>
-        <button class="btn btn-primary" onclick="buildUtmLink()" style="margin-bottom:12px"><i class="fas fa-magic"></i> Generate Link</button>
-        <div id="utm-result" style="display:none;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:10px 14px">
-          <div style="display:flex;align-items:center;gap:8px">
-            <span id="utm-link-out" style="flex:1;color:#a5b4fc;font-size:12px;word-break:break-all"></span>
-            <button class="btn btn-primary" style="padding:4px 12px;font-size:12px;flex-shrink:0" onclick="copyUtmLink()"><i class="fas fa-copy"></i></button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Snippet modal (hidden) -->
-      <div id="snippet-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:300;align-items:center;justify-content:center;padding:16px">
-        <div class="card" style="padding:24px;width:100%;max-width:520px;position:relative">
-          <button onclick="document.getElementById('snippet-modal').style.display='none'" style="position:absolute;top:12px;right:16px;background:none;border:none;color:#64748b;font-size:18px;cursor:pointer">✕</button>
-          <h3 id="snippet-title" style="font-size:15px;font-weight:700;color:#fff;margin-bottom:14px">Snippet</h3>
-          <textarea id="snippet-text" style="width:100%;height:160px;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:8px;padding:10px;font-size:12px;line-height:1.6;resize:vertical" readonly></textarea>
-          <button class="btn btn-primary" style="margin-top:12px;width:100%" onclick="copySnippet()"><i class="fas fa-copy"></i> Copy to Clipboard</button>
-        </div>
-      </div>
-
-      <!-- Recent sign-ups from trial -->
-      <div class="card" style="padding:20px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-          <h3 style="font-size:14px;font-weight:700;color:#fff"><i class="fas fa-users" style="color:#818cf8;margin-right:6px"></i>Recent Trial Sign-Ups</h3>
-          <button class="btn btn-ghost" style="font-size:11px" onclick="loadTrialSignups()"><i class="fas fa-sync"></i> Refresh</button>
-        </div>
-        <div id="trial-signups-list">
-          <div style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></div>
-        </div>
-      </div>
-    </div>
-    <!-- ── end TRIAL LINKS ── -->
-
-  </div>
-</div>
 
 <!-- TENANT PROFILE DRAWER -->
 <div id="tenant-profile-overlay" onclick="closeTenantProfile()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200"></div>
