@@ -604,6 +604,8 @@ async function ensureSchema(db: D1Database) {
     // ── Tenant profile extras ──────────────────────────────────────────────────
     `ALTER TABLE tenants ADD COLUMN company_phone TEXT`,
     `ALTER TABLE tenants ADD COLUMN company_website TEXT`,
+    // ── Archived tenant guardrail (90-day purge) ───────────────────────────────
+    `ALTER TABLE tenants ADD COLUMN archived_at DATETIME`,
   ]
   for (const sql of statements) {
     try {
@@ -4212,7 +4214,7 @@ app.get('/api/super/tenants', async (c) => {
         (SELECT COUNT(*) FROM sessions s WHERE s.tenant_id = t.id) as session_count,
         (SELECT MAX(s.clock_in_time) FROM sessions s WHERE s.tenant_id = t.id) as last_active
       FROM tenants t
-      WHERE t.status != 'deleted'
+      WHERE t.status NOT IN ('deleted', 'archived')
       ORDER BY t.created_at DESC
     `).all()
     return c.json({ tenants: tenants.results })
@@ -4326,10 +4328,48 @@ app.delete('/api/super/tenants/:id', async (c) => {
   // Check tenant exists
   const tenant = await db.prepare(`SELECT id, company_name, status FROM tenants WHERE id = ?`).bind(id).first() as any
   if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
-  if (tenant.status === 'deleted') return c.json({ error: 'Tenant is already archived' }, 409)
-  // Soft-delete: mark as deleted, preserve all data
-  await db.prepare(`UPDATE tenants SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(id).run()
-  return c.json({ success: true, message: `"${tenant.company_name}" has been archived. All data is preserved.` })
+  if (tenant.status === 'archived') return c.json({ error: 'Tenant is already archived' }, 409)
+  // Soft-delete: status=archived + timestamp (purged after 90 days by super admin)
+  await db.prepare(`
+    UPDATE tenants
+    SET status = 'archived', archived_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).bind(id).run()
+  return c.json({ success: true, message: `"${tenant.company_name}" has been archived. All data preserved for 90 days.` })
+})
+
+// GET /api/super/tenants/archived — list archived tenants with days-until-purge
+app.get('/api/super/tenants/archived', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenants = await db.prepare(`
+    SELECT t.*,
+      (SELECT COUNT(*) FROM workers w WHERE w.tenant_id = t.id AND w.active = 1) as worker_count,
+      (SELECT COUNT(*) FROM sessions s WHERE s.tenant_id = t.id) as session_count,
+      CAST(julianday(datetime(COALESCE(t.archived_at, t.updated_at))) + 90 - julianday('now') AS INTEGER) as days_until_purge
+    FROM tenants t
+    WHERE t.status IN ('archived', 'deleted')
+    ORDER BY t.archived_at DESC, t.updated_at DESC
+  `).all()
+  return c.json({ tenants: tenants.results })
+})
+
+// POST /api/super/tenants/:id/restore — restore an archived tenant back to trial
+app.post('/api/super/tenants/:id/restore', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const id = c.req.param('id')
+  const tenant = await db.prepare(`SELECT id, company_name, status FROM tenants WHERE id = ?`).bind(id).first() as any
+  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+  if (!['archived', 'deleted'].includes(tenant.status)) return c.json({ error: 'Tenant is not archived' }, 409)
+  await db.prepare(`
+    UPDATE tenants
+    SET status = 'active', archived_at = NULL, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).bind(id).run()
+  return c.json({ success: true, message: `"${tenant.company_name}" has been restored to active status.` })
 })
 
 // POST /api/super/tenants/:id/impersonate — get admin URL for tenant
@@ -13409,24 +13449,71 @@ select.input option{background:#1e293b}
           <button class="btn btn-primary" onclick="showPage('add-tenant')"><i class="fas fa-plus"></i> Add</button>
         </div>
       </div>
-      <div class="card" style="overflow:hidden">
-        <table class="tbl">
-          <thead>
-            <tr>
-              <th>Company</th>
-              <th>Subdomain</th>
-              <th>Plan</th>
-              <th>Status</th>
-              <th>Workers</th>
-              <th>Sessions</th>
-              <th>Last Active</th>
-              <th style="text-align:right">Actions</th>
-            </tr>
-          </thead>
-          <tbody id="tenants-tbody">
-            <tr><td colspan="8" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>
-          </tbody>
-        </table>
+
+      <!-- Tabs: Active | Archived -->
+      <div style="display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid #1e293b;padding-bottom:0">
+        <button id="tab-active-tenants" onclick="switchTenantTab('active')" style="padding:8px 18px;background:none;border:none;border-bottom:2px solid #818cf8;color:#fff;font-size:13px;font-weight:700;cursor:pointer">
+          <i class="fas fa-building" style="margin-right:6px;color:#818cf8"></i>Active Companies
+        </button>
+        <button id="tab-archived-tenants" onclick="switchTenantTab('archived')" style="padding:8px 18px;background:none;border:none;border-bottom:2px solid transparent;color:#64748b;font-size:13px;font-weight:600;cursor:pointer">
+          <i class="fas fa-archive" style="margin-right:6px;color:#f59e0b"></i>Archive
+          <span id="archived-count-badge" style="display:none;background:#f59e0b;color:#000;font-size:10px;font-weight:800;padding:1px 6px;border-radius:20px;margin-left:4px">0</span>
+        </button>
+      </div>
+
+      <!-- Active tenants table -->
+      <div id="active-tenants-panel">
+        <div class="card" style="overflow:hidden">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>Subdomain</th>
+                <th>Plan</th>
+                <th>Status</th>
+                <th>Workers</th>
+                <th>Sessions</th>
+                <th>Last Active</th>
+                <th style="text-align:right">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tenants-tbody">
+              <tr><td colspan="8" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Archived tenants panel -->
+      <div id="archived-tenants-panel" style="display:none">
+        <div class="card" style="padding:20px;margin-bottom:16px;background:#1e293b;border:1px solid #f59e0b22">
+          <div style="display:flex;align-items:center;gap:12px">
+            <i class="fas fa-shield-alt" style="color:#f59e0b;font-size:20px"></i>
+            <div>
+              <div style="font-weight:700;color:#fbbf24;font-size:14px">90-Day Data Guardrail</div>
+              <div style="color:#94a3b8;font-size:12px;margin-top:2px">Archived companies and all their data (workers, sessions, GPS pings) are permanently deleted after 90 days. You can restore them at any time before the purge date.</div>
+            </div>
+          </div>
+        </div>
+        <div class="card" style="overflow:hidden">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>Subdomain</th>
+                <th>Admin Email</th>
+                <th>Workers</th>
+                <th>Sessions</th>
+                <th>Archived On</th>
+                <th style="color:#ef4444">Purge In</th>
+                <th style="text-align:right">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="archived-tbody">
+              <tr><td colspan="8" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -14502,7 +14589,7 @@ select.input option{background:#1e293b}
       <p id="delete-modal-desc" style="font-size:13px;color:#94a3b8;margin:0">This tenant and all their data will be archived. Workers will not be able to clock in.</p>
     </div>
     <div style="background:#1e293b;border-radius:8px;padding:14px;margin-bottom:20px;font-size:12px;color:#cbd5e1;border-left:3px solid #ef4444">
-      <strong style="color:#f87171">⚠ Data is preserved.</strong> The tenant record, workers, and sessions are kept in the database. This action only disables access. Contact support to fully purge if required.
+      <strong style="color:#f87171">⚠ 90-Day Guardrail.</strong> The company, workers, sessions and GPS data move to the <strong>Archive tab</strong>. Everything is fully preserved and restorable for 90 days. After 90 days all data is permanently purged.
     </div>
     <div style="margin-bottom:16px">
       <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#ef4444;margin-bottom:6px">Type the company name to confirm</label>
@@ -14767,7 +14854,8 @@ async function loadTrialSignups() {
     const r = await fetch('/api/tenants?status=trial&limit=20', { headers: { 'X-Super-Admin': 'true' } })
     const data = await r.json()
     const tenants = data.tenants || data || []
-    const trials = tenants.filter(t => t.status === 'trial' || t.plan === 'trial')
+    // Exclude archived/deleted tenants from trial sign-ups list
+    const trials = tenants.filter(t => (t.status === 'trial' || t.plan === 'trial') && t.status !== 'archived' && t.status !== 'deleted')
     if (!trials.length) {
       el.innerHTML = '<div class="empty-state"><i class="fas fa-user-clock"></i><p>No trial sign-ups yet</p><p style="font-size:12px;margin-top:4px">Share the link above to get started</p></div>'
       return
@@ -14904,6 +14992,14 @@ async function loadTenants() {
     const d = await api('/api/super/tenants')
     allTenants = d.tenants || []
     renderTenants(allTenants)
+    // Also refresh archive badge count
+    api('/api/super/tenants/archived').then(data => {
+      const badge = document.getElementById('archived-count-badge')
+      if (badge) {
+        const count = (data.tenants || []).length
+        badge.textContent = count; badge.style.display = count > 0 ? 'inline' : 'none'
+      }
+    }).catch(() => {})
   } catch(e) {
     tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#ef4444">Failed to load</td></tr>'
   }
@@ -14956,6 +15052,101 @@ function renderTenants(tenants) {
       </td>
     </tr>\`
   }).join('')
+}
+
+// ── Archive Tab ─────────────────────────────────────────────────────────────
+let _currentTenantTab = 'active'
+function switchTenantTab(tab) {
+  _currentTenantTab = tab
+  const activeBtn   = document.getElementById('tab-active-tenants')
+  const archiveBtn  = document.getElementById('tab-archived-tenants')
+  const activePanel  = document.getElementById('active-tenants-panel')
+  const archivePanel = document.getElementById('archived-tenants-panel')
+  if (tab === 'active') {
+    activeBtn.style.borderBottomColor  = '#818cf8'
+    activeBtn.style.color              = '#fff'
+    archiveBtn.style.borderBottomColor = 'transparent'
+    archiveBtn.style.color             = '#64748b'
+    activePanel.style.display  = 'block'
+    archivePanel.style.display = 'none'
+  } else {
+    archiveBtn.style.borderBottomColor = '#f59e0b'
+    archiveBtn.style.color             = '#fbbf24'
+    activeBtn.style.borderBottomColor  = 'transparent'
+    activeBtn.style.color              = '#64748b'
+    activePanel.style.display  = 'none'
+    archivePanel.style.display = 'block'
+    loadArchivedTenants()
+  }
+}
+
+async function loadArchivedTenants() {
+  const tbody = document.getElementById('archived-tbody')
+  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>'
+  try {
+    const d = await api('/api/super/tenants/archived')
+    const tenants = d.tenants || []
+    // Update badge
+    const badge = document.getElementById('archived-count-badge')
+    if (tenants.length > 0) {
+      badge.textContent = tenants.length
+      badge.style.display = 'inline'
+    } else {
+      badge.style.display = 'none'
+    }
+    if (!tenants.length) {
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-check-circle" style="color:#22c55e;margin-right:8px"></i>No archived companies</td></tr>'
+      return
+    }
+    tbody.innerHTML = tenants.map(t => {
+      const archivedOn = t.archived_at ? new Date(t.archived_at).toLocaleDateString() : (t.updated_at ? new Date(t.updated_at).toLocaleDateString() : '—')
+      const daysLeft = typeof t.days_until_purge === 'number' ? t.days_until_purge : 90
+      const purgeColor = daysLeft <= 7 ? '#ef4444' : daysLeft <= 30 ? '#f59e0b' : '#94a3b8'
+      const purgeLabel = daysLeft <= 0 ? '<span style="color:#ef4444;font-weight:700">⚠ Purge due</span>' : \`<span style="color:\${purgeColor};font-weight:600">\${daysLeft}d left</span>\`
+      return \`<tr>
+        <td>
+          <div style="font-weight:600;color:#e2e8f0">\${t.company_name}</div>
+          <div style="font-size:10px;color:#475569;margin-top:2px">ID \${t.id}</div>
+        </td>
+        <td><span style="color:#64748b;font-size:12px">\${t.slug}</span></td>
+        <td style="color:#64748b;font-size:12px">\${t.admin_email || '—'}</td>
+        <td style="color:#64748b;text-align:center">\${t.worker_count || 0}</td>
+        <td style="color:#64748b;text-align:center">\${t.session_count || 0}</td>
+        <td style="color:#64748b;font-size:12px">\${archivedOn}</td>
+        <td>\${purgeLabel}</td>
+        <td style="text-align:right">
+          <button class="btn btn-success" onclick="restoreTenant(\${t.id}, '\${encodeURIComponent(t.company_name||'')}')" title="Restore company">
+            <i class="fas fa-undo"></i> Restore
+          </button>
+        </td>
+      </tr>\`
+    }).join('')
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#ef4444">Failed to load archived companies</td></tr>'
+  }
+}
+
+async function restoreTenant(id, encodedName) {
+  const name = decodeURIComponent(encodedName)
+  if (!confirm('Restore "' + name + '" back to active status?')) return
+  try {
+    const r = await fetch('/api/super/tenants/' + id + '/restore', {
+      method: 'POST',
+      headers: { 'X-Super-Token': superToken }
+    })
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok || d.error) throw new Error(d.error || 'Server error (' + r.status + ')')
+    showToast('✅ ' + name + ' restored to active')
+    loadArchivedTenants()
+    // Refresh badge
+    api('/api/super/tenants/archived').then(data => {
+      const badge = document.getElementById('archived-count-badge')
+      const count = (data.tenants || []).length
+      badge.textContent = count; badge.style.display = count > 0 ? 'inline' : 'none'
+    }).catch(() => {})
+  } catch(e) {
+    showToast('❌ Restore failed: ' + (e.message || 'Unknown error'), true)
+  }
 }
 
 // ── Edit Modal ──────────────────────────────────────────────────────────────
@@ -15061,7 +15252,7 @@ async function executeDeleteTenant() {
     resultEl.innerHTML = '<i class="fas fa-check-circle" style="margin-right:6px"></i><strong>' + _deleteName + '</strong> has been archived successfully. Workers can no longer clock in.'
     btn.style.display = 'none'
     showToast('🗑 ' + _deleteName + ' archived')
-    setTimeout(() => { closeDeleteModal(); loadTenants() }, 2500)
+    setTimeout(() => { closeDeleteModal(); loadTenants(); switchTenantTab('archived') }, 2500)
   } catch(e) {
     resultEl.style.display = 'block'
     resultEl.style.background = '#450a0a'
