@@ -58,6 +58,23 @@ async function getTenantSettings(db: D1Database, tenantId: number): Promise<Reco
 }
 
 
+// ─── Tenant Resolution Helper ─────────────────────────────────────────────────
+// Resolves the current tenant from X-Tenant-ID header or subdomain.
+// Falls back to tenant 1 ONLY as a last resort (should not happen in production).
+async function resolveTenantId(c: any, db: D1Database): Promise<number> {
+  const tidHeader = c.req.header('X-Tenant-ID')
+  if (tidHeader) {
+    const parsed = parseInt(tidHeader)
+    if (!isNaN(parsed) && parsed > 0) return parsed
+  }
+  const slug = getSubdomain(c)
+  if (slug && !['admin','app','www','super','superadmin','api'].includes(slug)) {
+    const t = await getTenantBySlug(db, slug) as any
+    if (t) return t.id
+  }
+  return 1
+}
+
 // ─── DB Helper ────────────────────────────────────────────────────────────────
 // Cache flag: schema only needs to run once per Worker instance (not every request)
 // Cloudflare Workers reuse instances across requests — this cuts 40+ SQL statements
@@ -1896,9 +1913,10 @@ app.get('/api/override/worker/:worker_id', async (c) => {
 app.get('/api/override/pending', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const requests = await db.prepare(
-    "SELECT * FROM clock_in_requests WHERE status = 'pending' ORDER BY requested_at DESC"
-  ).all()
+    "SELECT * FROM clock_in_requests WHERE status = 'pending' AND tenant_id = ? ORDER BY requested_at DESC"
+  ).bind(tenantId).all()
   return c.json({ requests: requests.results })
 })
 
@@ -1906,9 +1924,10 @@ app.get('/api/override/pending', async (c) => {
 app.get('/api/override/all', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const requests = await db.prepare(
-    "SELECT * FROM clock_in_requests ORDER BY requested_at DESC LIMIT 100"
-  ).all()
+    "SELECT * FROM clock_in_requests WHERE tenant_id = ? ORDER BY requested_at DESC LIMIT 100"
+  ).bind(tenantId).all()
   return c.json({ requests: requests.results })
 })
 
@@ -2238,14 +2257,15 @@ app.get('/api/sessions/worker/:worker_id', async (c) => {
 // Get all active sessions (admin dashboard)
 app.get('/api/sessions/active', async (c) => {
   const db = c.env.DB
+  const tenantId = await resolveTenantId(c, db)
 
   const sessions = await db.prepare(`
     SELECT s.*, w.name as worker_name, w.phone as worker_phone, w.hourly_rate
     FROM sessions s
     JOIN workers w ON s.worker_id = w.id
-    WHERE s.status = 'active'
+    WHERE s.status = 'active' AND s.tenant_id = ?
     ORDER BY s.clock_in_time DESC
-  `).all()
+  `).bind(tenantId).all()
 
   return c.json({ sessions: sessions.results })
 })
@@ -2253,6 +2273,7 @@ app.get('/api/sessions/active', async (c) => {
 // Get all sessions with filters (admin)
 app.get('/api/sessions', async (c) => {
   const db = c.env.DB
+  const tenantId = await resolveTenantId(c, db)
   const date = c.req.query('date') // YYYY-MM-DD
   const worker_id = c.req.query('worker_id')
   const limit = c.req.query('limit') || '100'
@@ -2261,9 +2282,9 @@ app.get('/api/sessions', async (c) => {
     SELECT s.*, w.name as worker_name, w.phone as worker_phone
     FROM sessions s
     JOIN workers w ON s.worker_id = w.id
-    WHERE 1=1
+    WHERE s.tenant_id = ?
   `
-  const params: any[] = []
+  const params: any[] = [tenantId]
 
   if (date) {
     query += ` AND DATE(s.clock_in_time) = ?`
@@ -2738,15 +2759,17 @@ app.get('/api/sessions/:id/edits', async (c) => {
 app.get('/api/job-sites', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const sites = await db.prepare(
-    'SELECT * FROM job_sites WHERE active = 1 ORDER BY name ASC'
-  ).all()
+    'SELECT * FROM job_sites WHERE active = 1 AND tenant_id = ? ORDER BY name ASC'
+  ).bind(tenantId).all()
   return c.json({ sites: sites.results })
 })
 
 app.post('/api/job-sites', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const { name, address } = await c.req.json().catch(() => ({})) as any
   if (!name?.trim() || !address?.trim()) {
     return c.json({ error: 'Name and address are required' }, 400)
@@ -2759,14 +2782,15 @@ app.post('/api/job-sites', async (c) => {
   } catch(_) {}
 
   const result = await db.prepare(
-    'INSERT INTO job_sites (name, address, lat, lng) VALUES (?, ?, ?, ?)'
-  ).bind(name.trim(), address.trim(), lat, lng).run()
+    'INSERT INTO job_sites (name, address, lat, lng, tenant_id) VALUES (?, ?, ?, ?, ?)'
+  ).bind(name.trim(), address.trim(), lat, lng, tenantId).run()
   return c.json({ success: true, id: result.meta.last_row_id })
 })
 
 app.put('/api/job-sites/:id', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const id = c.req.param('id')
   const { name, address, active } = await c.req.json().catch(() => ({})) as any
 
@@ -2785,14 +2809,14 @@ app.put('/api/job-sites/:id', async (c) => {
       lat     = CASE WHEN ? IS NOT NULL THEN ? ELSE lat END,
       lng     = CASE WHEN ? IS NOT NULL THEN ? ELSE lng END,
       active  = COALESCE(?, active)
-    WHERE id = ?`
+    WHERE id = ? AND tenant_id = ?`
   ).bind(
     name?.trim() || null,
     address?.trim() || null,
     address ? lat : null, lat,
     address ? lng : null, lng,
     active !== undefined ? (active ? 1 : 0) : null,
-    id
+    id, tenantId
   ).run()
   return c.json({ success: true })
 })
@@ -2800,7 +2824,8 @@ app.put('/api/job-sites/:id', async (c) => {
 app.delete('/api/job-sites/:id', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  await db.prepare('UPDATE job_sites SET active = 0 WHERE id = ?').bind(c.req.param('id')).run()
+  const tenantId = await resolveTenantId(c, db)
+  await db.prepare('UPDATE job_sites SET active = 0 WHERE id = ? AND tenant_id = ?').bind(c.req.param('id'), tenantId).run()
   return c.json({ success: true })
 })
 
@@ -2810,6 +2835,7 @@ app.delete('/api/job-sites/:id', async (c) => {
 app.post('/api/dispatch', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const body = await c.req.json() as any
   const {
     job_site_id,
@@ -2824,8 +2850,8 @@ app.post('/api/dispatch', async (c) => {
   if (!job_address)  return c.json({ error: 'job_address required' }, 400)
   if (!job_name)     return c.json({ error: 'job_name required' }, 400)
 
-  // Fetch worker
-  const worker = await db.prepare('SELECT id, name, phone FROM workers WHERE id = ? AND active = 1').bind(worker_id).first() as any
+  // Fetch worker (must belong to this tenant)
+  const worker = await db.prepare('SELECT id, name, phone FROM workers WHERE id = ? AND tenant_id = ? AND active = 1').bind(worker_id, tenantId).first() as any
   if (!worker) return c.json({ error: 'Worker not found or inactive' }, 404)
   if (!worker.phone) return c.json({ error: 'Worker has no phone number on file' }, 400)
 
@@ -2844,7 +2870,7 @@ app.post('/api/dispatch', async (c) => {
     INSERT INTO job_dispatches
       (job_site_id, encircle_claim_id, job_name, job_address, maps_url,
        worker_id, worker_name, worker_phone, status, sms_sid, notes, tenant_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,1)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
   `).bind(
     job_site_id || null,
     encircle_claim_id || null,
@@ -2856,7 +2882,8 @@ app.post('/api/dispatch', async (c) => {
     worker.phone,
     smsResult.sent ? 'sent' : 'failed',
     null,
-    notes || null
+    notes || null,
+    tenantId
   ).run()
 
   if (!smsResult.sent) {
@@ -2881,6 +2908,7 @@ app.post('/api/dispatch', async (c) => {
 app.get('/api/dispatch', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const limit = parseInt(c.req.query('limit') || '50')
   const rows = await db.prepare(`
     SELECT d.*,
@@ -2888,9 +2916,10 @@ app.get('/api/dispatch', async (c) => {
       w.phone AS worker_phone_live
     FROM job_dispatches d
     LEFT JOIN workers w ON w.id = d.worker_id
+    WHERE d.tenant_id = ?
     ORDER BY d.created_at DESC
     LIMIT ?
-  `).bind(limit).all()
+  `).bind(tenantId, limit).all()
   return c.json({ dispatches: rows.results })
 })
 
@@ -2898,6 +2927,7 @@ app.get('/api/dispatch', async (c) => {
 app.get('/api/dispatch/stats', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const row = await db.prepare(`
     SELECT
       COUNT(*) AS total,
@@ -2907,8 +2937,8 @@ app.get('/api/dispatch/stats', async (c) => {
       SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
       SUM(CASE WHEN status='failed'    THEN 1 ELSE 0 END) AS failed
     FROM job_dispatches
-    WHERE created_at >= datetime('now','-7 days')
-  `).first() as any
+    WHERE tenant_id = ? AND created_at >= datetime('now','-7 days')
+  `).bind(tenantId).first() as any
   return c.json(row || {})
 })
 
@@ -3616,14 +3646,15 @@ app.post('/api/disputes', async (c) => {
 app.get('/api/disputes', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const status = c.req.query('status') || 'pending'
   const disputes = await db.prepare(
     `SELECT d.*, s.clock_in_time, s.clock_out_time, s.total_hours, s.earnings, s.job_location
      FROM session_disputes d
      LEFT JOIN sessions s ON s.id = d.session_id
-     WHERE d.status = ?
+     WHERE d.status = ? AND s.tenant_id = ?
      ORDER BY d.created_at DESC`
-  ).bind(status).all()
+  ).bind(status, tenantId).all()
   return c.json({ disputes: disputes.results })
 })
 
@@ -3653,6 +3684,7 @@ app.get('/api/location/session/:session_id', async (c) => {
 app.get('/api/stats/summary', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const period = c.req.query('period') || 'today' // today, week, month, all
 
   let dateFilter = ''
@@ -3677,10 +3709,10 @@ app.get('/api/stats/summary', async (c) => {
       SUM(CASE WHEN s.status = 'completed' THEN s.earnings ELSE 0 END) as total_earnings,
       COUNT(CASE WHEN s.status = 'active' THEN 1 END) as currently_working
     FROM sessions s
-    WHERE 1=1 ${dateFilter}
-  `).first()
+    WHERE s.tenant_id = ? ${dateFilter}
+  `).bind(tenantId).first()
 
-  const workerCount = await db.prepare('SELECT COUNT(*) as count FROM workers WHERE active = 1').first<{count: number}>()
+  const workerCount = await db.prepare('SELECT COUNT(*) as count FROM workers WHERE active = 1 AND tenant_id = ?').bind(tenantId).first<{count: number}>()
 
   return c.json({ stats: { ...stats, total_workers: workerCount?.count || 0 }, period })
 })
@@ -4287,8 +4319,13 @@ app.delete('/api/super/tenants/:id', async (c) => {
   await ensureSchema(db)
   const id = c.req.param('id')
   if (id === '1') return c.json({ error: 'Cannot delete the primary tenant' }, 403)
+  // Check tenant exists
+  const tenant = await db.prepare(`SELECT id, company_name, status FROM tenants WHERE id = ?`).bind(id).first() as any
+  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+  if (tenant.status === 'deleted') return c.json({ error: 'Tenant is already archived' }, 409)
+  // Soft-delete: mark as deleted, preserve all data
   await db.prepare(`UPDATE tenants SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(id).run()
-  return c.json({ success: true })
+  return c.json({ success: true, message: `"${tenant.company_name}" has been archived. All data is preserved.` })
 })
 
 // POST /api/super/tenants/:id/impersonate — get admin URL for tenant
@@ -5576,6 +5613,7 @@ app.get('/api/calendar/:year/:month', async (c) => {
 // ─── PAYROLL REPORT API ───────────────────────────────────────────────────────
 app.get('/api/payroll/:year/:month', async (c) => {
   const db = c.env.DB
+  const tenantId = await resolveTenantId(c, db)
   const year = parseInt(c.req.param('year'))
   const month = parseInt(c.req.param('month'))
   const worker_id = c.req.query('worker_id')
@@ -5587,9 +5625,9 @@ app.get('/api/payroll/:year/:month', async (c) => {
     SELECT s.*, w.name as worker_name, w.phone as worker_phone, w.hourly_rate
     FROM sessions s JOIN workers w ON s.worker_id = w.id
     WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
-    AND s.status = 'completed'
+    AND s.status = 'completed' AND s.tenant_id = ?
   `
-  const params: any[] = [startDate, endDate]
+  const params: any[] = [startDate, endDate, tenantId]
   if (worker_id) { query += ' AND s.worker_id = ?'; params.push(parseInt(worker_id)) }
   query += ' ORDER BY w.name, s.clock_in_time ASC'
 
@@ -5636,13 +5674,14 @@ function getWeekBounds(refDate?: Date): { start: string; end: string; label: str
 app.get('/api/export/weekly', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const weekParam   = c.req.query('week')
   const workerIdRaw = c.req.query('worker_id')
   const workerId    = workerIdRaw ? parseInt(workerIdRaw) : null
   const bounds = getWeekBounds(weekParam ? new Date(weekParam) : undefined)
 
   const workerFilter = workerId ? 'AND s.worker_id = ?' : ''
-  const sessionBinds = workerId ? [bounds.start, bounds.end, workerId] : [bounds.start, bounds.end]
+  const sessionBinds = workerId ? [bounds.start, bounds.end, tenantId, workerId] : [bounds.start, bounds.end, tenantId]
 
   const sessions = await db.prepare(`
     SELECT s.*,
@@ -5653,6 +5692,7 @@ app.get('/api/export/weekly', async (c) => {
     JOIN workers w ON s.worker_id = w.id
     WHERE DATE(s.clock_in_time) >= ?
       AND DATE(s.clock_in_time) <= ?
+      AND s.tenant_id = ?
       ${workerFilter}
     ORDER BY w.name, s.clock_in_time ASC
   `).bind(...sessionBinds).all()
@@ -5664,8 +5704,9 @@ app.get('/api/export/weekly', async (c) => {
     JOIN sessions s ON lp.session_id = s.id
     WHERE DATE(s.clock_in_time) >= ?
       AND DATE(s.clock_in_time) <= ?
+      AND s.tenant_id = ?
     ORDER BY lp.session_id, lp.timestamp ASC
-  `).bind(bounds.start, bounds.end).all()
+  `).bind(bounds.start, bounds.end, tenantId).all()
 
   // Index pings by session_id
   const pingsBySession: Record<number, any[]> = {}
@@ -5751,6 +5792,7 @@ app.get('/api/export/period', async (c) => {
 app.get('/api/export/weekly/html', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const weekParam   = c.req.query('week')
   const workerIdRaw = c.req.query('worker_id')
   const workerId    = workerIdRaw ? parseInt(workerIdRaw) : null
@@ -5761,7 +5803,7 @@ app.get('/api/export/weekly/html', async (c) => {
   ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
 
   const workerFilter  = workerId ? 'AND s.worker_id = ?' : ''
-  const sessionBinds  = workerId ? [bounds.start, bounds.end, workerId] : [bounds.start, bounds.end]
+  const sessionBinds  = workerId ? [bounds.start, bounds.end, tenantId, workerId] : [bounds.start, bounds.end, tenantId]
 
   const sessions = await db.prepare(`
     SELECT s.*,
@@ -5772,6 +5814,7 @@ app.get('/api/export/weekly/html', async (c) => {
     JOIN workers w ON s.worker_id = w.id
     WHERE DATE(s.clock_in_time) >= ?
       AND DATE(s.clock_in_time) <= ?
+      AND s.tenant_id = ?
       ${workerFilter}
     ORDER BY w.name, s.clock_in_time ASC
   `).bind(...sessionBinds).all()
@@ -5783,8 +5826,9 @@ app.get('/api/export/weekly/html', async (c) => {
     JOIN sessions s ON lp.session_id = s.id
     WHERE DATE(s.clock_in_time) >= ?
       AND DATE(s.clock_in_time) <= ?
+      AND s.tenant_id = ?
     ORDER BY lp.session_id, lp.timestamp ASC
-  `).bind(bounds.start, bounds.end).all()
+  `).bind(bounds.start, bounds.end, tenantId).all()
 
   const pingsBySession: Record<number, any[]> = {}
   ;(pings.results as any[]).forEach((p: any) => {
@@ -14443,6 +14487,34 @@ select.input option{background:#1e293b}
   </div>
 </div>
 
+<!-- DELETE TENANT CONFIRMATION MODAL -->
+<div class="modal-bg" id="delete-modal" onclick="if(event.target===this)closeDeleteModal()">
+  <div class="card" style="padding:28px;width:100%;max-width:460px">
+    <div style="text-align:center;margin-bottom:20px">
+      <div style="width:56px;height:56px;background:#fee2e2;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 14px">
+        <i class="fas fa-trash" style="color:#ef4444;font-size:22px"></i>
+      </div>
+      <h3 style="font-size:17px;font-weight:700;color:#fff;margin:0 0 8px">Archive Tenant?</h3>
+      <p id="delete-modal-desc" style="font-size:13px;color:#94a3b8;margin:0">This tenant and all their data will be archived. Workers will not be able to clock in.</p>
+    </div>
+    <div style="background:#1e293b;border-radius:8px;padding:14px;margin-bottom:20px;font-size:12px;color:#cbd5e1;border-left:3px solid #ef4444">
+      <strong style="color:#f87171">⚠ Data is preserved.</strong> The tenant record, workers, and sessions are kept in the database. This action only disables access. Contact support to fully purge if required.
+    </div>
+    <div style="margin-bottom:16px">
+      <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#ef4444;margin-bottom:6px">Type the company name to confirm</label>
+      <input id="delete-confirm-input" type="text" class="input" placeholder="Type exact company name…" oninput="checkDeleteConfirm()">
+      <p id="delete-name-hint" style="font-size:11px;color:#64748b;margin-top:4px"></p>
+    </div>
+    <div style="display:flex;gap:12px">
+      <button class="btn btn-ghost" style="flex:1" onclick="closeDeleteModal()">Cancel</button>
+      <button id="delete-confirm-btn" class="btn btn-danger" style="flex:1;opacity:.4;pointer-events:none" onclick="executeDeleteTenant()">
+        <i class="fas fa-trash" style="margin-right:6px"></i>Archive Tenant
+      </button>
+    </div>
+    <div id="delete-result" style="display:none;margin-top:14px;padding:10px 14px;border-radius:8px;font-size:13px;text-align:center"></div>
+  </div>
+</div>
+
 <!-- TOAST -->
 <div id="toast"></div>
 
@@ -14936,18 +15008,65 @@ async function activateTenant(id) {
 function deleteTenantBtn(btn) {
   const id   = btn.getAttribute('data-id')
   const name = decodeURIComponent(btn.getAttribute('data-name')||'')
-  deleteTenant(id, name)
+  openDeleteModal(id, name)
 }
-async function deleteTenant(id, name) {
-  const confirmed = confirm('Archive "' + name + '"?  This will soft-delete the tenant. Their data is preserved but workers will not be able to clock in.')
-  if (!confirmed) return
-  const typed = prompt('Type DELETE to confirm archiving "' + name + '":')
-  if ((typed || '').trim().toUpperCase() !== 'DELETE') { showToast('❌ Cancelled — nothing changed', true); return }
+
+// Delete confirmation modal state
+let _deleteId = null, _deleteName = ''
+function openDeleteModal(id, name) {
+  _deleteId = id; _deleteName = name
+  document.getElementById('delete-modal-desc').textContent = 'You are about to archive "' + name + '". Their workers will immediately lose access.'
+  document.getElementById('delete-name-hint').textContent = 'Expected: ' + name
+  document.getElementById('delete-confirm-input').value = ''
+  document.getElementById('delete-confirm-btn').style.opacity = '.4'
+  document.getElementById('delete-confirm-btn').style.pointerEvents = 'none'
+  document.getElementById('delete-result').style.display = 'none'
+  document.getElementById('delete-modal').classList.add('open')
+}
+function closeDeleteModal() {
+  document.getElementById('delete-modal').classList.remove('open')
+  _deleteId = null; _deleteName = ''
+}
+function checkDeleteConfirm() {
+  const val = document.getElementById('delete-confirm-input').value.trim()
+  const btn = document.getElementById('delete-confirm-btn')
+  if (val === _deleteName) {
+    btn.style.opacity = '1'; btn.style.pointerEvents = 'auto'
+  } else {
+    btn.style.opacity = '.4'; btn.style.pointerEvents = 'none'
+  }
+}
+async function executeDeleteTenant() {
+  if (!_deleteId) return
+  const btn = document.getElementById('delete-confirm-btn')
+  const resultEl = document.getElementById('delete-result')
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right:6px"></i>Archiving…'
+  resultEl.style.display = 'none'
   try {
-    await api('/api/super/tenants/'+id, { method:'DELETE' })
-    showToast('🗑 Tenant archived (data preserved)')
-    loadTenants()
-  } catch(e) { showToast('❌ Failed to archive tenant', true) }
+    const r = await fetch('/api/super/tenants/' + _deleteId, {
+      method: 'DELETE',
+      headers: { 'X-Super-Token': superToken }
+    })
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok || d.error) throw new Error(d.error || 'Server error ('+r.status+')')
+    resultEl.style.display = 'block'
+    resultEl.style.background = '#052e16'
+    resultEl.style.border = '1px solid #16a34a'
+    resultEl.style.color = '#86efac'
+    resultEl.innerHTML = '<i class="fas fa-check-circle" style="margin-right:6px"></i><strong>' + _deleteName + '</strong> has been archived successfully. Workers can no longer clock in.'
+    btn.style.display = 'none'
+    showToast('🗑 ' + _deleteName + ' archived')
+    setTimeout(() => { closeDeleteModal(); loadTenants() }, 2500)
+  } catch(e) {
+    resultEl.style.display = 'block'
+    resultEl.style.background = '#450a0a'
+    resultEl.style.border = '1px solid #dc2626'
+    resultEl.style.color = '#fca5a5'
+    resultEl.innerHTML = '<i class="fas fa-exclamation-circle" style="margin-right:6px"></i>Failed to archive: ' + (e.message || 'Unknown error')
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-trash" style="margin-right:6px"></i>Try Again'
+  }
 }
 
 // ── Create Tenant ───────────────────────────────────────────────────────────
