@@ -13256,7 +13256,7 @@ select.input option{background:#1e293b}
     </div>
     <div id="login-error" style="display:none;background:#7f1d1d33;border:1px solid #dc2626;color:#fca5a5;border-radius:8px;padding:10px 14px;font-size:13px;margin-bottom:16px"></div>
     <input type="password" id="super-pin" class="input" style="text-align:center;font-size:22px;letter-spacing:8px;margin-bottom:14px" placeholder="••••••••" maxlength="30" autocomplete="current-password">
-    <button class="btn btn-primary" style="width:100%;justify-content:center;padding:10px" onclick="doSuperLogin()">
+    <button id="login-btn" class="btn btn-primary" style="width:100%;justify-content:center;padding:10px" onclick="doSuperLogin()">
       <i class="fas fa-unlock-keyhole"></i> Access Portal
     </button>
     <p style="text-align:center;font-size:11px;color:#334155;margin-top:16px">Protected — authorized personnel only</p>
@@ -14625,7 +14625,17 @@ const sessLimit = 50
 // ── Auth ──────────────────────────────────────────────────────────────────────
 async function doSuperLogin() {
   const pin = document.getElementById('super-pin').value.trim()
-  if (!pin) return
+  if (!pin) {
+    const el = document.getElementById('login-error')
+    el.textContent = 'Please enter your PIN'
+    el.style.display = 'block'
+    return
+  }
+  const btn = document.getElementById('login-btn')
+  const errEl = document.getElementById('login-error')
+  errEl.style.display = 'none'
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying…'
   try {
     const r = await fetch('/api/super/login', {
       method: 'POST',
@@ -14634,18 +14644,33 @@ async function doSuperLogin() {
     })
     const d = await r.json()
     if (!r.ok || d.error) {
-      const el = document.getElementById('login-error')
-      el.textContent = d.error || 'Invalid PIN'
-      el.style.display = 'block'
+      errEl.textContent = d.error || 'Invalid PIN — please try again'
+      errEl.style.display = 'block'
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-unlock-keyhole"></i> Access Portal'
+      // shake the input
+      const inp = document.getElementById('super-pin')
+      inp.style.transition = 'transform 0.1s'
+      inp.style.border = '1px solid #dc2626'
+      for (let i = 0; i < 3; i++) {
+        await new Promise(r => setTimeout(r, 60))
+        inp.style.transform = 'translateX(6px)'
+        await new Promise(r => setTimeout(r, 60))
+        inp.style.transform = 'translateX(-6px)'
+      }
+      inp.style.transform = ''
       return
     }
     superToken = d.token
     localStorage.setItem('super_token', superToken)
+    btn.innerHTML = '<i class="fas fa-check"></i> Access Granted'
+    await new Promise(r => setTimeout(r, 400))
     showApp()
   } catch(e) {
-    const el = document.getElementById('login-error')
-    el.textContent = 'Connection error — try again'
-    el.style.display = 'block'
+    errEl.textContent = 'Connection error — check your internet and try again'
+    errEl.style.display = 'block'
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-unlock-keyhole"></i> Access Portal'
   }
 }
 document.getElementById('super-pin').addEventListener('keydown', e => { if(e.key==='Enter') doSuperLogin() })
