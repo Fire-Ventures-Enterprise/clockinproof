@@ -1917,7 +1917,9 @@ function getDeviceId() {
 function showToast(msg, type = 'info', duration = 4000) {
   const t = document.getElementById('toast')
   t.textContent = msg
-  t.className = `fixed bottom-6 left-1/2 transform -translate-x-1/2 px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium text-white max-w-xs text-center
+  // bottom:88px clears the fixed bottom nav bar (72px tall + margin)
+  t.style.cssText = `bottom:88px;z-index:9999`
+  t.className = `fixed left-1/2 transform -translate-x-1/2 px-5 py-3 rounded-xl shadow-xl text-sm font-medium text-white max-w-xs text-center
     ${type === 'error' ? 'bg-red-600' : type === 'success' ? 'bg-green-600' : 'bg-gray-800'}`
   t.classList.remove('hidden')
   setTimeout(() => t.classList.add('hidden'), duration)

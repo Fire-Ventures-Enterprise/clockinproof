@@ -8841,7 +8841,7 @@ function getWorkerHTML(tenant?: any): string {
 
 <!-- ── FRAUD BLOCKED MODAL ──────────────────────────────────────────────────── -->
 <!-- ── Worker: Report Issue Modal ─────────────────────────────────────────── -->
-<div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4">
+<div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 flex items-end justify-center" style="z-index:9990;padding:0 16px 88px">
   <div class="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl">
     <div class="flex items-center gap-3 mb-4">
       <div class="w-10 h-10 bg-rose-100 rounded-2xl flex items-center justify-center flex-shrink-0">
@@ -8873,7 +8873,7 @@ function getWorkerHTML(tenant?: any): string {
   </div>
 </div>
 
-<div id="fraud-blocked-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4">
+<div id="fraud-blocked-modal" class="hidden fixed inset-0 bg-black/70 flex items-end justify-center" style="z-index:9990;padding:0 16px 88px">
   <div class="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl">
     <!-- Header -->
     <div class="flex items-center gap-3 mb-4">
@@ -8950,11 +8950,11 @@ function getWorkerHTML(tenant?: any): string {
 </div>
 
 <!-- Toast notification -->
-<div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
+<div id="toast" class="hidden fixed left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl text-sm font-medium max-w-xs text-center" style="bottom:88px;z-index:9999"></div>
 
-<script src="/static/worker.js?v=20260305c"></script>
+<script src="/static/worker.js?v=20260305d"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
-<div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
+<div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 flex items-end justify-center" style="z-index:9990;padding:0 16px 88px" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
     <div class="w-10 h-1 bg-gray-300 rounded-full mx-auto mb-5"></div>
     <div class="flex items-center gap-3 mb-4">
