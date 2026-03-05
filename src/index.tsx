@@ -1619,8 +1619,8 @@ app.post('/api/sessions/clock-in', async (c) => {
   // EXCEPTION: material_pickup and emergency_job are legitimately done from
   // a PC or different device (supply store, office, emergency call) — allow
   // those session types to bypass the device lock.
-  const workerRow = await db.prepare('SELECT * FROM workers WHERE id = ? AND active = 1').bind(worker_id).first<any>()
-  if (!workerRow) return c.json({ error: 'Worker not found or inactive' }, 404)
+  const workerRow = await db.prepare('SELECT * FROM workers WHERE id = ? AND active = 1').bind(parseInt(worker_id)).first<any>()
+  if (!workerRow) return c.json({ error: 'Worker not found or inactive', message: 'Your worker account was not found. Please sign out and sign in again at your company subdomain (e.g. yourcompany.clockinproof.com).' }, 404)
 
   const isOffSiteType = clockType === 'material_pickup' || clockType === 'emergency_job'
   if (!isOffSiteType && workerRow.device_id && workerRow.device_consent_given && device_id && workerRow.device_id !== device_id) {
@@ -4825,16 +4825,43 @@ async function sendTicketEmail(env: any, opts: {
 app.post('/api/device-reset-request', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const tenant = (c as any).tenant
-  if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
   const { phone, worker_id, reason } = await c.req.json()
   if (!phone && !worker_id) return c.json({ error: 'phone or worker_id required' }, 400)
 
-  // Look up worker by phone or ID
-  const worker = phone
-    ? await db.prepare('SELECT * FROM workers WHERE phone = ? AND tenant_id = ? AND active = 1').bind(phone, tenant.id).first<any>()
-    : await db.prepare('SELECT * FROM workers WHERE id = ? AND tenant_id = ? AND active = 1').bind(worker_id, tenant.id).first<any>()
-  if (!worker) return c.json({ error: 'Worker not found' }, 404)
+  // ── Resolve tenant ────────────────────────────────────────────────────────
+  // When called from a tenant subdomain, (c as any).tenant is set by middleware.
+  // When called from app.clockinproof.com (reserved subdomain), tenant is null —
+  // so we derive the tenant from the worker's own record in the DB.
+  let tenant = (c as any).tenant as any
+
+  // Look up worker first (no tenant filter yet) to derive tenant if needed
+  const rawPhone = phone ? normalizePhone(phone) : null
+  let worker: any = null
+
+  if (rawPhone) {
+    const variants = Array.from(new Set([
+      rawPhone,
+      rawPhone.startsWith('1') ? rawPhone.slice(1) : '1' + rawPhone,
+      '+' + rawPhone,
+      '+1' + (rawPhone.startsWith('1') ? rawPhone.slice(1) : rawPhone)
+    ]))
+    for (const v of variants) {
+      worker = await db.prepare(
+        `SELECT * FROM workers WHERE REPLACE(REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ',''),'(','') = ? AND active = 1`
+      ).bind(v.replace(/\D/g, '')).first<any>()
+      if (worker) break
+    }
+  } else if (worker_id) {
+    worker = await db.prepare('SELECT * FROM workers WHERE id = ? AND active = 1').bind(parseInt(worker_id)).first<any>()
+  }
+
+  if (!worker) return c.json({ error: 'Worker not found', message: 'Worker not found. Please check your phone number.' }, 404)
+
+  // If no tenant from subdomain, look it up from the worker's tenant_id
+  if (!tenant && worker.tenant_id) {
+    tenant = await db.prepare(`SELECT * FROM tenants WHERE id = ? AND status != 'deleted'`).bind(worker.tenant_id).first<any>()
+  }
+  if (!tenant) return c.json({ error: 'Tenant not found', message: 'Company not found. Please contact your manager.' }, 404)
 
   // Check no pending request already exists
   const pending = await db.prepare(
@@ -4909,7 +4936,11 @@ app.post('/api/device-reset-request', async (c) => {
 app.get('/api/device-reset-requests', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const tenant = (c as any).tenant
+  let tenant = (c as any).tenant as any
+  if (!tenant) {
+    const tid = c.req.header('X-Tenant-ID')
+    if (tid) tenant = await db.prepare(`SELECT * FROM tenants WHERE id = ? AND status != 'deleted'`).bind(parseInt(tid)).first<any>()
+  }
   if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
   const requests = await db.prepare(`
     SELECT r.*, w.phone as worker_phone
@@ -4926,7 +4957,11 @@ app.get('/api/device-reset-requests', async (c) => {
 app.post('/api/device-reset-requests/:id/approve', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const tenant = (c as any).tenant
+  let tenant = (c as any).tenant as any
+  if (!tenant) {
+    const tid = c.req.header('X-Tenant-ID')
+    if (tid) tenant = await db.prepare(`SELECT * FROM tenants WHERE id = ? AND status != 'deleted'`).bind(parseInt(tid)).first<any>()
+  }
   if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
   const id = parseInt(c.req.param('id'))
 
@@ -4950,7 +4985,11 @@ app.post('/api/device-reset-requests/:id/approve', async (c) => {
 app.post('/api/device-reset-requests/:id/deny', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const tenant = (c as any).tenant
+  let tenant = (c as any).tenant as any
+  if (!tenant) {
+    const tid = c.req.header('X-Tenant-ID')
+    if (tid) tenant = await db.prepare(`SELECT * FROM tenants WHERE id = ? AND status != 'deleted'`).bind(parseInt(tid)).first<any>()
+  }
   if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
   const id = parseInt(c.req.param('id'))
   const req = await db.prepare(
@@ -8985,7 +9024,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl text-sm font-medium max-w-xs text-center" style="bottom:88px;z-index:9999"></div>
 
-<script src="/static/worker.js?v=20260305e"></script>
+<script src="/static/worker.js?v=20260305f"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 flex items-end justify-center" style="z-index:9990;padding:0 16px 88px" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -12064,7 +12103,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260305b"></script>
+<script src="/static/admin.js?v=20260305c"></script>
 
 </body>
 </html>`

@@ -18,6 +18,17 @@ function _updateThemeIcon() {
 document.addEventListener('DOMContentLoaded', _updateThemeIcon)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── apiFetch: auto-injects X-Tenant-ID so server resolves tenant on reserved subdomains ──
+function apiFetch(url, opts) {
+  opts = opts || {}
+  const tid = window.__TENANT__?.tenant_id
+  if (tid) {
+    opts.headers = Object.assign({ 'X-Tenant-ID': String(tid) }, opts.headers || {})
+  }
+  return fetch(url, opts)
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 let adminMap = null
 let currentPeriod = 'today'
 let allSessionsData = []
@@ -5310,7 +5321,7 @@ async function loadDeviceResetRequests() {
   const listEl = document.getElementById('device-reset-list')
   const banner = document.getElementById('device-reset-banner')
   try {
-    const res = await fetch('/api/device-reset-requests')
+    const res = await apiFetch('/api/device-reset-requests')
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const d = await res.json()
     const pending = (d.requests || []).filter(r => r.status === 'pending')
@@ -5389,7 +5400,7 @@ let currentTenantTicketId = null
 
 // Simple fetch helper for tenant-side ticket API calls
 async function tktFetch(url, opts) {
-  const res = await fetch(url, opts || {})
+  const res = await apiFetch(url, opts || {})
   if (!res.ok) throw new Error('HTTP ' + res.status)
   return res.json()
 }
