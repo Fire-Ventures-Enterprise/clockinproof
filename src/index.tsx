@@ -3844,7 +3844,7 @@ app.post('/api/admin/login', async (c) => {
 
   // Look up tenant by admin_email + admin_pin
   const tenant = await db.prepare(`
-    SELECT id, slug, company_name, logo_url, primary_color, plan, status
+    SELECT id, slug, company_name, logo_url, primary_color, plan, status, trial_ends_at
     FROM tenants WHERE LOWER(admin_email) = LOWER(?) AND admin_pin = ? AND status != 'deleted'
   `).bind(email.trim(), pin.trim()).first() as any
 
@@ -3858,7 +3858,14 @@ app.post('/api/admin/login', async (c) => {
     company_name: tenant.company_name,
     logo_url: tenant.logo_url || '',
     primary_color: tenant.primary_color || '#4F46E5',
-    plan: tenant.plan
+    plan: tenant.plan,
+    status: tenant.status,
+    trial_days_left: (() => {
+      if (tenant.status === "trial" && tenant.trial_ends_at) {
+        const ms = new Date(tenant.trial_ends_at).getTime() - Date.now();
+        return Math.max(0, Math.ceil(ms / 86400000));
+      } return null;
+    })()
   })
 })
 
@@ -7232,6 +7239,373 @@ app.get('/super', (c) => {
 // Marketing landing page — accessible via root / OR /landing
 app.get('/landing', (c) => {
   return c.html(getLandingHTML())
+})
+
+// ─── FREE 60-DAY TRIAL ────────────────────────────────────────────────────────
+// Shareable link for prospects: clockinproof.pages.dev/free-trial
+// No credit card · Instant setup · Full access for 60 days
+
+app.get('/free-trial', (c) => {
+  return c.html(getFreeTrialHTML())
+})
+
+// POST /api/free-trial — create tenant instantly, no payment required
+app.post('/api/free-trial', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+
+  const { company_name, slug, admin_email, admin_pin, company_address, phone } = await c.req.json() as any
+
+  // Validate required fields
+  if (!company_name?.trim()) return c.json({ error: 'Company name is required' }, 400)
+  if (!slug?.trim())         return c.json({ error: 'Subdomain is required' }, 400)
+  if (!admin_email?.trim())  return c.json({ error: 'Admin email is required' }, 400)
+  if (!admin_pin?.trim())    return c.json({ error: 'PIN is required' }, 400)
+
+  // Clean slug
+  const cleanSlug = slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '').substring(0, 40)
+  const reserved = ['admin', 'app', 'www', 'superadmin', 'super', 'api', 'mail', 'staging', 'clockinproof', 'support', 'free-trial', 'signup']
+  if (reserved.includes(cleanSlug)) return c.json({ error: 'That subdomain is reserved — please choose another' }, 400)
+
+  // Check subdomain availability
+  const existing = await db.prepare(`SELECT id FROM tenants WHERE slug = ?`).bind(cleanSlug).first()
+  if (existing) return c.json({ error: `"${cleanSlug}" is already taken — try a different subdomain` }, 409)
+
+  // Validate PIN
+  if (!/^\d{4,8}$/.test(admin_pin.trim())) return c.json({ error: 'PIN must be 4–8 digits' }, 400)
+
+  // Set trial expiry = 60 days from now
+  const trialEndsAt = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString()
+
+  // Create tenant with trial status
+  const result = await db.prepare(`
+    INSERT INTO tenants (slug, company_name, company_address, admin_email, admin_pin, plan, status, max_workers, trial_ends_at)
+    VALUES (?, ?, ?, ?, ?, 'trial', 'trial', 25, ?)
+  `).bind(cleanSlug, company_name.trim(), company_address?.trim() || '', admin_email.trim().toLowerCase(), admin_pin.trim(), trialEndsAt).run()
+
+  const tenantId = (result.meta as any).last_row_id
+
+  // Seed default settings for the new tenant
+  const defaults: [string, string][] = [
+    ['app_name', company_name.trim()], ['country_code', 'CA'], ['province_code', 'ON'],
+    ['timezone', 'America/Toronto'], ['work_start', '08:00'], ['work_end', '17:00'],
+    ['break_morning_min', '15'], ['break_lunch_min', '30'], ['break_afternoon_min', '15'],
+    ['paid_hours_per_day', '7.5'], ['work_days', '1,2,3,4,5'], ['stat_pay_multiplier', '1.5'],
+    ['pay_frequency', 'biweekly'], ['geofence_radius_meters', '300'],
+    ['gps_fraud_check', '1'], ['auto_clockout_enabled', '1'],
+    ['max_shift_hours', '12'], ['away_warning_min', '30'],
+    ['company_name', company_name.trim()], ['admin_email', admin_email.trim()],
+    ['admin_phone', phone?.trim() || ''],
+    ['show_pay_to_workers', '1'],
+  ]
+  for (const [key, value] of defaults) {
+    await db.prepare(`INSERT OR IGNORE INTO tenant_settings (tenant_id, key, value) VALUES (?, ?, ?)`)
+      .bind(tenantId, key, value).run()
+  }
+
+  // Send welcome email
+  const resendKey = ((c.env as any).RESEND_API_KEY || '').trim()
+  if (resendKey && admin_email) {
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: 'ClockInProof <alerts@clockinproof.com>',
+        to: [admin_email.trim()],
+        subject: `🎉 Your 60-Day Free Trial is Ready — ClockInProof`,
+        html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px">
+          <div style="text-align:center;margin-bottom:24px">
+            <div style="display:inline-block;background:#4F46E5;color:#fff;font-weight:900;font-size:18px;padding:10px 20px;border-radius:10px">ClockIn<span style="color:#a5b4fc">Proof</span></div>
+          </div>
+          <h2 style="color:#111827;margin:0 0 8px">Welcome to ClockInProof, ${company_name.trim()}! 🎉</h2>
+          <p style="color:#6b7280;margin:0 0 24px">Your 60-day free trial is live. No credit card needed.</p>
+          <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:24px">
+            <p style="margin:0 0 12px;font-weight:700;color:#111827">Your login details:</p>
+            <table style="width:100%;border-collapse:collapse">
+              <tr><td style="padding:6px 0;color:#6b7280;font-size:14px">Admin Dashboard</td><td style="padding:6px 0;font-weight:600"><a href="https://admin.clockinproof.com" style="color:#4F46E5">admin.clockinproof.com</a></td></tr>
+              <tr><td style="padding:6px 0;color:#6b7280;font-size:14px">Worker App URL</td><td style="padding:6px 0;font-weight:600"><a href="https://${cleanSlug}.clockinproof.com" style="color:#4F46E5">${cleanSlug}.clockinproof.com</a></td></tr>
+              <tr><td style="padding:6px 0;color:#6b7280;font-size:14px">Your Email</td><td style="padding:6px 0;font-weight:600">${admin_email.trim()}</td></tr>
+              <tr><td style="padding:6px 0;color:#6b7280;font-size:14px">Your Admin PIN</td><td style="padding:6px 0;font-weight:600;font-size:18px;letter-spacing:4px">${admin_pin.trim()}</td></tr>
+              <tr><td style="padding:6px 0;color:#6b7280;font-size:14px">Trial Ends</td><td style="padding:6px 0;font-weight:600;color:#16a34a">${new Date(trialEndsAt).toLocaleDateString('en-CA', { year:'numeric', month:'long', day:'numeric' })}</td></tr>
+            </table>
+          </div>
+          <div style="text-align:center;margin-bottom:24px">
+            <a href="https://admin.clockinproof.com" style="background:#4F46E5;color:#fff;font-weight:700;padding:14px 32px;border-radius:10px;text-decoration:none;display:inline-block;font-size:16px">
+              Open My Admin Dashboard →
+            </a>
+          </div>
+          <p style="color:#9ca3af;font-size:12px;text-align:center">Questions? Reply to this email — we respond fast.<br>— The ClockInProof Team</p>
+        </div>`
+      })
+    }).catch(() => {})
+  }
+
+  return c.json({
+    success: true,
+    tenant_id: tenantId,
+    slug: cleanSlug,
+    trial_ends_at: trialEndsAt,
+    admin_url: 'https://admin.clockinproof.com',
+    worker_url: `https://${cleanSlug}.clockinproof.com`
+  })
+})
+
+function getFreeTrialHTML(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Start Free 60-Day Trial — ClockInProof</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+  <style>
+    body { background: #030712; }
+    .glow { box-shadow: 0 0 40px rgba(79,70,229,.35); }
+    @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
+    .float { animation: float 3s ease-in-out infinite; }
+    input:focus { outline: none; ring: 2px; }
+  </style>
+</head>
+<body class="text-white min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <nav class="px-6 py-4 flex items-center justify-between border-b border-white/5">
+    <a href="/" class="flex items-center gap-2 font-black text-lg">
+      <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-sm font-black">C</div>
+      ClockIn<span class="text-indigo-400">Proof</span>
+    </a>
+    <a href="/" class="text-sm text-gray-400 hover:text-white transition">← Back to home</a>
+  </nav>
+
+  <div class="flex-1 flex items-center justify-center px-4 py-12">
+    <div class="w-full max-w-5xl grid lg:grid-cols-2 gap-12 items-center">
+
+      <!-- Left: Value prop -->
+      <div class="hidden lg:block">
+        <div class="inline-flex items-center gap-2 bg-green-500/10 border border-green-500/30 text-green-400 text-sm font-semibold px-4 py-2 rounded-full mb-6">
+          <i class="fas fa-gift"></i> 60 Days Free · No Credit Card
+        </div>
+        <h1 class="text-4xl font-black leading-tight mb-4">
+          Your team can start<br/>clocking in <span class="text-indigo-400">today.</span>
+        </h1>
+        <p class="text-gray-400 text-lg mb-8 leading-relaxed">
+          Full access to every feature for 60 days. GPS clock-in, geofence fraud detection, payroll reports, job dispatch — everything.
+        </p>
+        <div class="space-y-3 mb-8">
+          ${['GPS-verified clock-in proof for every shift', 'Geofence fraud detection — blocks remote logins', 'Payroll reports, job dispatch & timesheets', 'Works on any phone — no app download needed', 'Your company\'s own subdomain in 30 seconds'].map(f => `
+          <div class="flex items-center gap-3 text-gray-300">
+            <div class="w-6 h-6 bg-green-500/20 rounded-full flex items-center justify-center flex-shrink-0">
+              <i class="fas fa-check text-green-400 text-xs"></i>
+            </div>
+            <span class="text-sm">${f}</span>
+          </div>`).join('')}
+        </div>
+        <div class="bg-white/5 border border-white/10 rounded-2xl p-5 float">
+          <div class="flex items-center gap-3 mb-3">
+            <div class="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center"><i class="fas fa-clock text-white"></i></div>
+            <div>
+              <p class="font-bold text-sm">After 60 days</p>
+              <p class="text-xs text-gray-400">Plans start at $39 CAD/mo — cancel anytime</p>
+            </div>
+          </div>
+          <p class="text-xs text-gray-500">We'll email you before your trial ends. No surprise charges.</p>
+        </div>
+      </div>
+
+      <!-- Right: Form -->
+      <div>
+        <!-- Mobile heading -->
+        <div class="lg:hidden text-center mb-6">
+          <div class="inline-flex items-center gap-2 bg-green-500/10 border border-green-500/30 text-green-400 text-sm font-semibold px-4 py-2 rounded-full mb-4">
+            <i class="fas fa-gift"></i> 60 Days Free · No Credit Card
+          </div>
+          <h1 class="text-3xl font-black">Start your free trial</h1>
+        </div>
+
+        <div class="bg-gray-900/80 border border-white/10 rounded-3xl p-8 glow">
+          <h2 class="text-xl font-black mb-1 hidden lg:block">Create your account</h2>
+          <p class="text-gray-400 text-sm mb-6 hidden lg:block">Ready in 30 seconds.</p>
+
+          <div id="trial-error" class="hidden bg-red-900/50 border border-red-500/50 text-red-300 rounded-xl p-3 text-sm mb-4"></div>
+
+          <!-- Success state -->
+          <div id="trial-success" class="hidden text-center py-4">
+            <div class="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+              <i class="fas fa-check-circle text-green-400 text-3xl"></i>
+            </div>
+            <h3 class="text-xl font-black text-white mb-2">You're all set! 🎉</h3>
+            <p class="text-gray-400 text-sm mb-6">Your 60-day free trial is live. Check your email for login details.</p>
+            <div class="space-y-3">
+              <a id="success-admin-link" href="#" class="flex items-center justify-center gap-2 w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold transition">
+                <i class="fas fa-tachometer-alt"></i> Open Admin Dashboard
+              </a>
+              <a id="success-worker-link" href="#" target="_blank" class="flex items-center justify-center gap-2 w-full py-3.5 bg-white/10 hover:bg-white/15 rounded-xl font-bold transition text-sm">
+                <i class="fas fa-mobile-alt"></i> Worker App Link <span class="text-gray-400 text-xs" id="success-worker-url"></span>
+              </a>
+            </div>
+            <p class="text-xs text-gray-500 mt-4"><i class="fas fa-envelope mr-1"></i>Login details also sent to your email</p>
+          </div>
+
+          <form id="trial-form" class="space-y-4">
+            <div class="grid grid-cols-2 gap-3">
+              <div class="col-span-2">
+                <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Company Name *</label>
+                <input id="t-company" type="text" placeholder="e.g. Ottawa Flooring Co." required
+                  class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
+              </div>
+              <div class="col-span-2">
+                <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Your Subdomain *</label>
+                <div class="flex">
+                  <input id="t-slug" type="text" placeholder="ottawaflooring" required maxlength="40"
+                    class="flex-1 px-4 py-3 bg-gray-800 border border-white/10 rounded-l-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                    oninput="autoSlug(false)"/>
+                  <span class="px-3 py-3 bg-gray-700 border border-l-0 border-white/10 rounded-r-xl text-xs text-gray-400 flex items-center whitespace-nowrap">.clockinproof.com</span>
+                </div>
+                <p id="slug-check" class="text-xs mt-1 text-gray-500 min-h-[1rem]"></p>
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Admin Email *</label>
+              <input id="t-email" type="email" placeholder="you@company.com" required
+                class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Admin PIN (4–8 digits) *</label>
+                <input id="t-pin" type="text" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="e.g. 4821" required maxlength="8"
+                  class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
+                <p class="text-xs text-gray-600 mt-1">Your admin dashboard password</p>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Phone (optional)</label>
+                <input id="t-phone" type="tel" placeholder="+1 613 555 0100"
+                  class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
+                <p class="text-xs text-gray-600 mt-1">For SMS alerts</p>
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Company Address (optional)</label>
+              <input id="t-address" type="text" placeholder="123 Main St, Ottawa, ON"
+                class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
+            </div>
+
+            <button type="submit" id="trial-btn"
+              class="w-full py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-black rounded-xl transition text-base flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/30">
+              <i class="fas fa-rocket"></i>
+              <span id="trial-btn-txt">Start My 60-Day Free Trial</span>
+            </button>
+
+            <p class="text-center text-xs text-gray-600">
+              <i class="fas fa-lock mr-1"></i>No credit card · No commitment · Cancel anytime
+            </p>
+          </form>
+        </div>
+
+        <p class="text-center text-gray-600 text-xs mt-4">
+          Already have an account? <a href="https://admin.clockinproof.com" class="text-indigo-400 hover:underline">Sign in →</a>
+        </p>
+      </div>
+
+    </div>
+  </div>
+
+<script>
+let _slugTimer = null
+
+// Auto-generate slug from company name
+document.getElementById('t-company').addEventListener('input', () => autoSlug(true))
+
+function autoSlug(fromCompany) {
+  if (fromCompany) {
+    const val = document.getElementById('t-company').value
+      .toLowerCase().trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .substring(0, 30)
+    document.getElementById('t-slug').value = val
+  }
+  clearTimeout(_slugTimer)
+  const slug = document.getElementById('t-slug').value.trim()
+  if (!slug) { document.getElementById('slug-check').textContent = ''; return }
+  document.getElementById('slug-check').innerHTML = '<span class="text-gray-400"><i class="fas fa-circle-notch fa-spin mr-1"></i>Checking...</span>'
+  _slugTimer = setTimeout(async () => {
+    try {
+      const res = await fetch('/api/slug-check?slug=' + encodeURIComponent(slug))
+      const d = await res.json()
+      if (d.available) {
+        document.getElementById('slug-check').innerHTML = '<span class="text-green-400"><i class="fas fa-check mr-1"></i>' + slug + '.clockinproof.com is available</span>'
+      } else {
+        document.getElementById('slug-check').innerHTML = '<span class="text-red-400"><i class="fas fa-times mr-1"></i>Already taken — try a different name</span>'
+      }
+    } catch { document.getElementById('slug-check').textContent = '' }
+  }, 500)
+}
+
+document.getElementById('trial-form').addEventListener('submit', async (e) => {
+  e.preventDefault()
+  const errEl = document.getElementById('trial-error')
+  errEl.classList.add('hidden')
+  const btn = document.getElementById('trial-btn')
+  const btnTxt = document.getElementById('trial-btn-txt')
+  btn.disabled = true
+  btnTxt.textContent = 'Creating your account...'
+  btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Setting up your account...'
+
+  try {
+    const res = await fetch('/api/free-trial', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        company_name: document.getElementById('t-company').value.trim(),
+        slug: document.getElementById('t-slug').value.trim(),
+        admin_email: document.getElementById('t-email').value.trim(),
+        admin_pin: document.getElementById('t-pin').value.trim(),
+        company_address: document.getElementById('t-address').value.trim(),
+        phone: document.getElementById('t-phone').value.trim()
+      })
+    })
+    const d = await res.json()
+    if (d.success) {
+      document.getElementById('trial-form').classList.add('hidden')
+      const succ = document.getElementById('trial-success')
+      succ.classList.remove('hidden')
+      document.getElementById('success-admin-link').href = d.admin_url
+      document.getElementById('success-worker-link').href = d.worker_url
+      document.getElementById('success-worker-url').textContent = d.slug + '.clockinproof.com'
+      // Track in analytics if available
+      if (typeof gtag !== 'undefined') gtag('event', 'trial_signup', { tenant: d.slug })
+    } else {
+      errEl.textContent = d.error || 'Something went wrong — please try again'
+      errEl.classList.remove('hidden')
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-rocket mr-2"></i><span id="trial-btn-txt">Start My 60-Day Free Trial</span>'
+    }
+  } catch(err) {
+    errEl.textContent = 'Connection error — please try again'
+    errEl.classList.remove('hidden')
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-rocket mr-2"></i><span id="trial-btn-txt">Start My 60-Day Free Trial</span>'
+  }
+})
+</script>
+</body>
+</html>`
+}
+
+// GET /api/slug-check?slug=xxx — quick availability check
+app.get('/api/slug-check', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const slug = (c.req.query('slug') || '').toLowerCase().replace(/[^a-z0-9-]/g, '-')
+  if (!slug) return c.json({ available: false, error: 'Invalid slug' })
+  const reserved = ['admin', 'app', 'www', 'superadmin', 'super', 'api', 'mail', 'staging', 'clockinproof', 'support', 'free-trial', 'signup']
+  if (reserved.includes(slug)) return c.json({ available: false })
+  const row = await db.prepare(`SELECT id FROM tenants WHERE slug = ?`).bind(slug).first()
+  return c.json({ available: !row })
 })
 
 // Signup page — /signup?plan=starter|growth|pro
