@@ -1609,22 +1609,26 @@ app.post('/api/sessions/clock-in', async (c) => {
   if (!job_location || !job_location.trim()) return c.json({ error: 'Job location is required' }, 400)
   if (!job_description || !job_description.trim()) return c.json({ error: 'Job description is required' }, 400)
 
+  // Normalize session type early — needed for device lock bypass logic below
+  const validTypes = ['regular', 'material_pickup', 'emergency_job']
+  const clockType = validTypes.includes(session_type) ? session_type : 'regular'
+
   // ── Device lock enforcement on clock-in ──────────────────────────────────
   // Prevents buddy punching: verifies the clock-in is coming from the
   // device registered by this worker. Not biometric — random browser token.
+  // EXCEPTION: material_pickup and emergency_job are legitimately done from
+  // a PC or different device (supply store, office, emergency call) — allow
+  // those session types to bypass the device lock.
   const workerRow = await db.prepare('SELECT * FROM workers WHERE id = ? AND active = 1').bind(worker_id).first<any>()
   if (!workerRow) return c.json({ error: 'Worker not found or inactive' }, 404)
 
-  if (workerRow.device_id && workerRow.device_consent_given && device_id && workerRow.device_id !== device_id) {
+  const isOffSiteType = clockType === 'material_pickup' || clockType === 'emergency_job'
+  if (!isOffSiteType && workerRow.device_id && workerRow.device_consent_given && device_id && workerRow.device_id !== device_id) {
     return c.json({
       error: 'device_mismatch',
       message: 'Clock-in blocked: this is not the registered device for this worker. If you have a new phone, ask your manager to reset your device.'
     }, 403)
   }
-
-  // Normalize session type — only allow known values
-  const validTypes = ['regular', 'material_pickup', 'emergency_job']
-  const clockType = validTypes.includes(session_type) ? session_type : 'regular'
 
   // Check if already clocked in
   const already = await db.prepare(
@@ -4843,12 +4847,22 @@ app.post('/api/device-reset-request', async (c) => {
     VALUES (?, ?, ?, ?, 'pending')
   `).bind(tenant.id, worker.id, worker.name, reason || 'New phone').run()
 
-  // Notify admin by email
+  // ── Notify admin — email + SMS ─────────────────────────────────────────────
   const settings: any = {}
   const sr = await db.prepare('SELECT * FROM settings').all()
   ;(sr.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
-  const adminEmail = settings.admin_email || settings.report_email
-  const resendKey  = (c.env as any).RESEND_API_KEY
+
+  const env = c.env as any
+  const adminEmail  = (settings.admin_email  || settings.report_email  || '').trim()
+  const adminPhone  = (settings.admin_phone  || '').trim()
+  const resendKey   = (env.RESEND_API_KEY    || settings.resend_api_key  || '').trim()
+  const twilioSid   = (env.TWILIO_ACCOUNT_SID   || settings.twilio_account_sid   || '').trim()
+  const twilioToken = (env.TWILIO_AUTH_TOKEN     || settings.twilio_auth_token    || '').trim()
+  const twilioMsgSvc= (env.TWILIO_MESSAGING_SERVICE || settings.twilio_messaging_service || '').trim()
+  const twilioFrom  = (env.TWILIO_FROM_NUMBER   || settings.twilio_from_number   || '').trim()
+  const appHost     = (settings.app_host || 'admin.clockinproof.com').trim()
+
+  // Email notification
   if (adminEmail && resendKey) {
     await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -4859,12 +4873,31 @@ app.post('/api/device-reset-request', async (c) => {
         subject: `📱 Device Reset Request — ${worker.name}`,
         html: `<div style="font-family:sans-serif;max-width:480px">
           <h2 style="color:#4F46E5">📱 Device Reset Request</h2>
-          <p><strong>${worker.name}</strong> is requesting a device reset.</p>
+          <p><strong>${worker.name}</strong> (${worker.phone}) is requesting a device reset.</p>
           <p><strong>Reason:</strong> ${reason || 'New phone'}</p>
-          <p>Log into your admin dashboard → Workers → find ${worker.name} → tap <strong>Approve Reset</strong>.</p>
-          <p style="color:#dc2626;font-size:12px"><strong>Security:</strong> Only approve this if you have personally verified the request with the worker.</p>
+          <p>Log into your admin dashboard → Workers tab → find ${worker.name} → tap <strong>Approve Reset</strong>.</p>
+          <p><a href="https://${appHost}" style="background:#4F46E5;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;display:inline-block;margin-top:8px">Open Admin Dashboard →</a></p>
+          <p style="color:#dc2626;font-size:12px;margin-top:16px"><strong>Security:</strong> Only approve this if you have personally confirmed the request with the worker.</p>
         </div>`
       })
+    }).catch(() => {})
+  }
+
+  // SMS notification via Twilio
+  if (adminPhone && twilioSid && twilioToken && (twilioMsgSvc || twilioFrom)) {
+    const toPhone = adminPhone.startsWith('+') ? adminPhone : `+1${adminPhone.replace(/\D/g,'')}`
+    const smsBody = `ClockInProof: ${worker.name} is requesting a device reset (${reason || 'New phone'}). Log into your admin dashboard → Workers tab to approve.`
+    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`
+    const twilioAuth = btoa(`${twilioSid}:${twilioToken}`)
+    const params = new URLSearchParams({
+      To: toPhone,
+      Body: smsBody,
+      ...(twilioMsgSvc ? { MessagingServiceSid: twilioMsgSvc } : { From: twilioFrom })
+    })
+    await fetch(twilioUrl, {
+      method: 'POST',
+      headers: { 'Authorization': `Basic ${twilioAuth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
     }).catch(() => {})
   }
 
@@ -8952,7 +8985,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl text-sm font-medium max-w-xs text-center" style="bottom:88px;z-index:9999"></div>
 
-<script src="/static/worker.js?v=20260305d"></script>
+<script src="/static/worker.js?v=20260305e"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 flex items-end justify-center" style="z-index:9990;padding:0 16px 88px" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -12031,7 +12064,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260305a"></script>
+<script src="/static/admin.js?v=20260305b"></script>
 
 </body>
 </html>`

@@ -113,6 +113,10 @@ async function adminLogin() {
       if (!window._adminRefreshInterval) {
         window._adminRefreshInterval = setInterval(refreshAll, 60000)
       }
+      // Poll device reset requests every 30s for real-time badge updates
+      if (!window._deviceResetInterval) {
+        window._deviceResetInterval = setInterval(() => loadDeviceResetRequests().catch(() => {}), 30000)
+      }
       refreshAll().catch(() => {})
 
       // Deep-link navigation
@@ -151,9 +155,10 @@ document.getElementById('admin-email-input')?.addEventListener('keyup', e => {
 async function refreshAll() {
   document.getElementById('admin-last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString()
   await Promise.all([loadStats(), loadLive(), loadWorkers(), loadSessions()])
-  // Silently refresh badges for overrides and disputes
+  // Silently refresh badges for overrides, disputes, and device reset requests
   loadOverrides().catch(() => {})
   loadDisputes().catch(() => {})
+  loadDeviceResetRequests().catch(() => {})
   // Trigger server-side watchdog — auto-clocks out workers who left geofence / exceeded max shift
   // This ensures auto-clockout fires even if the worker's phone is offline
   runAdminWatchdog().catch(() => {})
