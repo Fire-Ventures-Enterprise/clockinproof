@@ -8763,6 +8763,14 @@ function getWorkerHTML(tenant?: any): string {
             </div>
             <i class="fas fa-chevron-right" style="color:#d1d5db;margin-left:auto;font-size:12px"></i>
           </button>
+          <button onclick="requestDeviceResetFromProfile()" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px;background:#fff7ed;border:1.5px solid #fed7aa;border-radius:14px;cursor:pointer;text-align:left">
+            <i class="fas fa-mobile-alt" style="color:#f97316;font-size:16px;width:20px;text-align:center"></i>
+            <div>
+              <p style="font-size:13px;font-weight:700;color:#1e293b">Register New Device</p>
+              <p style="font-size:11px;color:#94a3b8;margin-top:1px">New phone or tablet? Request a device reset</p>
+            </div>
+            <i class="fas fa-chevron-right" style="color:#d1d5db;margin-left:auto;font-size:12px"></i>
+          </button>
           <button onclick="logout()" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px;background:#fff5f5;border:1.5px solid #fecaca;border-radius:14px;cursor:pointer;text-align:left">
             <i class="fas fa-sign-out-alt" style="color:#ef4444;font-size:16px;width:20px;text-align:center"></i>
             <div>
@@ -9024,7 +9032,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl text-sm font-medium max-w-xs text-center" style="bottom:88px;z-index:9999"></div>
 
-<script src="/static/worker.js?v=20260305f"></script>
+<script src="/static/worker.js?v=20260305g"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 flex items-end justify-center" style="z-index:9990;padding:0 16px 88px" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">

@@ -431,13 +431,13 @@ async function submitForgotPin() {
   }
 }
 
-// ── Device Mismatch: new-phone request screen ─────────────────────────────────
+// ── Device Mismatch: new-phone request screen (shown at LOGIN when device doesn't match) ─
 function showDeviceMismatchScreen(phone) {
   let m = document.getElementById('new-phone-modal')
   if (!m) {
     m = document.createElement('div')
     m.id = 'new-phone-modal'
-    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end;justify-content:center;z-index:9999;padding:16px'
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end;justify-content:center;z-index:9999;padding:0 16px 88px'
     document.body.appendChild(m)
   }
   m.innerHTML = `
@@ -465,41 +465,96 @@ function showDeviceMismatchScreen(phone) {
   m.style.display = 'flex'
 }
 
-async function submitDeviceResetRequest(phone) {
-  // We need the worker_id — do a basic phone lookup without device check
-  const reason = (document.getElementById('new-phone-reason')?.value || '').trim() || 'New phone'
-  const btn = document.getElementById('new-phone-submit-btn')
-  btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch spinner mr-2"></i>Sending...'
-  try {
-    // Look up worker by phone to get their ID (no device check on this route)
-    const lookupRes = await fetch('/api/workers/lookup/' + encodeURIComponent(phone))
-    const lookupData = await lookupRes.json()
-    const workerId = lookupData.worker?.id || (lookupData.error === 'device_mismatch' ? null : null)
+// Called from Profile tab "Register New Device" button — worker is already logged in
+async function requestDeviceResetFromProfile() {
+  if (!currentWorker?.phone) { showToast('Not signed in', 'error'); return }
+  showDeviceResetModal(currentWorker.phone, currentWorker.name)
+}
 
-    // Use a special no-device-check lookup endpoint
+// Shared modal used from both login mismatch and profile tab
+function showDeviceResetModal(phone, workerName) {
+  let m = document.getElementById('device-reset-modal')
+  if (!m) {
+    m = document.createElement('div')
+    m.id = 'device-reset-modal'
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:flex-end;justify-content:center;z-index:9999;padding:0 16px 88px'
+    document.body.appendChild(m)
+  }
+  m.innerHTML = `
+<div style="background:#fff;border-radius:24px 24px 16px 16px;max-width:440px;width:100%;padding:28px;box-shadow:0 -8px 40px rgba(0,0,0,.2)">
+  <div style="text-align:center;margin-bottom:20px">
+    <div style="width:56px;height:56px;background:#fff7ed;border-radius:16px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:12px;border:2px solid #fed7aa">
+      <i class="fas fa-mobile-alt" style="color:#f97316;font-size:24px"></i>
+    </div>
+    <h3 style="font-size:18px;font-weight:800;color:#111;margin:0 0 6px">Register New Device</h3>
+    <p style="font-size:13px;color:#6b7280;line-height:1.5;margin:0">Your manager will receive a notification and must approve the reset before the new device can be used.</p>
+  </div>
+  <div style="background:#fef9f0;border:1.5px solid #fde68a;border-radius:14px;padding:12px 14px;margin-bottom:16px;display:flex;align-items:flex-start;gap:10px">
+    <i class="fas fa-shield-alt" style="color:#f59e0b;margin-top:2px;flex-shrink:0"></i>
+    <p style="font-size:12px;color:#92400e;margin:0;line-height:1.5">This is a security action. Your manager will verify this request before approving it.</p>
+  </div>
+  <div style="margin-bottom:16px">
+    <label style="display:block;font-size:12px;font-weight:700;color:#374151;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Reason for reset</label>
+    <input id="device-reset-reason-input" type="text" placeholder="e.g. Got a new phone, my old phone broke..." maxlength="120"
+      style="width:100%;padding:12px 14px;border:1.5px solid #d1d5db;border-radius:12px;font-size:14px;box-sizing:border-box;outline:none"
+      onfocus="this.style.borderColor='#f97316'" onblur="this.style.borderColor='#d1d5db'"/>
+  </div>
+  <button onclick="sendDeviceResetRequest('${phone}')" id="device-reset-submit-btn"
+    style="width:100%;background:#f97316;color:#fff;border:none;border-radius:14px;padding:16px;font-size:15px;font-weight:800;cursor:pointer;margin-bottom:10px;letter-spacing:.01em">
+    <i class="fas fa-paper-plane" style="margin-right:8px"></i>Send Reset Request to Manager
+  </button>
+  <button onclick="document.getElementById('device-reset-modal').remove()"
+    style="width:100%;background:transparent;color:#9ca3af;border:none;font-size:13px;cursor:pointer;padding:8px">
+    Cancel
+  </button>
+</div>`
+  m.style.display = 'flex'
+}
+
+// The actual API call — used by both login mismatch and profile tab flows
+async function sendDeviceResetRequest(phone) {
+  const reason = (document.getElementById('device-reset-reason-input')?.value || '').trim() || 'New device'
+  const btn = document.getElementById('device-reset-submit-btn')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin" style="margin-right:8px"></i>Sending...' }
+  try {
     const res = await fetch('/api/device-reset-request', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone, reason })
     })
     const data = await res.json()
     if (data.success) {
-      document.getElementById('new-phone-modal').innerHTML = `
-<div style="background:#fff;border-radius:20px;max-width:420px;width:100%;padding:32px;text-align:center">
-  <div style="width:56px;height:56px;background:#dcfce7;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:14px">
-    <i class="fas fa-check" style="color:#16a34a;font-size:24px"></i>
+      const m = document.getElementById('device-reset-modal')
+      if (m) m.innerHTML = `
+<div style="background:#fff;border-radius:24px;max-width:440px;width:100%;padding:36px 28px;text-align:center">
+  <div style="width:64px;height:64px;background:#dcfce7;border-radius:18px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px">
+    <i class="fas fa-check" style="color:#16a34a;font-size:28px"></i>
   </div>
-  <h3 style="font-size:18px;font-weight:700;color:#111;margin:0 0 8px">Request Sent!</h3>
-  <p style="font-size:14px;color:#4b5563;line-height:1.6;margin:0 0 20px">Your manager has been notified. Once they approve, you can sign in on this phone.</p>
-  <button onclick="document.getElementById('new-phone-modal').style.display='none'" style="background:#2563eb;color:#fff;border:none;border-radius:10px;padding:12px 28px;font-size:14px;font-weight:700;cursor:pointer">OK</button>
+  <h3 style="font-size:18px;font-weight:800;color:#111;margin:0 0 8px">Request Sent!</h3>
+  <p style="font-size:14px;color:#4b5563;line-height:1.6;margin:0 0 24px">Your manager has been notified by SMS and email. Once they approve, you can sign in on the new device.</p>
+  <button onclick="document.getElementById('device-reset-modal').remove()"
+    style="background:#16a34a;color:#fff;border:none;border-radius:12px;padding:14px 32px;font-size:15px;font-weight:700;cursor:pointer">
+    <i class="fas fa-check" style="margin-right:8px"></i>Done
+  </button>
 </div>`
+    } else if (data.error === 'already_pending') {
+      showToast('A reset request is already pending — your manager will approve it soon', 'info', 6000)
+      const m = document.getElementById('device-reset-modal')
+      if (m) m.remove()
     } else {
-      showToast(data.message || data.error || 'Failed to send request', 'error')
-      btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane mr-2"></i>Request Device Reset'
+      const msg = data.message || data.error || 'Failed to send request'
+      showToast(msg, 'error', 6000)
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane" style="margin-right:8px"></i>Send Reset Request to Manager' }
     }
   } catch(e) {
-    showToast('Connection error', 'error')
-    btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane mr-2"></i>Request Device Reset'
+    showToast('Connection error — please try again', 'error')
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane" style="margin-right:8px"></i>Send Reset Request to Manager' }
   }
+}
+
+// Legacy wrapper kept for any old HTML buttons referencing this name
+async function submitDeviceResetRequest(phone) {
+  showDeviceResetModal(phone, '')
 }
 
 function logout() {
