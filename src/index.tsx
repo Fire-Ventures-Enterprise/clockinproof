@@ -378,6 +378,26 @@ async function ensureSchema(db: D1Database) {
     `CREATE INDEX IF NOT EXISTS idx_workers_tenant ON workers(tenant_id)`,
     `CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON sessions(tenant_id)`,
     `CREATE INDEX IF NOT EXISTS idx_job_sites_tenant ON job_sites(tenant_id)`,
+    // ── Signup Leads — captured at Step 1 before full account creation ────────
+    `CREATE TABLE IF NOT EXISTS signup_leads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL,
+      phone TEXT,
+      company_name TEXT,
+      auth_code TEXT,
+      code_expires_at DATETIME,
+      code_verified INTEGER DEFAULT 0,
+      converted INTEGER DEFAULT 0,
+      tenant_id INTEGER,
+      utm_source TEXT,
+      utm_medium TEXT,
+      utm_campaign TEXT,
+      ip TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      verified_at DATETIME,
+      converted_at DATETIME
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_leads_email ON signup_leads(email)`,
     // ── Support Ticket System ────────────────────────────────────────────────
     `CREATE TABLE IF NOT EXISTS support_tickets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -7254,457 +7274,652 @@ app.get('/landing', (c) => {
   return c.html(getLandingHTML())
 })
 
-// ─── FREE 60-DAY TRIAL ────────────────────────────────────────────────────────
-// Shareable link for prospects: clockinproof.pages.dev/free-trial
-// No credit card · Instant setup · Full access for 60 days
+// ─── FREE 60-DAY TRIAL — 3-STEP VERIFIED ONBOARDING ─────────────────────────
+// Step 1: /free-trial         → email + company + phone → send 6-digit code
+// Step 2: /free-trial/verify  → enter code
+// Step 3: /free-trial/setup   → full form gated behind verified token
+// All leads captured at Step 1 in signup_leads table
 
-app.get('/free-trial', (c) => {
-  return c.html(getFreeTrialHTML())
+app.get('/free-trial', (c) => { return c.html(getFreeTrialStep1HTML()) })
+app.get('/free-trial/verify', (c) => { return c.html(getFreeTrialStep2HTML()) })
+app.get('/free-trial/setup', (c) => { return c.html(getFreeTrialStep3HTML()) })
+
+// POST /api/free-trial/start — capture lead + send 6-digit auth code
+app.post('/api/free-trial/start', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const body = await c.req.json() as any
+  const email = (body.email || '').trim().toLowerCase()
+  const phone = (body.phone || '').trim()
+  const company_name = (body.company_name || '').trim()
+  const utm_source = (body.utm_source || '').trim()
+  const utm_medium = (body.utm_medium || '').trim()
+  const utm_campaign = (body.utm_campaign || '').trim()
+
+  if (!email) return c.json({ error: 'Email is required' }, 400)
+  if (!/^[^@]+@[^@]+\.[^@]+$/.test(email)) return c.json({ error: 'Please enter a valid email address' }, 400)
+  if (!phone) return c.json({ error: 'Phone number is required for SMS verification' }, 400)
+  if (!company_name) return c.json({ error: 'Company name is required' }, 400)
+
+  const code = String(Math.floor(100000 + Math.random() * 900000))
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString()
+  const ip = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || ''
+
+  const existing = await db.prepare(`SELECT id FROM signup_leads WHERE email = ? AND converted = 0`).bind(email).first() as any
+  if (existing) {
+    await db.prepare(`UPDATE signup_leads SET phone=?, company_name=?, auth_code=?, code_expires_at=?, code_verified=0, utm_source=?, utm_medium=?, utm_campaign=? WHERE id=?`)
+      .bind(phone, company_name, code, expiresAt, utm_source, utm_medium, utm_campaign, existing.id).run()
+  } else {
+    await db.prepare(`INSERT INTO signup_leads (email, phone, company_name, auth_code, code_expires_at, utm_source, utm_medium, utm_campaign, ip) VALUES (?,?,?,?,?,?,?,?,?)`)
+      .bind(email, phone, company_name, code, expiresAt, utm_source, utm_medium, utm_campaign, ip).run()
+  }
+
+  const resendKey = ((c.env as any).RESEND_API_KEY || '').trim()
+  const twilioSid  = ((c.env as any).TWILIO_ACCOUNT_SID || '').trim()
+  const twilioAuth = ((c.env as any).TWILIO_AUTH_TOKEN || '').trim()
+  const twilioFrom = ((c.env as any).TWILIO_MESSAGING_SERVICE || (c.env as any).TWILIO_FROM_NUMBER || '').trim()
+  const errors: string[] = []
+
+  if (resendKey) {
+    const er = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: 'ClockInProof <alerts@clockinproof.com>',
+        to: [email],
+        subject: `Your ClockInProof verification code: ${code}`,
+        html: `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;background:#030712;color:#f9fafb;border-radius:16px">
+          <div style="text-align:center;margin-bottom:28px">
+            <div style="display:inline-block;background:#4F46E5;color:#fff;font-weight:900;font-size:18px;padding:10px 20px;border-radius:10px">ClockIn<span style="color:#a5b4fc">Proof</span></div>
+          </div>
+          <h2 style="color:#f9fafb;margin:0 0 8px;font-size:22px">Your verification code</h2>
+          <p style="color:#9ca3af;margin:0 0 28px">Hi ${company_name} — enter this code to continue your free trial setup.</p>
+          <div style="background:#1e1b4b;border:2px solid #4f46e5;border-radius:16px;padding:28px;text-align:center;margin-bottom:28px">
+            <div style="font-size:48px;font-weight:900;letter-spacing:12px;color:#a5b4fc">${code}</div>
+            <p style="color:#6b7280;font-size:13px;margin:12px 0 0">Expires in 15 minutes</p>
+          </div>
+          <p style="color:#6b7280;font-size:12px;text-align:center">If you did not request this, you can safely ignore this email.</p>
+        </div>`
+      })
+    }).catch(() => null)
+    if (!er || !er.ok) errors.push('email')
+  } else { errors.push('email_no_key') }
+
+  if (twilioSid && twilioAuth && twilioFrom) {
+    const cleanPhone = phone.replace(/[^\d+]/g, '')
+    const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : '+1' + cleanPhone.replace(/\D/g, '')
+    const smsBody = `Your ClockInProof code is ${code}. Valid 15 min.`
+    const smsParams = new URLSearchParams({ To: formattedPhone, From: twilioFrom, Body: smsBody })
+    const sr = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`, {
+      method: 'POST',
+      headers: { 'Authorization': 'Basic ' + btoa(twilioSid + ':' + twilioAuth), 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: smsParams.toString()
+    }).catch(() => null)
+    if (!sr || !sr.ok) errors.push('sms')
+  } else { errors.push('sms_no_key') }
+
+  return c.json({ success: true, sent_email: !errors.includes('email'), sent_sms: !errors.includes('sms') })
 })
 
-// POST /api/free-trial — create tenant instantly, no payment required
+// POST /api/free-trial/verify-code — verify the 6-digit code
+app.post('/api/free-trial/verify-code', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const { email, code } = await c.req.json() as any
+  if (!email || !code) return c.json({ error: 'Email and code are required' }, 400)
+  const lead = await db.prepare(`SELECT * FROM signup_leads WHERE email = ? AND converted = 0 ORDER BY created_at DESC LIMIT 1`)
+    .bind(email.trim().toLowerCase()).first() as any
+  if (!lead) return c.json({ error: 'No pending verification found for this email' }, 404)
+  if (lead.auth_code !== String(code).trim()) return c.json({ error: 'Incorrect code — please try again' }, 400)
+  if (new Date(lead.code_expires_at) < new Date()) return c.json({ error: 'Code expired — go back and request a new one' }, 400)
+  await db.prepare(`UPDATE signup_leads SET code_verified=1, verified_at=CURRENT_TIMESTAMP WHERE id=?`).bind(lead.id).run()
+  const token = btoa(`${lead.id}:${email.trim().toLowerCase()}:${Date.now()}`)
+  return c.json({ success: true, token, company_name: lead.company_name, email: lead.email, phone: lead.phone })
+})
+
+// POST /api/free-trial — Step 3: create tenant (requires verified token)
 app.post('/api/free-trial', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const body = await c.req.json() as any
+  const { company_name, slug, admin_email, admin_pin, company_address, phone, verify_token } = body
 
-  const { company_name, slug, admin_email, admin_pin, company_address, phone } = await c.req.json() as any
+  if (!verify_token) return c.json({ error: 'Verification required — please complete email/SMS verification first' }, 401)
+  let leadId: number
+  try {
+    const decoded = atob(verify_token)
+    const parts = decoded.split(':')
+    leadId = parseInt(parts[0])
+    const tokenEmail = parts[1]
+    const tokenTime = parseInt(parts[2])
+    if (tokenEmail !== admin_email?.trim().toLowerCase()) return c.json({ error: 'Email mismatch' }, 401)
+    if (Date.now() - tokenTime > 2 * 60 * 60 * 1000) return c.json({ error: 'Session expired — please start again' }, 401)
+  } catch { return c.json({ error: 'Invalid verification token' }, 401) }
 
-  // Validate required fields
+  const lead = await db.prepare(`SELECT * FROM signup_leads WHERE id = ? AND code_verified = 1`).bind(leadId).first() as any
+  if (!lead) return c.json({ error: 'Please verify your email/phone before creating your account' }, 401)
+
   if (!company_name?.trim()) return c.json({ error: 'Company name is required' }, 400)
   if (!slug?.trim())         return c.json({ error: 'Subdomain is required' }, 400)
   if (!admin_email?.trim())  return c.json({ error: 'Admin email is required' }, 400)
   if (!admin_pin?.trim())    return c.json({ error: 'PIN is required' }, 400)
+  if (!phone?.trim())        return c.json({ error: 'Phone number is required' }, 400)
+  if (!/^\d{4,8}$/.test(admin_pin.trim())) return c.json({ error: 'PIN must be 4-8 digits' }, 400)
 
-  // Clean slug
   const cleanSlug = slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '').substring(0, 40)
-  const reserved = ['admin', 'app', 'www', 'superadmin', 'super', 'api', 'mail', 'staging', 'clockinproof', 'support', 'free-trial', 'signup']
-  if (reserved.includes(cleanSlug)) return c.json({ error: 'That subdomain is reserved — please choose another' }, 400)
-
-  // Check subdomain availability
+  const reserved = ['admin','app','www','superadmin','super','api','mail','staging','clockinproof','support','free-trial','signup']
+  if (reserved.includes(cleanSlug)) return c.json({ error: 'That subdomain is reserved' }, 400)
   const existing = await db.prepare(`SELECT id FROM tenants WHERE slug = ?`).bind(cleanSlug).first()
-  if (existing) return c.json({ error: `"${cleanSlug}" is already taken — try a different subdomain` }, 409)
+  if (existing) return c.json({ error: `"${cleanSlug}" is already taken` }, 409)
 
-  // Validate PIN
-  if (!/^\d{4,8}$/.test(admin_pin.trim())) return c.json({ error: 'PIN must be 4–8 digits' }, 400)
-
-  // Set trial expiry = 60 days from now
   const trialEndsAt = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString()
-
-  // Create tenant with trial status
-  const result = await db.prepare(`
-    INSERT INTO tenants (slug, company_name, company_address, admin_email, admin_pin, plan, status, max_workers, trial_ends_at)
-    VALUES (?, ?, ?, ?, ?, 'trial', 'trial', 25, ?)
-  `).bind(cleanSlug, company_name.trim(), company_address?.trim() || '', admin_email.trim().toLowerCase(), admin_pin.trim(), trialEndsAt).run()
-
+  const result = await db.prepare(`INSERT INTO tenants (slug,company_name,company_address,admin_email,admin_pin,plan,status,max_workers,trial_ends_at) VALUES (?,?,?,?,?,'trial','trial',25,?)`)
+    .bind(cleanSlug, company_name.trim(), company_address?.trim() || '', admin_email.trim().toLowerCase(), admin_pin.trim(), trialEndsAt).run()
   const tenantId = (result.meta as any).last_row_id
 
-  // Seed default settings for the new tenant
   const defaults: [string, string][] = [
-    ['app_name', company_name.trim()], ['country_code', 'CA'], ['province_code', 'ON'],
-    ['timezone', 'America/Toronto'], ['work_start', '08:00'], ['work_end', '17:00'],
-    ['break_morning_min', '15'], ['break_lunch_min', '30'], ['break_afternoon_min', '15'],
-    ['paid_hours_per_day', '7.5'], ['work_days', '1,2,3,4,5'], ['stat_pay_multiplier', '1.5'],
-    ['pay_frequency', 'biweekly'], ['geofence_radius_meters', '300'],
-    ['gps_fraud_check', '1'], ['auto_clockout_enabled', '1'],
-    ['max_shift_hours', '12'], ['away_warning_min', '30'],
-    ['company_name', company_name.trim()], ['admin_email', admin_email.trim()],
-    ['admin_phone', phone?.trim() || ''],
-    ['show_pay_to_workers', '1'],
+    ['app_name', company_name.trim()],['country_code','CA'],['province_code','ON'],
+    ['timezone','America/Toronto'],['work_start','08:00'],['work_end','17:00'],
+    ['break_morning_min','15'],['break_lunch_min','30'],['break_afternoon_min','15'],
+    ['paid_hours_per_day','7.5'],['work_days','1,2,3,4,5'],['stat_pay_multiplier','1.5'],
+    ['pay_frequency','biweekly'],['geofence_radius_meters','300'],
+    ['gps_fraud_check','1'],['auto_clockout_enabled','1'],
+    ['max_shift_hours','12'],['away_warning_min','30'],
+    ['company_name', company_name.trim()],['admin_email', admin_email.trim()],
+    ['admin_phone', phone?.trim() || ''],['show_pay_to_workers','1'],
   ]
   for (const [key, value] of defaults) {
-    await db.prepare(`INSERT OR IGNORE INTO tenant_settings (tenant_id, key, value) VALUES (?, ?, ?)`)
-      .bind(tenantId, key, value).run()
+    await db.prepare(`INSERT OR IGNORE INTO tenant_settings (tenant_id, key, value) VALUES (?, ?, ?)`).bind(tenantId, key, value).run()
   }
 
-  // Send welcome email
+  await db.prepare(`UPDATE signup_leads SET converted=1, tenant_id=?, converted_at=CURRENT_TIMESTAMP WHERE id=?`).bind(tenantId, leadId).run()
+
   const resendKey = ((c.env as any).RESEND_API_KEY || '').trim()
-  if (resendKey && admin_email) {
+  if (resendKey) {
     await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         from: 'ClockInProof <alerts@clockinproof.com>',
         to: [admin_email.trim()],
-        subject: `🎉 Your 60-Day Free Trial is Ready — ClockInProof`,
-        html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px">
-          <div style="text-align:center;margin-bottom:24px">
-            <div style="display:inline-block;background:#4F46E5;color:#fff;font-weight:900;font-size:18px;padding:10px 20px;border-radius:10px">ClockIn<span style="color:#a5b4fc">Proof</span></div>
-          </div>
-          <h2 style="color:#111827;margin:0 0 8px">Welcome to ClockInProof, ${company_name.trim()}! 🎉</h2>
-          <p style="color:#6b7280;margin:0 0 24px">Your 60-day free trial is live. No credit card needed.</p>
-          <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:24px">
-            <p style="margin:0 0 12px;font-weight:700;color:#111827">Your login details:</p>
+        subject: `Your 60-Day Free Trial is Ready — ClockInProof`,
+        html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;background:#030712;color:#f9fafb;border-radius:16px">
+          <div style="text-align:center;margin-bottom:24px"><div style="display:inline-block;background:#4F46E5;color:#fff;font-weight:900;font-size:18px;padding:10px 20px;border-radius:10px">ClockIn<span style="color:#a5b4fc">Proof</span></div></div>
+          <h2 style="color:#f9fafb;margin:0 0 8px">Welcome, ${company_name.trim()}!</h2>
+          <p style="color:#9ca3af;margin:0 0 24px">Your 60-day free trial is live. No credit card needed.</p>
+          <div style="background:#1e1b4b;border:1px solid #312e81;border-radius:12px;padding:20px;margin-bottom:24px">
             <table style="width:100%;border-collapse:collapse">
-              <tr><td style="padding:6px 0;color:#6b7280;font-size:14px">Admin Dashboard</td><td style="padding:6px 0;font-weight:600"><a href="https://admin.clockinproof.com" style="color:#4F46E5">admin.clockinproof.com</a></td></tr>
-              <tr><td style="padding:6px 0;color:#6b7280;font-size:14px">Worker App URL</td><td style="padding:6px 0;font-weight:600"><a href="https://${cleanSlug}.clockinproof.com" style="color:#4F46E5">${cleanSlug}.clockinproof.com</a></td></tr>
-              <tr><td style="padding:6px 0;color:#6b7280;font-size:14px">Your Email</td><td style="padding:6px 0;font-weight:600">${admin_email.trim()}</td></tr>
-              <tr><td style="padding:6px 0;color:#6b7280;font-size:14px">Your Admin PIN</td><td style="padding:6px 0;font-weight:600;font-size:18px;letter-spacing:4px">${admin_pin.trim()}</td></tr>
-              <tr><td style="padding:6px 0;color:#6b7280;font-size:14px">Trial Ends</td><td style="padding:6px 0;font-weight:600;color:#16a34a">${new Date(trialEndsAt).toLocaleDateString('en-CA', { year:'numeric', month:'long', day:'numeric' })}</td></tr>
+              <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px">Admin Dashboard</td><td style="padding:6px 0;font-weight:600"><a href="https://admin.clockinproof.com" style="color:#818cf8">admin.clockinproof.com</a></td></tr>
+              <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px">Worker App</td><td style="padding:6px 0;font-weight:600"><a href="https://${cleanSlug}.clockinproof.com" style="color:#818cf8">${cleanSlug}.clockinproof.com</a></td></tr>
+              <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px">Your Email</td><td style="padding:6px 0;font-weight:600">${admin_email.trim()}</td></tr>
+              <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px">Admin PIN</td><td style="padding:6px 0;font-weight:600;font-size:20px;letter-spacing:6px">${admin_pin.trim()}</td></tr>
+              <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px">Trial Ends</td><td style="padding:6px 0;font-weight:600;color:#4ade80">${new Date(trialEndsAt).toLocaleDateString('en-CA',{year:'numeric',month:'long',day:'numeric'})}</td></tr>
             </table>
           </div>
-          <div style="text-align:center;margin-bottom:24px">
-            <a href="https://admin.clockinproof.com" style="background:#4F46E5;color:#fff;font-weight:700;padding:14px 32px;border-radius:10px;text-decoration:none;display:inline-block;font-size:16px">
-              Open My Admin Dashboard →
-            </a>
-          </div>
-          <p style="color:#9ca3af;font-size:12px;text-align:center">Questions? Reply to this email — we respond fast.<br>— The ClockInProof Team</p>
+          <div style="text-align:center"><a href="https://admin.clockinproof.com" style="background:#4F46E5;color:#fff;font-weight:700;padding:14px 32px;border-radius:10px;text-decoration:none;display:inline-block;font-size:16px">Open Admin Dashboard</a></div>
         </div>`
       })
     }).catch(() => {})
   }
 
-  return c.json({
-    success: true,
-    tenant_id: tenantId,
-    slug: cleanSlug,
-    trial_ends_at: trialEndsAt,
-    admin_url: 'https://admin.clockinproof.com',
-    worker_url: `https://${cleanSlug}.clockinproof.com`
-  })
+  return c.json({ success: true, tenant_id: tenantId, slug: cleanSlug, trial_ends_at: trialEndsAt,
+    admin_url: 'https://admin.clockinproof.com', worker_url: `https://${cleanSlug}.clockinproof.com` })
 })
 
-function getFreeTrialHTML(): string {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Start Free 60-Day Trial — ClockInProof</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+// GET /api/super/leads — super admin view of all signup leads
+app.get('/api/super/leads', async (c) => {
+  if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const db = c.env.DB
+  await ensureSchema(db)
+  const rows = await db.prepare(`SELECT l.*, t.company_name as tenant_company FROM signup_leads l LEFT JOIN tenants t ON t.id = l.tenant_id ORDER BY l.created_at DESC LIMIT 300`).all()
+  return c.json({ leads: rows.results })
+})
+function getFreeTrialStep1HTML(): string {
+  return `<!DOCTYPE html><html lang="en"><head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Start Free Trial — ClockInProof</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+  
   <style>
-    body { background: #030712; }
-    .glow { box-shadow: 0 0 40px rgba(79,70,229,.35); }
-    @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
-    .float { animation: float 3s ease-in-out infinite; }
-    input:focus { outline: none; ring: 2px; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#030712;color:#f9fafb;font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
+    .card{background:#111827;border:1px solid #1f2937;border-radius:20px;padding:32px}
+    .inp{width:100%;padding:14px 16px;background:#1f2937;border:1px solid #374151;border-radius:12px;color:#f9fafb;font-size:15px;outline:none;transition:border .15s}
+    .inp:focus{border-color:#4f46e5}
+    .btn-primary{width:100%;padding:15px;background:#4f46e5;color:#fff;border:none;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;transition:background .15s;display:flex;align-items:center;justify-content:center;gap:8px}
+    .btn-primary:hover:not(:disabled){background:#4338ca}
+    .btn-primary:disabled{opacity:.6;cursor:not-allowed}
+    .err{display:none;background:#450a0a;border:1px solid #dc2626;border-radius:10px;padding:12px 16px;font-size:14px;color:#fca5a5;margin-bottom:16px}
+    .logo{display:inline-block;background:#4F46E5;color:#fff;font-weight:900;font-size:17px;padding:9px 18px;border-radius:10px;text-decoration:none}
+    .logo span{color:#a5b4fc}
+    .step-bar{display:flex;gap:6px;margin-bottom:28px}
+    .step-dot{flex:1;height:4px;border-radius:2px;background:#1f2937}
+    .step-dot.done{background:#4f46e5}
+    .step-dot.active{background:#818cf8}
+    label{display:block;font-size:12px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+    select.inp option{background:#1f2937}
   </style>
-</head>
-<body class="text-white min-h-screen flex flex-col">
 
-  <!-- Header -->
-  <nav class="px-6 py-4 flex items-center justify-between border-b border-white/5">
-    <a href="/" class="flex items-center gap-2 font-black text-lg">
-      <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-sm font-black">C</div>
-      ClockIn<span class="text-indigo-400">Proof</span>
-    </a>
-    <a href="/" class="text-sm text-gray-400 hover:text-white transition">← Back to home</a>
-  </nav>
-
-  <div class="flex-1 flex items-center justify-center px-4 py-12">
-    <div class="w-full max-w-5xl grid lg:grid-cols-2 gap-12 items-center">
-
-      <!-- Left: Value prop -->
-      <div class="hidden lg:block">
-        <div class="inline-flex items-center gap-2 bg-green-500/10 border border-green-500/30 text-green-400 text-sm font-semibold px-4 py-2 rounded-full mb-6">
-          <i class="fas fa-gift"></i> 60 Days Free · No Credit Card
-        </div>
-        <h1 class="text-4xl font-black leading-tight mb-4">
-          Your team can start<br/>clocking in <span class="text-indigo-400">today.</span>
-        </h1>
-        <p class="text-gray-400 text-lg mb-8 leading-relaxed">
-          Full access to every feature for 60 days. GPS clock-in, geofence fraud detection, payroll reports, job dispatch — everything.
-        </p>
-        <div class="space-y-3 mb-8">
-          ${['GPS-verified clock-in proof for every shift', 'Geofence fraud detection — blocks remote logins', 'Payroll reports, job dispatch & timesheets', 'Works on any phone — no app download needed', 'Your company\'s own subdomain in 30 seconds'].map(f => `
-          <div class="flex items-center gap-3 text-gray-300">
-            <div class="w-6 h-6 bg-green-500/20 rounded-full flex items-center justify-center flex-shrink-0">
-              <i class="fas fa-check text-green-400 text-xs"></i>
-            </div>
-            <span class="text-sm">${f}</span>
-          </div>`).join('')}
-        </div>
-        <div class="bg-white/5 border border-white/10 rounded-2xl p-5 float">
-          <div class="flex items-center gap-3 mb-3">
-            <div class="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center"><i class="fas fa-clock text-white"></i></div>
-            <div>
-              <p class="font-bold text-sm">After 60 days</p>
-              <p class="text-xs text-gray-400">Plans start at $39 CAD/mo — cancel anytime</p>
-            </div>
-          </div>
-          <p class="text-xs text-gray-500">We'll email you before your trial ends. No surprise charges.</p>
-        </div>
+</head><body>
+<nav style="padding:16px 24px;border-bottom:1px solid #1f2937;display:flex;align-items:center;justify-content:space-between">
+  <a href="/" class="logo">ClockIn<span>Proof</span></a>
+  <span style="font-size:13px;color:#6b7280">Already have an account? <a href="https://admin.clockinproof.com" style="color:#818cf8">Sign in</a></span>
+</nav>
+<div style="display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 65px);padding:24px">
+  <div style="width:100%;max-width:460px">
+    <div style="text-align:center;margin-bottom:28px">
+      <div style="display:inline-flex;align-items:center;gap:6px;background:#052e16;border:1px solid #166534;color:#4ade80;font-size:13px;font-weight:600;padding:6px 14px;border-radius:20px;margin-bottom:16px">
+        <i class="fas fa-gift"></i> 60 Days Free — No Credit Card
       </div>
-
-      <!-- Right: Form -->
-      <div>
-        <!-- Mobile heading -->
-        <div class="lg:hidden text-center mb-6">
-          <div class="inline-flex items-center gap-2 bg-green-500/10 border border-green-500/30 text-green-400 text-sm font-semibold px-4 py-2 rounded-full mb-4">
-            <i class="fas fa-gift"></i> 60 Days Free · No Credit Card
-          </div>
-          <h1 class="text-3xl font-black">Start your free trial</h1>
+      <h1 style="font-size:26px;font-weight:900;margin-bottom:6px">Start your free trial</h1>
+      <p style="color:#6b7280;font-size:14px">We'll send a verification code to confirm your identity</p>
+    </div>
+    <div class="card">
+      <div class="step-bar"><div class="step-dot active"></div><div class="step-dot"></div><div class="step-dot"></div></div>
+      <p style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.08em;margin-bottom:20px">Step 1 of 3 — Identity Verification</p>
+      <div class="err" id="err"></div>
+      <form id="form" style="display:flex;flex-direction:column;gap:16px">
+        <div>
+          <label>Company Name *</label>
+          <input id="company" class="inp" type="text" placeholder="e.g. Ottawa Flooring Co." required autocomplete="organization"/>
         </div>
-
-        <div class="bg-gray-900/80 border border-white/10 rounded-3xl p-8 glow">
-          <h2 class="text-xl font-black mb-1 hidden lg:block">Create your account</h2>
-          <p class="text-gray-400 text-sm mb-6 hidden lg:block">Ready in 30 seconds.</p>
-
-          <div id="trial-error" class="hidden bg-red-900/50 border border-red-500/50 text-red-300 rounded-xl p-3 text-sm mb-4"></div>
-
-          <!-- Success state -->
-          <div id="trial-success" class="hidden text-center py-4">
-            <div class="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-              <i class="fas fa-check-circle text-green-400 text-3xl"></i>
-            </div>
-            <h3 class="text-xl font-black text-white mb-2">You're all set! 🎉</h3>
-            <p class="text-gray-400 text-sm mb-6">Your 60-day free trial is live. Check your email for login details.</p>
-            <div class="space-y-3">
-              <a id="success-admin-link" href="#" class="flex items-center justify-center gap-2 w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold transition">
-                <i class="fas fa-tachometer-alt"></i> Open Admin Dashboard
-              </a>
-              <a id="success-worker-link" href="#" target="_blank" class="flex items-center justify-center gap-2 w-full py-3.5 bg-white/10 hover:bg-white/15 rounded-xl font-bold transition text-sm">
-                <i class="fas fa-mobile-alt"></i> Worker App Link <span class="text-gray-400 text-xs" id="success-worker-url"></span>
-              </a>
-            </div>
-            <p class="text-xs text-gray-500 mt-4"><i class="fas fa-envelope mr-1"></i>Login details also sent to your email</p>
-          </div>
-
-          <form id="trial-form" class="space-y-4">
-            <div class="grid grid-cols-2 gap-3">
-              <div class="col-span-2">
-                <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Company Name *</label>
-                <input id="t-company" type="text" placeholder="e.g. Ottawa Flooring Co." required
-                  class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
-              </div>
-              <div class="col-span-2">
-                <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Your Subdomain *</label>
-                <div class="flex">
-                  <input id="t-slug" type="text" placeholder="ottawaflooring" required maxlength="40"
-                    class="flex-1 px-4 py-3 bg-gray-800 border border-white/10 rounded-l-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
-                    oninput="autoSlug(false)"/>
-                  <span class="px-3 py-3 bg-gray-700 border border-l-0 border-white/10 rounded-r-xl text-xs text-gray-400 flex items-center whitespace-nowrap">.clockinproof.com</span>
-                </div>
-                <p id="slug-check" class="text-xs mt-1 text-gray-500 min-h-[1rem]"></p>
-              </div>
-            </div>
-
-            <div>
-              <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Admin Email *</label>
-              <input id="t-email" type="email" placeholder="you@company.com" required
-                class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
-            </div>
-
-            <div class="grid grid-cols-2 gap-3">
-              <div>
-                <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Admin PIN (4–8 digits) *</label>
-                <input id="t-pin" type="text" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="e.g. 4821" required maxlength="8"
-                  class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
-                <p class="text-xs text-gray-600 mt-1">Your admin dashboard password</p>
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Phone *</label>
-                <input id="t-phone" type="tel" placeholder="+1 613 555 0100" required
-                  class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
-                <p class="text-xs text-gray-600 mt-1">For SMS alerts</p>
-              </div>
-            </div>
-
-            <!-- Structured address -->
-            <div>
-              <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Company Address *</label>
-              <div class="space-y-2">
-                <input id="t-street" type="text" placeholder="Street number &amp; name (e.g. 123 Main St)" required
-                  class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
-                <div class="grid grid-cols-2 gap-2">
-                  <input id="t-city" type="text" placeholder="City" required
-                    class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
-                  <input id="t-provstate" type="text" placeholder="Province / State (e.g. ON)" required maxlength="3"
-                    class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
-                </div>
-                <div class="grid grid-cols-2 gap-2">
-                  <select id="t-country"
-                    class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition text-white">
-                    <option value="CA">🇨🇦 Canada</option>
-                    <option value="US">🇺🇸 United States</option>
-                  </select>
-                  <input id="t-postal" type="text" placeholder="Postal / ZIP Code" required maxlength="10"
-                    class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
-                </div>
-              </div>
-            </div>
-
-            <button type="submit" id="trial-btn"
-              class="w-full py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-black rounded-xl transition text-base flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/30">
-              <i class="fas fa-rocket"></i>
-              <span id="trial-btn-txt">Start My 60-Day Free Trial</span>
-            </button>
-
-            <p class="text-center text-xs text-gray-600">
-              <i class="fas fa-lock mr-1"></i>No credit card · No commitment · Cancel anytime
-            </p>
-          </form>
+        <div>
+          <label>Your Email *</label>
+          <input id="email" class="inp" type="email" placeholder="you@company.com" required autocomplete="email"/>
         </div>
-
-        <p class="text-center text-gray-600 text-xs mt-4">
-          Already have an account? <a href="https://admin.clockinproof.com" class="text-indigo-400 hover:underline">Sign in →</a>
-        </p>
-      </div>
-
+        <div>
+          <label>Mobile Phone * <span style="font-weight:400;text-transform:none;color:#6b7280;font-size:11px">(verification code sent here)</span></label>
+          <input id="phone" class="inp" type="tel" placeholder="+1 613 555 0100" required autocomplete="tel"/>
+        </div>
+        <button type="submit" class="btn-primary" id="btn">
+          <i class="fas fa-paper-plane"></i> Send Verification Code
+        </button>
+      </form>
+      <p style="text-align:center;font-size:12px;color:#374151;margin-top:16px"><i class="fas fa-lock" style="margin-right:4px"></i>No credit card · No commitment · Cancel anytime</p>
     </div>
   </div>
-
+</div>
 <script>
-let _slugTimer = null
-
-// Auto-generate slug from company name
-document.getElementById('t-company').addEventListener('input', () => autoSlug(true))
-
-function autoSlug(fromCompany) {
-  if (fromCompany) {
-    const val = document.getElementById('t-company').value
-      .toLowerCase().trim()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .substring(0, 30)
-    document.getElementById('t-slug').value = val
+document.getElementById('form').addEventListener('submit', async function(e) {
+  e.preventDefault()
+  const err = document.getElementById('err')
+  const btn = document.getElementById('btn')
+  err.style.display = 'none'
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> Sending code...'
+  const params = new URLSearchParams(window.location.search)
+  try {
+    const r = await fetch('/api/free-trial/start', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        company_name: document.getElementById('company').value.trim(),
+        email: document.getElementById('email').value.trim(),
+        phone: document.getElementById('phone').value.trim(),
+        utm_source: params.get('utm_source') || '',
+        utm_medium: params.get('utm_medium') || '',
+        utm_campaign: params.get('utm_campaign') || ''
+      })
+    })
+    const d = await r.json()
+    if (d.success) {
+      sessionStorage.setItem('trial_email', document.getElementById('email').value.trim())
+      sessionStorage.setItem('trial_company', document.getElementById('company').value.trim())
+      sessionStorage.setItem('trial_phone', document.getElementById('phone').value.trim())
+      window.location.href = '/free-trial/verify'
+    } else {
+      err.textContent = d.error || 'Something went wrong'
+      err.style.display = 'block'
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-paper-plane"></i> Send Verification Code'
+    }
+  } catch(ex) {
+    err.textContent = 'Connection error — please try again'
+    err.style.display = 'block'
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-paper-plane"></i> Send Verification Code'
   }
+})
+</script></body></html>`
+}
+
+function getFreeTrialStep2HTML(): string {
+  return `<!DOCTYPE html><html lang="en"><head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Verify Code — ClockInProof</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+  
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#030712;color:#f9fafb;font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
+    .card{background:#111827;border:1px solid #1f2937;border-radius:20px;padding:32px}
+    .inp{width:100%;padding:14px 16px;background:#1f2937;border:1px solid #374151;border-radius:12px;color:#f9fafb;font-size:15px;outline:none;transition:border .15s}
+    .inp:focus{border-color:#4f46e5}
+    .btn-primary{width:100%;padding:15px;background:#4f46e5;color:#fff;border:none;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;transition:background .15s;display:flex;align-items:center;justify-content:center;gap:8px}
+    .btn-primary:hover:not(:disabled){background:#4338ca}
+    .btn-primary:disabled{opacity:.6;cursor:not-allowed}
+    .err{display:none;background:#450a0a;border:1px solid #dc2626;border-radius:10px;padding:12px 16px;font-size:14px;color:#fca5a5;margin-bottom:16px}
+    .logo{display:inline-block;background:#4F46E5;color:#fff;font-weight:900;font-size:17px;padding:9px 18px;border-radius:10px;text-decoration:none}
+    .logo span{color:#a5b4fc}
+    .step-bar{display:flex;gap:6px;margin-bottom:28px}
+    .step-dot{flex:1;height:4px;border-radius:2px;background:#1f2937}
+    .step-dot.done{background:#4f46e5}
+    .step-dot.active{background:#818cf8}
+    label{display:block;font-size:12px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+    select.inp option{background:#1f2937}
+  </style>
+
+  <style>
+    .code-inputs{display:flex;gap:10px;justify-content:center;margin-bottom:8px}
+    .code-inputs input{width:52px;height:64px;text-align:center;font-size:26px;font-weight:900;background:#1f2937;border:2px solid #374151;border-radius:12px;color:#f9fafb;outline:none;transition:border .15s}
+    .code-inputs input:focus{border-color:#4f46e5}
+  </style>
+</head><body>
+<nav style="padding:16px 24px;border-bottom:1px solid #1f2937;display:flex;align-items:center">
+  <a href="/free-trial" class="logo">ClockIn<span>Proof</span></a>
+</nav>
+<div style="display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 65px);padding:24px">
+  <div style="width:100%;max-width:420px">
+    <div style="text-align:center;margin-bottom:28px">
+      <div style="width:64px;height:64px;background:#1e1b4b;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;border:2px solid #4f46e5">
+        <i class="fas fa-shield-alt" style="font-size:24px;color:#818cf8"></i>
+      </div>
+      <h1 style="font-size:24px;font-weight:900;margin-bottom:6px">Check your email & phone</h1>
+      <p id="sub" style="color:#6b7280;font-size:14px">We sent a 6-digit code to your email and SMS</p>
+    </div>
+    <div class="card">
+      <div class="step-bar"><div class="step-dot done"></div><div class="step-dot active"></div><div class="step-dot"></div></div>
+      <p style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.08em;margin-bottom:24px">Step 2 of 3 — Enter Verification Code</p>
+      <div class="err" id="err"></div>
+      <div class="code-inputs">
+        <input type="text" inputmode="numeric" maxlength="1" class="ci" id="c0"/>
+        <input type="text" inputmode="numeric" maxlength="1" class="ci" id="c1"/>
+        <input type="text" inputmode="numeric" maxlength="1" class="ci" id="c2"/>
+        <input type="text" inputmode="numeric" maxlength="1" class="ci" id="c3"/>
+        <input type="text" inputmode="numeric" maxlength="1" class="ci" id="c4"/>
+        <input type="text" inputmode="numeric" maxlength="1" class="ci" id="c5"/>
+      </div>
+      <p style="text-align:center;font-size:12px;color:#6b7280;margin-bottom:20px">Enter the 6-digit code</p>
+      <button class="btn-primary" id="btn" onclick="submitCode()">
+        <i class="fas fa-check"></i> Verify Code
+      </button>
+      <p style="text-align:center;font-size:13px;color:#6b7280;margin-top:16px">
+        Didn't receive it? <a href="/free-trial" style="color:#818cf8">Go back and resend</a>
+      </p>
+    </div>
+  </div>
+</div>
+<script>
+const email = sessionStorage.getItem('trial_email') || ''
+const company = sessionStorage.getItem('trial_company') || ''
+if (!email) { window.location.href = '/free-trial' }
+document.getElementById('sub').textContent = 'We sent a 6-digit code to ' + email
+
+// Auto-advance between boxes
+document.querySelectorAll('.ci').forEach((inp, i, all) => {
+  inp.addEventListener('input', function() {
+    this.value = this.value.replace(/[^0-9]/g,'').slice(-1)
+    if (this.value && i < 5) all[i+1].focus()
+    if (i === 5 && this.value) submitCode()
+  })
+  inp.addEventListener('keydown', function(e) {
+    if (e.key === 'Backspace' && !this.value && i > 0) all[i-1].focus()
+  })
+  inp.addEventListener('paste', function(e) {
+    const paste = (e.clipboardData || window.clipboardData).getData('text').replace(/\\D/g,'').slice(0,6)
+    if (paste.length === 6) {
+      paste.split('').forEach((ch, idx) => { if(all[idx]) { all[idx].value = ch } })
+      all[5].focus()
+      setTimeout(submitCode, 100)
+    }
+    e.preventDefault()
+  })
+})
+document.getElementById('c0').focus()
+
+async function submitCode() {
+  const code = Array.from(document.querySelectorAll('.ci')).map(i => i.value).join('')
+  if (code.length < 6) { return }
+  const err = document.getElementById('err')
+  const btn = document.getElementById('btn')
+  err.style.display = 'none'
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> Verifying...'
+  try {
+    const r = await fetch('/api/free-trial/verify-code', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ email, code })
+    })
+    const d = await r.json()
+    if (d.success) {
+      sessionStorage.setItem('trial_token', d.token)
+      window.location.href = '/free-trial/setup'
+    } else {
+      err.textContent = d.error || 'Incorrect code'
+      err.style.display = 'block'
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-check"></i> Verify Code'
+    }
+  } catch(ex) {
+    err.textContent = 'Connection error'
+    err.style.display = 'block'
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-check"></i> Verify Code'
+  }
+}
+</script></body></html>`
+}
+
+function getFreeTrialStep3HTML(): string {
+  return `<!DOCTYPE html><html lang="en"><head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Set Up Your Account — ClockInProof</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+  
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#030712;color:#f9fafb;font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
+    .card{background:#111827;border:1px solid #1f2937;border-radius:20px;padding:32px}
+    .inp{width:100%;padding:14px 16px;background:#1f2937;border:1px solid #374151;border-radius:12px;color:#f9fafb;font-size:15px;outline:none;transition:border .15s}
+    .inp:focus{border-color:#4f46e5}
+    .btn-primary{width:100%;padding:15px;background:#4f46e5;color:#fff;border:none;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;transition:background .15s;display:flex;align-items:center;justify-content:center;gap:8px}
+    .btn-primary:hover:not(:disabled){background:#4338ca}
+    .btn-primary:disabled{opacity:.6;cursor:not-allowed}
+    .err{display:none;background:#450a0a;border:1px solid #dc2626;border-radius:10px;padding:12px 16px;font-size:14px;color:#fca5a5;margin-bottom:16px}
+    .logo{display:inline-block;background:#4F46E5;color:#fff;font-weight:900;font-size:17px;padding:9px 18px;border-radius:10px;text-decoration:none}
+    .logo span{color:#a5b4fc}
+    .step-bar{display:flex;gap:6px;margin-bottom:28px}
+    .step-dot{flex:1;height:4px;border-radius:2px;background:#1f2937}
+    .step-dot.done{background:#4f46e5}
+    .step-dot.active{background:#818cf8}
+    label{display:block;font-size:12px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+    select.inp option{background:#1f2937}
+  </style>
+
+</head><body>
+<nav style="padding:16px 24px;border-bottom:1px solid #1f2937;display:flex;align-items:center">
+  <a href="/" class="logo">ClockIn<span>Proof</span></a>
+  <span style="margin-left:12px;font-size:13px;color:#4ade80"><i class="fas fa-check-circle"></i> Identity verified</span>
+</nav>
+<div style="display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 65px);padding:24px">
+  <div style="width:100%;max-width:520px">
+
+    <!-- Success state -->
+    <div id="success" style="display:none;text-align:center;padding:40px 0">
+      <div style="width:80px;height:80px;background:#052e16;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;border:2px solid #166534">
+        <i class="fas fa-rocket" style="font-size:32px;color:#4ade80"></i>
+      </div>
+      <h2 style="font-size:24px;font-weight:900;margin-bottom:8px">You're all set!</h2>
+      <p style="color:#6b7280;margin-bottom:28px">Check your email for login details. Your 60-day trial starts now.</p>
+      <a id="admin-link" href="https://admin.clockinproof.com" style="display:inline-flex;align-items:center;gap:8px;background:#4f46e5;color:#fff;padding:14px 32px;border-radius:12px;text-decoration:none;font-weight:700;font-size:16px;margin-bottom:12px">
+        <i class="fas fa-tachometer-alt"></i> Open Admin Dashboard
+      </a>
+      <br/>
+      <a id="worker-link" href="#" style="display:inline-flex;align-items:center;gap:8px;color:#818cf8;padding:10px;text-decoration:none;font-size:14px;margin-top:8px">
+        <i class="fas fa-mobile-alt"></i> Worker App: <span id="worker-url"></span>
+      </a>
+    </div>
+
+    <!-- Form -->
+    <div id="form-wrap">
+      <div style="text-align:center;margin-bottom:24px">
+        <h1 style="font-size:24px;font-weight:900;margin-bottom:6px">Set up your account</h1>
+        <p style="color:#6b7280;font-size:14px">Almost done — fill in your company details</p>
+      </div>
+      <div class="card">
+        <div class="step-bar"><div class="step-dot done"></div><div class="step-dot done"></div><div class="step-dot active"></div></div>
+        <p style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.08em;margin-bottom:20px">Step 3 of 3 — Account Setup</p>
+        <div class="err" id="err"></div>
+        <form id="form" style="display:flex;flex-direction:column;gap:14px">
+
+          <div>
+            <label>Company Name *</label>
+            <input id="t-company" class="inp" type="text" required/>
+          </div>
+
+          <div>
+            <label>Your Subdomain *</label>
+            <div style="display:flex">
+              <input id="t-slug" class="inp" type="text" required maxlength="40" placeholder="mycompany"
+                style="border-radius:12px 0 0 12px;border-right:none" oninput="checkSlug()"/>
+              <span style="padding:14px 12px;background:#374151;border:1px solid #374151;border-radius:0 12px 12px 0;font-size:12px;color:#9ca3af;white-space:nowrap;display:flex;align-items:center">.clockinproof.com</span>
+            </div>
+            <p id="slug-msg" style="font-size:12px;margin-top:4px;min-height:1em;color:#6b7280"></p>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div>
+              <label>Admin Email *</label>
+              <input id="t-email" class="inp" type="email" required readonly style="opacity:.7"/>
+            </div>
+            <div>
+              <label>Admin PIN * (4–8 digits)</label>
+              <input id="t-pin" class="inp" type="text" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" placeholder="e.g. 5821" required/>
+            </div>
+          </div>
+
+          <div>
+            <label>Mobile Phone *</label>
+            <input id="t-phone" class="inp" type="tel" required/>
+          </div>
+
+          <div>
+            <label>Company Address *</label>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <input id="t-street" class="inp" type="text" placeholder="Street number &amp; name" required/>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <input id="t-city" class="inp" type="text" placeholder="City" required/>
+                <input id="t-provstate" class="inp" type="text" placeholder="Province / State" required maxlength="3"/>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <select id="t-country" class="inp">
+                  <option value="CA">Canada</option>
+                  <option value="US">United States</option>
+                </select>
+                <input id="t-postal" class="inp" type="text" placeholder="Postal / ZIP" required maxlength="10"/>
+              </div>
+            </div>
+          </div>
+
+          <button type="submit" class="btn-primary" id="btn">
+            <i class="fas fa-rocket"></i> Create My Account
+          </button>
+          <p style="text-align:center;font-size:12px;color:#374151"><i class="fas fa-lock" style="margin-right:4px"></i>No credit card · No commitment · Cancel anytime</p>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+const token = sessionStorage.getItem('trial_token')
+const email = sessionStorage.getItem('trial_email') || ''
+const company = sessionStorage.getItem('trial_company') || ''
+const phone = sessionStorage.getItem('trial_phone') || ''
+if (!token || !email) { window.location.href = '/free-trial' }
+
+// Pre-fill known values
+document.getElementById('t-email').value = email
+document.getElementById('t-company').value = company
+document.getElementById('t-phone').value = phone
+
+// Auto-generate slug from company
+const compInp = document.getElementById('t-company')
+compInp.addEventListener('input', function() {
+  document.getElementById('t-slug').value = this.value.toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').substring(0,30)
+  checkSlug()
+})
+if (company) { compInp.dispatchEvent(new Event('input')) }
+
+let _slugTimer
+function checkSlug() {
   clearTimeout(_slugTimer)
   const slug = document.getElementById('t-slug').value.trim()
-  if (!slug) { document.getElementById('slug-check').textContent = ''; return }
-  document.getElementById('slug-check').innerHTML = '<span class="text-gray-400"><i class="fas fa-circle-notch fa-spin mr-1"></i>Checking...</span>'
+  const msg = document.getElementById('slug-msg')
+  if (!slug) { msg.textContent = ''; return }
+  msg.innerHTML = '<span style="color:#6b7280"><i class="fas fa-circle-notch fa-spin" style="margin-right:4px"></i>Checking...</span>'
   _slugTimer = setTimeout(async () => {
     try {
-      const res = await fetch('/api/slug-check?slug=' + encodeURIComponent(slug))
-      const d = await res.json()
-      if (d.available) {
-        document.getElementById('slug-check').innerHTML = '<span class="text-green-400"><i class="fas fa-check mr-1"></i>' + slug + '.clockinproof.com is available</span>'
-      } else {
-        document.getElementById('slug-check').innerHTML = '<span class="text-red-400"><i class="fas fa-times mr-1"></i>Already taken — try a different name</span>'
-      }
-    } catch { document.getElementById('slug-check').textContent = '' }
+      const r = await fetch('/api/slug-check?slug=' + encodeURIComponent(slug))
+      const d = await r.json()
+      msg.innerHTML = d.available
+        ? '<span style="color:#4ade80"><i class="fas fa-check" style="margin-right:4px"></i>' + slug + '.clockinproof.com is available</span>'
+        : '<span style="color:#f87171"><i class="fas fa-times" style="margin-right:4px"></i>Already taken — try another</span>'
+    } catch { msg.textContent = '' }
   }, 500)
 }
 
-document.getElementById('trial-form').addEventListener('submit', async (e) => {
+document.getElementById('form').addEventListener('submit', async function(e) {
   e.preventDefault()
-  const errEl = document.getElementById('trial-error')
-  errEl.classList.add('hidden')
-  const btn = document.getElementById('trial-btn')
-  const btnTxt = document.getElementById('trial-btn-txt')
+  const err = document.getElementById('err')
+  const btn = document.getElementById('btn')
+  err.style.display = 'none'
   btn.disabled = true
-  btnTxt.textContent = 'Creating your account...'
-  btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Setting up your account...'
-
+  btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> Creating your account...'
+  const address = [
+    document.getElementById('t-street').value.trim(),
+    document.getElementById('t-city').value.trim(),
+    document.getElementById('t-provstate').value.trim(),
+    document.getElementById('t-country').value,
+    document.getElementById('t-postal').value.trim()
+  ].filter(Boolean).join(', ')
   try {
-    const res = await fetch('/api/free-trial', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const r = await fetch('/api/free-trial', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
         company_name: document.getElementById('t-company').value.trim(),
         slug: document.getElementById('t-slug').value.trim(),
         admin_email: document.getElementById('t-email').value.trim(),
         admin_pin: document.getElementById('t-pin').value.trim(),
         phone: document.getElementById('t-phone').value.trim(),
-        company_address: [
-          document.getElementById('t-street').value.trim(),
-          document.getElementById('t-city').value.trim(),
-          document.getElementById('t-provstate').value.trim(),
-          document.getElementById('t-country').value,
-          document.getElementById('t-postal').value.trim()
-        ].filter(Boolean).join(', ')
+        company_address: address,
+        verify_token: token
       })
     })
-    const d = await res.json()
+    const d = await r.json()
     if (d.success) {
-      document.getElementById('trial-form').classList.add('hidden')
-      const succ = document.getElementById('trial-success')
-      succ.classList.remove('hidden')
-      document.getElementById('success-admin-link').href = d.admin_url
-      document.getElementById('success-worker-link').href = d.worker_url
-      document.getElementById('success-worker-url').textContent = d.slug + '.clockinproof.com'
-      // Track in analytics if available
-      if (typeof gtag !== 'undefined') gtag('event', 'trial_signup', { tenant: d.slug })
+      sessionStorage.clear()
+      document.getElementById('form-wrap').style.display = 'none'
+      const succ = document.getElementById('success')
+      succ.style.display = 'block'
+      document.getElementById('admin-link').href = d.admin_url
+      document.getElementById('worker-link').href = d.worker_url
+      document.getElementById('worker-url').textContent = d.slug + '.clockinproof.com'
     } else {
-      errEl.textContent = d.error || 'Something went wrong — please try again'
-      errEl.classList.remove('hidden')
+      err.textContent = d.error || 'Something went wrong'
+      err.style.display = 'block'
       btn.disabled = false
-      btn.innerHTML = '<i class="fas fa-rocket mr-2"></i><span id="trial-btn-txt">Start My 60-Day Free Trial</span>'
+      btn.innerHTML = '<i class="fas fa-rocket"></i> Create My Account'
     }
-  } catch(err) {
-    errEl.textContent = 'Connection error — please try again'
-    errEl.classList.remove('hidden')
+  } catch(ex) {
+    err.textContent = 'Connection error — please try again'
+    err.style.display = 'block'
     btn.disabled = false
-    btn.innerHTML = '<i class="fas fa-rocket mr-2"></i><span id="trial-btn-txt">Start My 60-Day Free Trial</span>'
+    btn.innerHTML = '<i class="fas fa-rocket"></i> Create My Account'
   }
 })
-</script>
-</body>
-</html>`
+</script></body></html>`
 }
 
-// GET /api/slug-check?slug=xxx — quick availability check
-app.get('/api/slug-check', async (c) => {
-  const db = c.env.DB
-  await ensureSchema(db)
-  const slug = (c.req.query('slug') || '').toLowerCase().replace(/[^a-z0-9-]/g, '-')
-  if (!slug) return c.json({ available: false, error: 'Invalid slug' })
-  const reserved = ['admin', 'app', 'www', 'superadmin', 'super', 'api', 'mail', 'staging', 'clockinproof', 'support', 'free-trial', 'signup']
-  if (reserved.includes(slug)) return c.json({ available: false })
-  const row = await db.prepare(`SELECT id FROM tenants WHERE slug = ?`).bind(slug).first()
-  return c.json({ available: !row })
-})
-
-// Signup page — /signup?plan=starter|growth|pro
-app.get('/signup', (c) => {
-  const plan = c.req.query('plan') || 'growth'
-  return c.html(getSignupHTML(plan))
-})
-
-// Welcome page — shown after successful Stripe checkout
-app.get('/welcome', async (c) => {
-  const slug = c.req.query('tenant') || ''
-  const adminUrl = slug ? `https://${slug}.clockinproof.com/admin` : 'https://admin.clockinproof.com'
-  const workerUrl = slug ? `https://${slug}.clockinproof.com` : 'https://app.clockinproof.com'
-  return c.html(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Welcome to ClockInProof 🎉</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
-</head>
-<body class="bg-gray-950 text-white min-h-screen flex items-center justify-center px-4 py-12">
-  <div class="w-full max-w-lg text-center">
-    <div class="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
-      <i class="fas fa-check-circle text-green-400 text-4xl"></i>
-    </div>
-    <h1 class="text-4xl font-black mb-3">You're in! 🎉</h1>
-    <p class="text-gray-300 text-lg mb-8">Your ClockInProof account is live and your 14-day free trial has started.</p>
-
-    <div class="space-y-4 mb-10">
-      <a href="${adminUrl}" class="flex items-center justify-between bg-blue-600 hover:bg-blue-500 rounded-2xl px-6 py-4 transition group">
-        <div class="text-left">
-          <p class="font-bold text-white">Admin Dashboard</p>
-          <p class="text-blue-200 text-sm">${adminUrl}</p>
-        </div>
-        <i class="fas fa-arrow-right text-white group-hover:translate-x-1 transition-transform"></i>
-      </a>
-      <a href="${workerUrl}" class="flex items-center justify-between bg-gray-800 hover:bg-gray-700 border border-white/10 rounded-2xl px-6 py-4 transition group">
-        <div class="text-left">
-          <p class="font-bold text-white">Worker App</p>
-          <p class="text-gray-400 text-sm">${workerUrl}</p>
-        </div>
-        <i class="fas fa-arrow-right text-gray-400 group-hover:translate-x-1 transition-transform"></i>
-      </a>
-    </div>
-
-    <div class="bg-gray-900 border border-white/10 rounded-2xl p-6 text-left mb-8">
-      <h3 class="font-bold text-white mb-4"><i class="fas fa-rocket text-blue-400 mr-2"></i>Quick Start Checklist</h3>
-      <ul class="space-y-3 text-sm text-gray-300">
-        <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold flex-shrink-0">1</span>Log into your admin dashboard with your PIN</li>
-        <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold flex-shrink-0">2</span>Go to Workers → Add your first worker</li>
-        <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold flex-shrink-0">3</span>Go to Job Sites → Add your first job location</li>
-        <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold flex-shrink-0">4</span>Send workers the invite SMS from the Workers tab</li>
-        <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold flex-shrink-0">5</span>Workers clock in from their phone — GPS verified ✅</li>
-      </ul>
-    </div>
-
-    <p class="text-gray-600 text-sm">Questions? Email <a href="mailto:support@clockinproof.com" class="text-blue-400 hover:underline">support@clockinproof.com</a></p>
-  </div>
-</body>
-</html>`)
-})
 
 // ─── HTML Templates ───────────────────────────────────────────────────────────
 
@@ -13015,6 +13230,10 @@ select.input option{background:#1e293b}
     <button class="nav-item" id="nav-trial-links" onclick="showPage('trial-links')">
       <i class="fas fa-link"></i> Trial Links
     </button>
+    <button class="nav-item" id="nav-leads" onclick="showPage('leads')">
+      <i class="fas fa-user-plus"></i> Signup Leads
+      <span class="nav-badge green" id="leads-badge" style="display:none">0</span>
+    </button>
 
     <div class="section-header" style="margin-top:8px">Support</div>
     <button class="nav-item" id="nav-support" onclick="showPage('support')">
@@ -14031,6 +14250,51 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
+    <!-- ── SIGNUP LEADS ─────────────────────────────────────────────────── -->
+    <div class="page" id="page-leads" style="padding:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">
+        <div>
+          <h1 style="font-size:20px;font-weight:800;color:#fff"><i class="fas fa-user-plus" style="color:#818cf8;margin-right:8px"></i>Signup Leads</h1>
+          <p style="color:#64748b;font-size:13px">Everyone who started the free-trial flow — verified or not, converted or abandoned</p>
+        </div>
+        <button class="btn btn-ghost" style="font-size:12px" onclick="loadLeads()"><i class="fas fa-sync"></i> Refresh</button>
+      </div>
+
+      <!-- Stats row -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">
+        <div class="stat-card" style="padding:16px">
+          <div style="font-size:11px;color:#475569;text-transform:uppercase;font-weight:700;margin-bottom:4px">Total Leads</div>
+          <div id="leads-stat-total" style="font-size:24px;font-weight:800;color:#fff">—</div>
+        </div>
+        <div class="stat-card" style="padding:16px">
+          <div style="font-size:11px;color:#475569;text-transform:uppercase;font-weight:700;margin-bottom:4px">Verified</div>
+          <div id="leads-stat-verified" style="font-size:24px;font-weight:800;color:#818cf8">—</div>
+        </div>
+        <div class="stat-card" style="padding:16px">
+          <div style="font-size:11px;color:#475569;text-transform:uppercase;font-weight:700;margin-bottom:4px">Converted</div>
+          <div id="leads-stat-converted" style="font-size:24px;font-weight:800;color:#4ade80">—</div>
+        </div>
+        <div class="stat-card" style="padding:16px">
+          <div style="font-size:11px;color:#475569;text-transform:uppercase;font-weight:700;margin-bottom:4px">Abandoned</div>
+          <div id="leads-stat-abandoned" style="font-size:24px;font-weight:800;color:#f87171">—</div>
+        </div>
+      </div>
+
+      <!-- Filter tabs -->
+      <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
+        <button class="btn btn-primary" id="leads-filter-all" onclick="setLeadsFilter('all')" style="font-size:11px;padding:5px 12px">All</button>
+        <button class="btn btn-ghost" id="leads-filter-abandoned" onclick="setLeadsFilter('abandoned')" style="font-size:11px;padding:5px 12px">Abandoned</button>
+        <button class="btn btn-ghost" id="leads-filter-verified" onclick="setLeadsFilter('verified')" style="font-size:11px;padding:5px 12px">Verified Only</button>
+        <button class="btn btn-ghost" id="leads-filter-converted" onclick="setLeadsFilter('converted')" style="font-size:11px;padding:5px 12px">Converted</button>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div id="leads-table" style="overflow-x:auto">
+          <div style="text-align:center;padding:48px;color:#475569"><i class="fas fa-spinner fa-spin"></i></div>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /content -->
 </div><!-- /app -->
 
@@ -14276,6 +14540,85 @@ function showPage(name) {
   if (name === 'tax')         loadTax()
   if (name === 'plans')       loadPlansPage()
   if (name === 'trial-links') loadTrialSignups()
+  if (name === 'leads')       loadLeads()
+}
+
+// ── LEADS ─────────────────────────────────────────────────────────────────────
+let _allLeads = []
+let _leadsFilter = 'all'
+
+function setLeadsFilter(f) {
+  _leadsFilter = f
+  ;['all','abandoned','verified','converted'].forEach(k => {
+    const el = document.getElementById('leads-filter-' + k)
+    if (el) { el.className = k === f ? 'btn btn-primary' : 'btn btn-ghost'; el.style.fontSize='11px'; el.style.padding='5px 12px' }
+  })
+  renderLeads()
+}
+
+async function loadLeads() {
+  document.getElementById('leads-table').innerHTML = '<div style="text-align:center;padding:48px;color:#475569"><i class="fas fa-spinner fa-spin"></i></div>'
+  try {
+    const r = await fetch('/api/super/leads', { headers: { 'X-Super-Token': superToken } })
+    const d = await r.json()
+    _allLeads = d.leads || []
+    // Update stats
+    const total = _allLeads.length
+    const verified = _allLeads.filter(l => l.code_verified && !l.converted).length
+    const converted = _allLeads.filter(l => l.converted).length
+    const abandoned = _allLeads.filter(l => !l.code_verified && !l.converted).length
+    document.getElementById('leads-stat-total').textContent = total
+    document.getElementById('leads-stat-verified').textContent = verified
+    document.getElementById('leads-stat-converted').textContent = converted
+    document.getElementById('leads-stat-abandoned').textContent = abandoned
+    // Badge
+    const badge = document.getElementById('leads-badge')
+    if (abandoned > 0) { badge.textContent = abandoned; badge.style.display = 'inline-block' } else { badge.style.display = 'none' }
+    renderLeads()
+  } catch(e) {
+    document.getElementById('leads-table').innerHTML = '<div style="text-align:center;padding:48px;color:#475569">Failed to load</div>'
+  }
+}
+
+function renderLeads() {
+  let list = _allLeads
+  if (_leadsFilter === 'abandoned') list = list.filter(l => !l.code_verified && !l.converted)
+  if (_leadsFilter === 'verified')  list = list.filter(l => l.code_verified && !l.converted)
+  if (_leadsFilter === 'converted') list = list.filter(l => l.converted)
+  if (!list.length) {
+    document.getElementById('leads-table').innerHTML = '<div class="empty-state" style="padding:48px"><i class="fas fa-user-clock"></i><p>No leads in this category</p></div>'
+    return
+  }
+  const rows = list.map(function(l) {
+    const statusHtml = l.converted
+      ? '<span class="pill badge-active">converted</span>'
+      : l.code_verified
+        ? '<span class="pill" style="background:#1e3a5f;color:#93c5fd">verified</span>'
+        : '<span class="pill badge-suspended">abandoned</span>'
+    const ago = l.created_at ? timeSince(new Date(l.created_at)) : '—'
+    const utmHtml = l.utm_source ? '<span style="color:#818cf8;font-size:11px">' + l.utm_source + (l.utm_campaign ? ' / ' + l.utm_campaign : '') + '</span>' : '<span style="color:#334155;font-size:11px">direct</span>'
+    return '<tr>' +
+      '<td style="font-weight:600;color:#e2e8f0">' + (l.company_name || '—') + '</td>' +
+      '<td style="color:#94a3b8">' + l.email + '</td>' +
+      '<td style="color:#94a3b8">' + (l.phone || '—') + '</td>' +
+      '<td>' + statusHtml + '</td>' +
+      '<td>' + utmHtml + '</td>' +
+      '<td style="color:#64748b;font-size:12px">' + ago + '</td>' +
+      '<td>' + (l.converted && l.tenant_company ? '<span style="color:#4ade80;font-size:12px">' + l.tenant_company + '</span>' : '—') + '</td>' +
+    '</tr>'
+  }).join('')
+  document.getElementById('leads-table').innerHTML =
+    '<table class="tbl"><thead><tr>' +
+    '<th>Company</th><th>Email</th><th>Phone</th><th>Status</th><th>Source</th><th>When</th><th>Account</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table>'
+}
+
+function timeSince(date) {
+  const s = Math.floor((Date.now() - date) / 1000)
+  if (s < 60) return s + 's ago'
+  if (s < 3600) return Math.floor(s/60) + 'm ago'
+  if (s < 86400) return Math.floor(s/3600) + 'h ago'
+  return Math.floor(s/86400) + 'd ago'
 }
 
 // ── TRIAL LINKS ──────────────────────────────────────────────────────────
