@@ -14365,11 +14365,15 @@ select.input option{background:#1e293b}
 
       <!-- Snippet modal -->
       <div id="snippet-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:300;align-items:center;justify-content:center;padding:16px">
-        <div class="card" style="padding:24px;width:100%;max-width:520px;position:relative">
+        <div class="card" style="padding:24px;width:100%;max-width:600px;position:relative;max-height:90vh;display:flex;flex-direction:column">
           <button onclick="document.getElementById('snippet-modal').style.display='none'" style="position:absolute;top:12px;right:16px;background:none;border:none;color:#64748b;font-size:18px;cursor:pointer">&#x2715;</button>
-          <h3 id="snippet-title" style="font-size:15px;font-weight:700;color:#fff;margin-bottom:14px">Snippet</h3>
-          <textarea id="snippet-text" style="width:100%;height:160px;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:8px;padding:10px;font-size:12px;line-height:1.6;resize:vertical" readonly></textarea>
-          <button class="btn btn-primary" style="margin-top:12px;width:100%" onclick="copySnippet()"><i class="fas fa-copy"></i> Copy to Clipboard</button>
+          <h3 id="snippet-title" style="font-size:15px;font-weight:700;color:#fff;margin-bottom:6px">Snippet</h3>
+          <p style="font-size:11px;color:#64748b;margin-bottom:10px">Edit as needed, then copy — placeholders like [Name] are for you to fill in.</p>
+          <textarea id="snippet-text" onclick="this.select()" style="flex:1;min-height:260px;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:8px;padding:12px;font-size:12px;line-height:1.7;resize:vertical;font-family:monospace" readonly></textarea>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="btn btn-ghost" style="flex:1;font-size:12px" onclick="document.getElementById('snippet-text').select()"><i class="fas fa-mouse-pointer"></i> Select All</button>
+            <button class="btn btn-primary" style="flex:2" onclick="copySnippet()"><i class="fas fa-copy"></i> Copy to Clipboard</button>
+          </div>
         </div>
       </div>
 
@@ -14814,30 +14818,38 @@ function copyUtmLink() {
 
 function genEmailSnippet() {
   const link = TRIAL_BASE
-  const txt = [
-    'Subject: Try ClockInProof free for 60 days',
+  const lines = [
+    'Subject: Try ClockInProof free for 60 days \u2014 no credit card',
     '',
-    'Hi [Name],',
+    'Hi [First Name],',
     '',
-    "I wanted to share a tool that's been helping construction and trades businesses stop time theft and automate payroll — it's called ClockInProof.",
+    "I came across a tool I think would be a great fit for your team \u2014 it\'s called ClockInProof.",
     '',
-    'GPS-verified clock-in, geofence fraud detection, job dispatch, and payroll reports — all in one app.',
+    'It gives field crews a simple GPS clock-in app, and gives owners real-time proof of work:',
+    '  \u2022 GPS-verified clock-in/out on any phone',
+    '  \u2022 Geofence fraud detection (alerts if workers clock in from the wrong location)',
+    '  \u2022 Job dispatch via SMS',
+    '  \u2022 Automated payroll reports',
     '',
-    'Start your free 60-day trial (no credit card):',
+    'No hardware. No app store installs needed. Workers just tap a link.',
+    '',
+    'Start a free 60-day trial \u2014 no credit card required:',
     link,
     '',
-    'Takes about 2 minutes to set up. Happy to answer any questions.',
+    'Takes about 2 minutes to set up. Let me know if you have any questions.',
     '',
-    '— Nasser'
-  ].join('\\n')
-  document.getElementById('snippet-title').textContent = '📧 Email Snippet'
+    'Best,',
+    '[Your Name]'
+  ]
+  const txt = lines.join('\n')
+  document.getElementById('snippet-title').textContent = 'Email Snippet'
   document.getElementById('snippet-text').value = txt
   document.getElementById('snippet-modal').style.display = 'flex'
 }
 
 function genSmsSnippet() {
-  const txt = 'Hey! Try ClockInProof free for 60 days — GPS time tracking for your crew, no credit card needed. Takes 2 min to set up: ' + TRIAL_BASE
-  document.getElementById('snippet-title').textContent = '📱 SMS Text'
+  const txt = 'Hey [Name]! Quick one \u2014 have you tried ClockInProof? GPS time tracking for field crews, automated payroll, no credit card. Free 60-day trial: ' + TRIAL_BASE + ' \u2014 takes 2 min to set up.'
+  document.getElementById('snippet-title').textContent = 'SMS Text'
   document.getElementById('snippet-text').value = txt
   document.getElementById('snippet-modal').style.display = 'flex'
 }
