@@ -3877,7 +3877,9 @@ app.get('/api/sessions/worker/:worker_id/period', async (c) => {
 app.get('/api/settings', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
-  const settings = await db.prepare('SELECT * FROM settings').all()
+  const tenantId = await resolveTenantId(c, db)
+  // Use tenant_settings for per-tenant config
+  const settings = await db.prepare('SELECT key, value FROM tenant_settings WHERE tenant_id = ?').bind(tenantId).all()
   const obj: Record<string, string> = {}
   settings.results.forEach((s: any) => { obj[s.key] = s.value })
   return c.json({ settings: obj })
@@ -3885,13 +3887,15 @@ app.get('/api/settings', async (c) => {
 
 app.put('/api/settings', async (c) => {
   const db = c.env.DB
+  await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const body = await c.req.json()
 
   for (const [key, value] of Object.entries(body)) {
     await db.prepare(
-      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
-    ).bind(key, String(value)).run()
+      `INSERT INTO tenant_settings (tenant_id, key, value, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(tenant_id, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
+    ).bind(tenantId, key, String(value)).run()
   }
 
   return c.json({ success: true })
@@ -12857,7 +12861,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260305f"></script>
+<script src="/static/admin.js?v=20260305g"></script>
 
 </body>
 </html>`

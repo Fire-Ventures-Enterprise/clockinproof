@@ -2512,8 +2512,8 @@ async function loadSettings() {
     // Apply branding to navbar + sidebar
     applyTenantBranding(tenant.logo_url || '', tenant.company_name || '')
 
-    // ── Load global settings ──────────────────────────────────────────────────
-    const res = await fetch('/api/settings')
+    // ── Load tenant settings ──────────────────────────────────────────────────
+    const res = await apiFetch('/api/settings')
     const data = await res.json()
     currentSettings = data.settings || {}
 
@@ -2694,8 +2694,8 @@ async function saveSettings() {
   }
 
   try {
-    // Save global settings
-    const res = await fetch('/api/settings', {
+    // Save tenant settings
+    const res = await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -2705,7 +2705,8 @@ async function saveSettings() {
     const logoUrl       = document.getElementById('s-logo-url')?.value?.trim() || ''
     const companyAddr   = document.getElementById('s-company-address')?.value?.trim() || ''
     const companyPhone  = document.getElementById('s-company-phone')?.value?.trim() || ''
-    await fetch('/api/tenants/1', {
+    const _tenantId = window.__TENANT__?.tenant_id || 1
+    await apiFetch('/api/tenants/' + _tenantId, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2955,7 +2956,7 @@ async function initExportTab() {
 
   // Load last email sent time
   try {
-    const res = await fetch('/api/settings')
+    const res = await apiFetch('/api/settings')
     const data = await res.json()
     const s = data.settings || {}
     if (s.last_weekly_email_sent) {
@@ -3628,7 +3629,7 @@ async function sendQbToAccountant() {
       // Auto-save accountant email to settings
       if (currentSettings) {
         currentSettings.accountant_email = emailEl.value
-        await fetch('/api/settings', {
+        await apiFetch('/api/settings', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ accountant_email: emailEl.value })
