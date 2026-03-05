@@ -1,3 +1,23 @@
+// ── DARK / LIGHT MODE ────────────────────────────────────────────────────────
+function toggleTheme() {
+  const isDark = document.documentElement.classList.toggle('dark')
+  localStorage.setItem('cip_theme', isDark ? 'dark' : 'light')
+  _updateThemeIcon()
+}
+function _updateThemeIcon() {
+  const isDark = document.documentElement.classList.contains('dark')
+  // Admin navbar icon
+  const icon = document.getElementById('admin-theme-icon')
+  if (icon) {
+    icon.className = isDark ? 'fas fa-sun text-sm' : 'fas fa-moon text-sm'
+  }
+  const btn = document.getElementById('admin-theme-toggle')
+  if (btn) btn.title = isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'
+}
+// Sync icon on load
+document.addEventListener('DOMContentLoaded', _updateThemeIcon)
+// ─────────────────────────────────────────────────────────────────────────────
+
 let adminMap = null
 let currentPeriod = 'today'
 let allSessionsData = []

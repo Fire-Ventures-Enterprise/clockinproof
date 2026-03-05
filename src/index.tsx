@@ -8077,8 +8077,49 @@ function getWorkerHTML(tenant?: any): string {
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
-    :root { --primary: ${primaryColor}; }
-    body { font-family: 'Segoe UI', system-ui, sans-serif; }
+    :root {
+      --primary: ${primaryColor};
+      --wk-bg:        #f1f5f9;
+      --wk-card:      #ffffff;
+      --wk-card2:     #f8fafc;
+      --wk-border:    #e2e8f0;
+      --wk-text:      #1e293b;
+      --wk-text2:     #64748b;
+      --wk-text3:     #94a3b8;
+      --wk-nav-bg:    #ffffff;
+      --wk-nav-border:#e5e7eb;
+      --wk-input-bg:  #f9fafb;
+    }
+    html.dark {
+      --wk-bg:        #0f172a;
+      --wk-card:      #1e293b;
+      --wk-card2:     #162032;
+      --wk-border:    #334155;
+      --wk-text:      #f1f5f9;
+      --wk-text2:     #94a3b8;
+      --wk-text3:     #64748b;
+      --wk-nav-bg:    #1e293b;
+      --wk-nav-border:#334155;
+      --wk-input-bg:  #0f172a;
+    }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--wk-bg) !important; color: var(--wk-text) !important; transition: background 0.2s, color 0.2s; }
+    /* Worker dark mode overrides */
+    html.dark #wk-bottom-nav                               { background: var(--wk-nav-bg) !important; border-color: var(--wk-nav-border) !important; }
+    html.dark [style*="background:#fff"]                   { background: var(--wk-card) !important; }
+    html.dark [style*="background:#f8fafc"]                { background: var(--wk-card2) !important; }
+    html.dark [style*="background:#f1f5f9"]                { background: var(--wk-card2) !important; }
+    html.dark [style*="color:#1e293b"]                     { color: var(--wk-text) !important; }
+    html.dark [style*="color:#64748b"]                     { color: var(--wk-text2) !important; }
+    html.dark [style*="color:#94a3b8"]                     { color: var(--wk-text3) !important; }
+    html.dark [style*="border-color:#e2e8f0"], html.dark [style*="border:1.5px solid #e2e8f0"] { border-color: var(--wk-border) !important; }
+    html.dark input, html.dark select, html.dark textarea  { background: var(--wk-input-bg) !important; color: var(--wk-text) !important; border-color: var(--wk-border) !important; }
+    html.dark .bg-gray-50                                  { background: var(--wk-card2) !important; }
+    html.dark .bg-white                                    { background: var(--wk-card) !important; }
+    html.dark .text-gray-800, html.dark .text-gray-900     { color: var(--wk-text) !important; }
+    html.dark .text-gray-500, html.dark .text-gray-600     { color: var(--wk-text2) !important; }
+    html.dark .border-gray-200                             { border-color: var(--wk-border) !important; }
+    html.dark #status-card, html.dark .rounded-2xl.shadow-sm { background: var(--wk-card) !important; }
+    html.dark .day-group                                   { border-color: #3b82f6; background: var(--wk-card2) !important; }
     .clock-btn { transition: all 0.2s ease; }
     .clock-btn:active { transform: scale(0.97); }
     #map { height: 200px; border-radius: 12px; }
@@ -8091,7 +8132,14 @@ function getWorkerHTML(tenant?: any): string {
     .modal-bg { backdrop-filter: blur(4px); }
     .day-group { border-left: 3px solid #3b82f6; }
   </style>
-  <script>window.__TENANT__ = ${JSON.stringify({ company_name: companyName, primary_color: primaryColor, logo_url: logoUrl })};</script>
+  <script>window.__TENANT__ = ${JSON.stringify({ company_name: companyName, primary_color: primaryColor, logo_url: logoUrl })};
+    // Init theme before paint to prevent flash
+    (function(){
+      const saved = localStorage.getItem('cip_theme');
+      const sysDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      if (saved === 'dark' || (!saved && sysDark)) document.documentElement.classList.add('dark');
+    })();
+  </script>
 </head>
 <body class="bg-gray-50 min-h-screen">
 
@@ -8635,6 +8683,14 @@ function getWorkerHTML(tenant?: any): string {
             </div>
             <i class="fas fa-chevron-right" style="color:#d1d5db;margin-left:auto;font-size:12px"></i>
           </button>
+          <button onclick="toggleTheme()" id="wk-theme-btn" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px;background:#f0f9ff;border:1.5px solid #bae6fd;border-radius:14px;cursor:pointer;text-align:left">
+            <i id="wk-theme-icon" class="fas fa-moon" style="color:#0ea5e9;font-size:16px;width:20px;text-align:center"></i>
+            <div>
+              <p id="wk-theme-label" style="font-size:13px;font-weight:700;color:#1e293b">Dark Mode</p>
+              <p style="font-size:11px;color:#94a3b8;margin-top:1px">Switch between light and dark</p>
+            </div>
+            <i class="fas fa-chevron-right" style="color:#d1d5db;margin-left:auto;font-size:12px"></i>
+          </button>
           <button onclick="logout()" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px;background:#fff5f5;border:1.5px solid #fecaca;border-radius:14px;cursor:pointer;text-align:left">
             <i class="fas fa-sign-out-alt" style="color:#ef4444;font-size:16px;width:20px;text-align:center"></i>
             <div>
@@ -8886,7 +8942,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium max-w-xs text-center"></div>
 
-<script src="/static/worker.js?v=20260303e"></script>
+<script src="/static/worker.js?v=20260305a"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-end justify-center p-4" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -8998,6 +9054,63 @@ function getAdminHTML(): string {
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
+    /* ── THEME VARIABLES ─────────────────────────────────────────────────── */
+    :root {
+      --bg-base:     #f1f5f9;
+      --bg-card:     #ffffff;
+      --bg-sidebar:  #ffffff;
+      --bg-input:    #f8fafc;
+      --border:      #e2e8f0;
+      --text-primary:#1e293b;
+      --text-secondary:#64748b;
+      --text-muted:  #94a3b8;
+      --tab-active-bg:#eef2ff;
+      --tab-active-text:#4338ca;
+      --row-hover:   #f8fafc;
+      --shadow:      0 1px 4px rgba(0,0,0,.07);
+    }
+    html.dark {
+      --bg-base:     #0f172a;
+      --bg-card:     #1e293b;
+      --bg-sidebar:  #1e293b;
+      --bg-input:    #0f172a;
+      --border:      #334155;
+      --text-primary:#f1f5f9;
+      --text-secondary:#94a3b8;
+      --text-muted:  #64748b;
+      --tab-active-bg:#1e3a5f;
+      --tab-active-text:#93c5fd;
+      --row-hover:   #273548;
+      --shadow:      0 1px 4px rgba(0,0,0,.35);
+    }
+    /* ── APPLY THEME VARS ────────────────────────────────────────────────── */
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg-base) !important; color: var(--text-primary) !important; transition: background 0.2s, color 0.2s; }
+    /* Cards / panels */
+    .bg-white, [class*="bg-white"]                          { background: var(--bg-card) !important; }
+    .bg-gray-50                                             { background: var(--bg-input) !important; }
+    .bg-gray-100, .min-h-screen.bg-gray-100                { background: var(--bg-base) !important; }
+    .bg-gray-200                                            { background: var(--border) !important; }
+    /* Borders */
+    .border-gray-200, .border-gray-100                      { border-color: var(--border) !important; }
+    /* Text */
+    .text-gray-800, .text-gray-900                         { color: var(--text-primary) !important; }
+    .text-gray-600, .text-gray-700                         { color: var(--text-secondary) !important; }
+    .text-gray-400, .text-gray-500                         { color: var(--text-muted) !important; }
+    /* Sidebar */
+    aside, #admin-sidebar                                   { background: var(--bg-sidebar) !important; border-color: var(--border) !important; }
+    /* Inputs */
+    input, select, textarea                                 { background: var(--bg-input) !important; color: var(--text-primary) !important; border-color: var(--border) !important; }
+    /* Table rows */
+    tr:hover td                                             { background: var(--row-hover) !important; }
+    th                                                      { background: var(--bg-input) !important; color: var(--text-secondary) !important; border-color: var(--border) !important; }
+    td                                                      { border-color: var(--border) !important; }
+    /* Tab active */
+    .tab-active                                             { background-color: var(--tab-active-bg) !important; color: var(--tab-active-text) !important; }
+    /* Modals */
+    .modal-content, [id$="-modal"] > div                   { background: var(--bg-card) !important; }
+    /* Theme toggle button */
+    #admin-theme-toggle { transition: all 0.2s; }
+
     body { font-family: 'Segoe UI', system-ui, sans-serif; }
     #admin-map { height: 400px; }
     .tab-active { background-color: #eef2ff; color: #4338ca; font-weight: 600; }
@@ -9008,6 +9121,14 @@ function getAdminHTML(): string {
     .spinner { animation: spin 1s linear infinite; }
     @keyframes spin { to{transform:rotate(360deg)} }
   </style>
+  <script>
+    // Init theme immediately to avoid flash
+    (function(){
+      const saved = localStorage.getItem('cip_theme');
+      const sysDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      if (saved === 'dark' || (!saved && sysDark)) document.documentElement.classList.add('dark');
+    })();
+  </script>
 </head>
 <body class="bg-gray-100 min-h-screen">
 
@@ -9108,6 +9229,9 @@ function getAdminHTML(): string {
         </select>
         <button onclick="refreshAll()" class="w-9 h-9 flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-colors">
           <i class="fas fa-sync-alt text-sm"></i>
+        </button>
+        <button id="admin-theme-toggle" onclick="toggleTheme()" title="Toggle dark/light mode" class="w-9 h-9 flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-colors">
+          <i id="admin-theme-icon" class="fas fa-moon text-sm"></i>
         </button>
         <button onclick="adminLogout()" class="w-9 h-9 flex items-center justify-center bg-indigo-800 hover:bg-indigo-900 rounded-xl transition-colors">
           <i class="fas fa-sign-out-alt text-sm"></i>
@@ -11897,7 +12021,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260303i"></script>
+<script src="/static/admin.js?v=20260305a"></script>
 
 </body>
 </html>`

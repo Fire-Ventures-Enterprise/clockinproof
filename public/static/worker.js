@@ -1,3 +1,27 @@
+// ── DARK / LIGHT MODE ────────────────────────────────────────────────────────
+function toggleTheme() {
+  const isDark = document.documentElement.classList.toggle('dark')
+  localStorage.setItem('cip_theme', isDark ? 'dark' : 'light')
+  _updateWorkerThemeUI()
+}
+function _updateWorkerThemeUI() {
+  const isDark = document.documentElement.classList.contains('dark')
+  const icon  = document.getElementById('wk-theme-icon')
+  const label = document.getElementById('wk-theme-label')
+  const btn   = document.getElementById('wk-theme-btn')
+  if (icon)  icon.className  = isDark ? 'fas fa-sun' : 'fas fa-moon'
+  if (label) label.textContent = isDark ? 'Light Mode' : 'Dark Mode'
+  if (btn)   btn.style.background = isDark ? '#1e293b' : '#f0f9ff'
+  // Also update bottom nav bg
+  const nav = document.getElementById('wk-bottom-nav')
+  if (nav) {
+    nav.style.background = isDark ? '#1e293b' : '#fff'
+    nav.style.borderTopColor = isDark ? '#334155' : '#e5e7eb'
+  }
+}
+document.addEventListener('DOMContentLoaded', _updateWorkerThemeUI)
+// ─────────────────────────────────────────────────────────────────────────────
+
 let currentWorker = null
 let activeSession = null
 let currentLat = null
