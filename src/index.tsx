@@ -4875,12 +4875,15 @@ app.post('/api/device-reset-request', async (c) => {
   `).bind(tenant.id, worker.id, worker.name, reason || 'New phone').run()
 
   // ── Notify admin — email + SMS ─────────────────────────────────────────────
-  const settings: any = {}
-  const sr = await db.prepare('SELECT * FROM settings').all()
-  ;(sr.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
+  // Admin contact info + API keys are stored in the global `settings` table
+  // (the admin saves them via the admin panel Settings screen → PUT /api/settings)
+  // We also fall back to tenant.admin_email from the tenants table.
+  const settingsRaw = await db.prepare('SELECT * FROM settings').all()
+  const settings: Record<string, string> = {}
+  ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
 
   const env = c.env as any
-  const adminEmail  = (settings.admin_email  || settings.report_email  || '').trim()
+  const adminEmail  = (settings.admin_email  || settings.report_email  || tenant.admin_email || '').trim()
   const adminPhone  = (settings.admin_phone  || '').trim()
   const resendKey   = (env.RESEND_API_KEY    || settings.resend_api_key  || '').trim()
   const twilioSid   = (env.TWILIO_ACCOUNT_SID   || settings.twilio_account_sid   || '').trim()
@@ -4891,46 +4894,72 @@ app.post('/api/device-reset-request', async (c) => {
   const rawHost     = (settings.admin_host || settings.app_host || 'admin.clockinproof.com').trim()
   const adminDashboardUrl = rawHost.startsWith('http') ? rawHost.replace(/\/$/, '') : `https://${rawHost.replace(/\/$/, '')}`
 
+  const notifyErrors: string[] = []
+
   // Email notification
   if (adminEmail && resendKey) {
-    await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: 'ClockInProof Alerts <alerts@clockinproof.com>',
-        to: adminEmail,
-        subject: `📱 Device Reset Request — ${worker.name}`,
-        html: `<div style="font-family:sans-serif;max-width:480px">
-          <h2 style="color:#4F46E5">📱 Device Reset Request</h2>
-          <p><strong>${worker.name}</strong> (${worker.phone}) is requesting a device reset.</p>
-          <p><strong>Reason:</strong> ${reason || 'New phone'}</p>
-          <p>Log into your admin dashboard → Workers tab → find ${worker.name} → tap <strong>Approve Reset</strong>.</p>
-          <p><a href="${adminDashboardUrl}/#workers" style="background:#4F46E5;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;display:inline-block;margin-top:8px">Open Admin Dashboard → Workers Tab</a></p>
-          <p style="color:#dc2626;font-size:12px;margin-top:16px"><strong>Security:</strong> Only approve this if you have personally confirmed the request with the worker.</p>
-        </div>`
+    try {
+      const emailResp = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: 'ClockInProof Alerts <alerts@clockinproof.com>',
+          to: adminEmail,
+          subject: `📱 Device Reset Request — ${worker.name}`,
+          html: `<div style="font-family:sans-serif;max-width:480px">
+            <h2 style="color:#4F46E5">📱 Device Reset Request</h2>
+            <p><strong>${worker.name}</strong> (${worker.phone}) is requesting a device reset.</p>
+            <p><strong>Reason:</strong> ${reason || 'New phone'}</p>
+            <p>Log into your admin dashboard → Workers tab → find ${worker.name} → tap <strong>Approve Reset</strong>.</p>
+            <p><a href="${adminDashboardUrl}/#workers" style="background:#4F46E5;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;display:inline-block;margin-top:8px">Open Admin Dashboard → Workers Tab</a></p>
+            <p style="color:#dc2626;font-size:12px;margin-top:16px"><strong>Security:</strong> Only approve this if you have personally confirmed the request with the worker.</p>
+          </div>`
+        })
       })
-    }).catch(() => {})
+      if (!emailResp.ok) {
+        const errText = await emailResp.text().catch(() => emailResp.status.toString())
+        notifyErrors.push(`email:${errText}`)
+      }
+    } catch (e: any) { notifyErrors.push(`email:${e?.message}`) }
+  } else {
+    if (!adminEmail) notifyErrors.push('email:no_admin_email')
+    if (!resendKey)  notifyErrors.push('email:no_resend_key')
   }
 
   // SMS notification via Twilio
   if (adminPhone && twilioSid && twilioToken && (twilioMsgSvc || twilioFrom)) {
-    const toPhone = adminPhone.startsWith('+') ? adminPhone : `+1${adminPhone.replace(/\D/g,'')}`
-    const smsBody = `ClockInProof: ${worker.name} is requesting a device reset (${reason || 'New phone'}). Log into your admin dashboard → Workers tab to approve.`
-    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`
-    const twilioAuth = btoa(`${twilioSid}:${twilioToken}`)
-    const params = new URLSearchParams({
-      To: toPhone,
-      Body: smsBody,
-      ...(twilioMsgSvc ? { MessagingServiceSid: twilioMsgSvc } : { From: twilioFrom })
-    })
-    await fetch(twilioUrl, {
-      method: 'POST',
-      headers: { 'Authorization': `Basic ${twilioAuth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: params.toString()
-    }).catch(() => {})
+    try {
+      const toPhone = adminPhone.startsWith('+') ? adminPhone : `+1${adminPhone.replace(/\D/g,'')}`
+      const smsBody = `ClockInProof: ${worker.name} is requesting a device reset (${reason || 'New phone'}). Log into your admin dashboard → Workers tab to approve.`
+      const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`
+      const twilioAuth = btoa(`${twilioSid}:${twilioToken}`)
+      const params = new URLSearchParams({
+        To: toPhone,
+        Body: smsBody,
+        ...(twilioMsgSvc ? { MessagingServiceSid: twilioMsgSvc } : { From: twilioFrom })
+      })
+      const smsResp = await fetch(twilioUrl, {
+        method: 'POST',
+        headers: { 'Authorization': `Basic ${twilioAuth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString()
+      })
+      if (!smsResp.ok) {
+        const errText = await smsResp.text().catch(() => smsResp.status.toString())
+        notifyErrors.push(`sms:${errText}`)
+      }
+    } catch (e: any) { notifyErrors.push(`sms:${e?.message}`) }
+  } else {
+    if (!adminPhone)                        notifyErrors.push('sms:no_admin_phone')
+    if (!twilioSid || !twilioToken)         notifyErrors.push('sms:no_twilio_creds')
+    if (!(twilioMsgSvc || twilioFrom))      notifyErrors.push('sms:no_twilio_from')
   }
 
-  return c.json({ success: true, message: 'Reset request submitted. Your manager has been notified and will approve it shortly.' })
+  // Return success (request was saved) but include notify_errors for debugging
+  return c.json({
+    success: true,
+    message: 'Reset request submitted. Your manager has been notified and will approve it shortly.',
+    ...(notifyErrors.length ? { notify_errors: notifyErrors } : {})
+  })
 })
 
 
@@ -9034,7 +9063,7 @@ function getWorkerHTML(tenant?: any): string {
 <!-- Toast notification -->
 <div id="toast" class="hidden fixed left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl text-sm font-medium max-w-xs text-center" style="bottom:88px;z-index:9999"></div>
 
-<script src="/static/worker.js?v=20260305g"></script>
+<script src="/static/worker.js?v=20260305h"></script>
 <!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 flex items-end justify-center" style="z-index:9990;padding:0 16px 88px" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
@@ -12113,7 +12142,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260305c"></script>
+<script src="/static/admin.js?v=20260305d"></script>
 
 </body>
 </html>`

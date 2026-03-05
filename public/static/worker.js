@@ -524,14 +524,26 @@ async function sendDeviceResetRequest(phone) {
     })
     const data = await res.json()
     if (data.success) {
+      // Build notification status line for transparency
+      const notifyErrors = data.notify_errors || []
+      const emailOk = !notifyErrors.some(e => e.startsWith('email:'))
+      const smsOk   = !notifyErrors.some(e => e.startsWith('sms:'))
+      const notifyLine = notifyErrors.length === 0
+        ? '<p style="font-size:13px;color:#16a34a;margin:0 0 20px"><i class="fas fa-check-circle" style="margin-right:6px"></i>Your manager was notified by email and SMS.</p>'
+        : `<p style="font-size:12px;color:#b45309;background:#fefce8;border:1px solid #fde68a;border-radius:10px;padding:10px;margin:0 0 20px;line-height:1.5;text-align:left">
+            <i class="fas fa-exclamation-triangle" style="margin-right:6px"></i>
+            <strong>Note:</strong> ${emailOk ? '✅ Email sent.' : '⚠️ Email not sent (check admin email or Resend key in Settings).'} 
+            ${smsOk ? '✅ SMS sent.' : '⚠️ SMS not sent (check admin phone & Twilio credentials in Settings).'}
+           </p>`
       const m = document.getElementById('device-reset-modal')
       if (m) m.innerHTML = `
 <div style="background:#fff;border-radius:24px;max-width:440px;width:100%;padding:36px 28px;text-align:center">
   <div style="width:64px;height:64px;background:#dcfce7;border-radius:18px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px">
     <i class="fas fa-check" style="color:#16a34a;font-size:28px"></i>
   </div>
-  <h3 style="font-size:18px;font-weight:800;color:#111;margin:0 0 8px">Request Sent!</h3>
-  <p style="font-size:14px;color:#4b5563;line-height:1.6;margin:0 0 24px">Your manager has been notified by SMS and email. Once they approve, you can sign in on the new device.</p>
+  <h3 style="font-size:18px;font-weight:800;color:#111;margin:0 0 8px">Request Saved!</h3>
+  ${notifyLine}
+  <p style="font-size:13px;color:#4b5563;line-height:1.6;margin:0 0 24px">Once your manager approves in the Workers tab, you can sign in on the new device.</p>
   <button onclick="document.getElementById('device-reset-modal').remove()"
     style="background:#16a34a;color:#fff;border:none;border-radius:12px;padding:14px 32px;font-size:15px;font-weight:700;cursor:pointer">
     <i class="fas fa-check" style="margin-right:8px"></i>Done
