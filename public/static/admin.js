@@ -133,7 +133,20 @@ async function adminLogin() {
       // Deep-link navigation
       const hash = window.location.hash.replace('#', '')
       const validTabs = ['live','workers','sessions','map','calendar','settings','export','overrides','job-sites','encircle','dispatch','disputes','support-tickets','payroll','accountant','quickbooks']
-      if (hash && validTabs.includes(hash)) showTab(hash)
+      if (hash && validTabs.includes(hash)) {
+        showTab(hash)
+      } else if (data.plan === 'trial') {
+        // New trial tenant — go straight to Settings so they can configure their account
+        showTab('settings')
+        setTimeout(() => {
+          const banner = document.createElement('div')
+          banner.id = 'welcome-banner'
+          banner.style.cssText = 'position:fixed;top:68px;left:50%;transform:translateX(-50%);z-index:9999;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;padding:14px 24px;border-radius:12px;box-shadow:0 8px 32px rgba(79,70,229,.5);font-size:14px;font-weight:600;display:flex;align-items:center;gap:10px;max-width:90vw'
+          banner.innerHTML = '<i class="fas fa-rocket" style="font-size:18px"></i><span>Welcome! Start by reviewing your company settings below 👇</span><button onclick="this.parentElement.remove()" style="margin-left:12px;background:rgba(255,255,255,.2);border:none;color:#fff;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:12px">✕</button>'
+          document.body.appendChild(banner)
+          setTimeout(() => { if (banner.parentElement) banner.remove() }, 8000)
+        }, 300)
+      }
 
     } else {
       errEl.textContent = data.error || 'Invalid email or PIN. Please try again.'

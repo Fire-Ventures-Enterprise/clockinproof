@@ -890,6 +890,18 @@ app.get('/api/workers', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
 
+  // Resolve tenant from X-Tenant-ID header or subdomain
+  const tidHeader = c.req.header('X-Tenant-ID')
+  let tenantId = tidHeader ? parseInt(tidHeader) : null
+  if (!tenantId) {
+    const slug = getSubdomain(c)
+    if (slug && !['admin','app','www','super','superadmin','api'].includes(slug)) {
+      const t = await getTenantBySlug(db, slug) as any
+      if (t) tenantId = t.id
+    }
+  }
+  if (!tenantId) tenantId = 1  // fallback to tenant 1 (original company)
+
   const workers = await db.prepare(`
     SELECT w.*,
       COUNT(CASE WHEN s.status = 'active' THEN 1 END) as currently_clocked_in,
@@ -897,9 +909,10 @@ app.get('/api/workers', async (c) => {
       SUM(CASE WHEN s.status = 'completed' THEN s.earnings ELSE 0 END) as total_earnings_all_time
     FROM workers w
     LEFT JOIN sessions s ON w.id = s.worker_id
+    WHERE w.tenant_id = ?
     GROUP BY w.id
     ORDER BY w.created_at DESC
-  `).all()
+  `).bind(tenantId).all()
 
   return c.json({ workers: workers.results })
 })
@@ -7480,17 +7493,35 @@ function getFreeTrialHTML(): string {
                 <p class="text-xs text-gray-600 mt-1">Your admin dashboard password</p>
               </div>
               <div>
-                <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Phone (optional)</label>
-                <input id="t-phone" type="tel" placeholder="+1 613 555 0100"
+                <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Phone *</label>
+                <input id="t-phone" type="tel" placeholder="+1 613 555 0100" required
                   class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
                 <p class="text-xs text-gray-600 mt-1">For SMS alerts</p>
               </div>
             </div>
 
+            <!-- Structured address -->
             <div>
-              <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Company Address (optional)</label>
-              <input id="t-address" type="text" placeholder="123 Main St, Ottawa, ON"
-                class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
+              <label class="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wide">Company Address *</label>
+              <div class="space-y-2">
+                <input id="t-street" type="text" placeholder="Street number &amp; name (e.g. 123 Main St)" required
+                  class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
+                <div class="grid grid-cols-2 gap-2">
+                  <input id="t-city" type="text" placeholder="City" required
+                    class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
+                  <input id="t-provstate" type="text" placeholder="Province / State (e.g. ON)" required maxlength="3"
+                    class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                  <select id="t-country"
+                    class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition text-white">
+                    <option value="CA">🇨🇦 Canada</option>
+                    <option value="US">🇺🇸 United States</option>
+                  </select>
+                  <input id="t-postal" type="text" placeholder="Postal / ZIP Code" required maxlength="10"
+                    class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"/>
+                </div>
+              </div>
             </div>
 
             <button type="submit" id="trial-btn"
@@ -7564,8 +7595,14 @@ document.getElementById('trial-form').addEventListener('submit', async (e) => {
         slug: document.getElementById('t-slug').value.trim(),
         admin_email: document.getElementById('t-email').value.trim(),
         admin_pin: document.getElementById('t-pin').value.trim(),
-        company_address: document.getElementById('t-address').value.trim(),
-        phone: document.getElementById('t-phone').value.trim()
+        phone: document.getElementById('t-phone').value.trim(),
+        company_address: [
+          document.getElementById('t-street').value.trim(),
+          document.getElementById('t-city').value.trim(),
+          document.getElementById('t-provstate').value.trim(),
+          document.getElementById('t-country').value,
+          document.getElementById('t-postal').value.trim()
+        ].filter(Boolean).join(', ')
       })
     })
     const d = await res.json()
@@ -12561,7 +12598,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<script src="/static/admin.js?v=20260305e"></script>
+<script src="/static/admin.js?v=20260305f"></script>
 
 </body>
 </html>`
