@@ -7260,7 +7260,14 @@ function getSubdomain(c: any): string {
 
 // Root route — subdomain-aware for production, landing page for sandbox/direct
 app.get('/', async (c) => {
-  const sub = getSubdomain(c)
+  // Resolve subdomain — check x-forwarded-host first (Cloudflare proxy), then host
+  const rawHost = (c.req.header('x-forwarded-host') || c.req.header('host') || '').split(':')[0].toLowerCase()
+  // Extract subdomain directly from host header as bulletproof fallback
+  const directSub = rawHost.endsWith('.clockinproof.com')
+    ? rawHost.replace('.clockinproof.com', '')
+    : ''
+  const sub = getSubdomain(c) || directSub
+
   if (sub === 'admin') return c.html(getAdminHTML())
   if (sub === 'app')   return c.html(getWorkerHTML())
   if (sub === 'super' || sub === 'superadmin') return c.html(getSuperAdminHTML())
@@ -7328,7 +7335,9 @@ app.get('/', async (c) => {
 
 // Worker app — primary path used in sandbox AND sent to workers as invite link
 app.get('/app', async (c) => {
-  const sub = getSubdomain(c)
+  const rawHost = (c.req.header('x-forwarded-host') || c.req.header('host') || '').split(':')[0].toLowerCase()
+  const directSub = rawHost.endsWith('.clockinproof.com') ? rawHost.replace('.clockinproof.com', '') : ''
+  const sub = getSubdomain(c) || directSub
   const reserved = ['admin', 'app', 'www', 'superadmin', 'super', 'api', 'mail', '']
   if (sub && !reserved.includes(sub)) {
     const db = c.env.DB
@@ -7339,9 +7348,11 @@ app.get('/app', async (c) => {
   return c.html(getWorkerHTML())
 })
 
-// Admin dashboard — accessible via /admin path OR admin.* subdomain
+// Admin dashboard — accessible via /admin path OR admin.clockinproof.com subdomain
 app.get('/admin', async (c) => {
-  const sub = getSubdomain(c)
+  const rawHost = (c.req.header('x-forwarded-host') || c.req.header('host') || '').split(':')[0].toLowerCase()
+  const directSub = rawHost.endsWith('.clockinproof.com') ? rawHost.replace('.clockinproof.com', '') : ''
+  const sub = getSubdomain(c) || directSub
   const reserved = ['admin', 'app', 'www', 'superadmin', 'super', 'api', 'mail', '']
   if (sub && !reserved.includes(sub)) {
     const db = c.env.DB
