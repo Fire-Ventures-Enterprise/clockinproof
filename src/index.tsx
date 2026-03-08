@@ -13700,7 +13700,7 @@ select.input option{background:#1e293b}
       <div class="card" style="width:100%;max-width:540px;padding:28px;max-height:90vh;overflow-y:auto">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
           <h3 style="font-size:16px;font-weight:700;color:#fff">Edit Plan</h3>
-          <button onclick="closePlanModal()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:18px">\u2715</button>
+          <button onclick="closePlanModal()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:18px">[x]</button>
         </div>
 
         <input type="hidden" id="plan-edit-id">
@@ -13721,7 +13721,7 @@ select.input option{background:#1e293b}
             </div>
           </div>
           <div>
-            <label style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:5px">Stripe Price ID <span style="color:#475569;font-size:10px">from Stripe dashboard \u2192 Products</span></label>
+            <label style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:5px">Stripe Price ID <span style="color:#475569;font-size:10px">from Stripe dashboard -> Products</span></label>
             <input id="plan-edit-stripe-id" class="input" placeholder="price_1T6kPUGsh3cS5lan..." style="font-family:monospace;font-size:12px">
           </div>
           <div>
@@ -13756,11 +13756,11 @@ select.input option{background:#1e293b}
           <div style="display:flex;flex-direction:column;gap:10px">
             <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
               <span style="font-size:13px;color:#94a3b8">RESEND_API_KEY</span>
-              <span class="pill badge-active">\u2713 Configured</span>
+              <span class="pill badge-active">[v] Configured</span>
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
               <span style="font-size:13px;color:#94a3b8">From Domain</span>
-              <span style="font-size:13px;color:#e2e8f0">clockinproof.com \u2713</span>
+              <span style="font-size:13px;color:#e2e8f0">clockinproof.com [v]</span>
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
               <span style="font-size:13px;color:#94a3b8">DKIM Status</span>
@@ -13915,7 +13915,7 @@ select.input option{background:#1e293b}
               <input type="url" id="sp-app-host" class="input" placeholder="https://app.clockinproof.com">
               <p style="font-size:11px;color:#475569;margin-top:4px">
                 <i class="fas fa-info-circle" style="margin-right:4px"></i>
-                In Cloudflare DNS, point <code style="background:#0f172a;padding:1px 5px;border-radius:4px">app.clockinproof.com</code> \u2192 this Pages project.
+                In Cloudflare DNS, point <code style="background:#0f172a;padding:1px 5px;border-radius:4px">app.clockinproof.com</code> -> this Pages project.
               </p>
             </div>
             <div>
@@ -13925,17 +13925,17 @@ select.input option{background:#1e293b}
               <input type="url" id="sp-admin-host" class="input" placeholder="https://admin.clockinproof.com">
               <p style="font-size:11px;color:#475569;margin-top:4px">
                 <i class="fas fa-info-circle" style="margin-right:4px"></i>
-                In Cloudflare DNS, point <code style="background:#0f172a;padding:1px 5px;border-radius:4px">admin.clockinproof.com</code> \u2192 this Pages project. Alert SMS links use this URL.
+                In Cloudflare DNS, point <code style="background:#0f172a;padding:1px 5px;border-radius:4px">admin.clockinproof.com</code> -> this Pages project. Alert SMS links use this URL.
               </p>
             </div>
           </div>
           <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:12px;margin-top:14px;font-size:12px;color:#64748b">
             <p style="font-weight:700;color:#94a3b8;margin-bottom:8px"><i class="fas fa-lightbulb" style="color:#f59e0b;margin-right:6px"></i>Cloudflare DNS Quick Setup</p>
-            <p>1. Cloudflare Dashboard \u2192 <strong style="color:#e2e8f0">clockinproof.com \u2192 DNS</strong></p>
-            <p style="margin-top:4px">2. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">app</code> \u2192 your Pages URL</p>
-            <p style="margin-top:4px">3. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">admin</code> \u2192 your Pages URL</p>
-            <p style="margin-top:4px">4. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">www</code> \u2192 your Pages URL (landing page)</p>
-            <p style="margin-top:4px">5. Pages \u2192 Custom Domains \u2192 add all three subdomains</p>
+            <p>1. Cloudflare Dashboard -> <strong style="color:#e2e8f0">clockinproof.com -> DNS</strong></p>
+            <p style="margin-top:4px">2. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">app</code> -> your Pages URL</p>
+            <p style="margin-top:4px">3. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">admin</code> -> your Pages URL</p>
+            <p style="margin-top:4px">4. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">www</code> -> your Pages URL (landing page)</p>
+            <p style="margin-top:4px">5. Pages -> Custom Domains -> add all three subdomains</p>
           </div>
           <div style="margin-top:14px;display:flex;gap:10px">
             <button class="btn btn-primary" onclick="savePlatformUrls()"><i class="fas fa-save"></i> Save URLs</button>
@@ -14049,7 +14049,7 @@ select.input option{background:#1e293b}
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">
         <div>
           <h1 style="font-size:20px;font-weight:800;color:#fff"><i class="fas fa-file-invoice-dollar" style="color:#818cf8;margin-right:8px"></i>Tax Compliance</h1>
-          <p style="color:#64748b;font-size:13px">Wyoming LLC \u00B7 Canadian-owned \u00B7 USD\u2192CAD tracking \u00B7 Form 5472 / T1135 / FBAR</p>
+          <p style="color:#64748b;font-size:13px">Wyoming LLC . Canadian-owned . USD->CAD tracking . Form 5472 / T1135 / FBAR</p>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <select id="tax-year-select" class="input" style="width:100px" onchange="loadTax()">
@@ -14098,7 +14098,7 @@ select.input option{background:#1e293b}
         <div class="stat-card">
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Today's Rate</div>
           <div style="font-size:26px;font-weight:800;color:#e2e8f0" id="tax-rate-today">--</div>
-          <div style="font-size:11px;color:#475569;margin-top:2px">USD \u2192 CAD (BoC)</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">USD -> CAD (BoC)</div>
         </div>
         <div class="stat-card">
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Pending Review</div>
@@ -14255,7 +14255,7 @@ select.input option{background:#1e293b}
             <div style="font-size:12px;color:#94a3b8;line-height:1.8">
               <div>[OK] <strong style="color:#e2e8f0">ECI Income:</strong> Taxed in the US at regular rates -- treaty reduces withholding</div>
               <div>[OK] <strong style="color:#e2e8f0">SaaS Revenue:</strong> Generally classified as ECI (business income)</div>
-              <div>[OK] <strong style="color:#e2e8f0">Withholding Rate:</strong> Reduced from 30% \u2192 0% for ECI with ITIN/W-8BEN-E</div>
+              <div>[OK] <strong style="color:#e2e8f0">Withholding Rate:</strong> Reduced from 30% -> 0% for ECI with ITIN/W-8BEN-E</div>
               <div>[OK] <strong style="color:#e2e8f0">Foreign Tax Credit:</strong> US taxes paid can offset Canadian taxes owing</div>
               <div>[!] <strong style="color:#fcd34d">ITIN Required:</strong> Apply via Form W-7 if not already obtained</div>
             </div>
@@ -14525,7 +14525,7 @@ select.input option{background:#1e293b}
     <div style="display:flex;gap:6px;flex-shrink:0">
       <a id="tp-admin-link" href="#" target="_blank" class="btn btn-ghost" title="Open Tenant Admin Panel" style="font-size:11px"><i class="fas fa-external-link-alt"></i> Admin</a>
       <a id="tp-app-link" href="#" target="_blank" class="btn btn-ghost" title="Worker App" style="font-size:11px"><i class="fas fa-mobile-alt"></i> App</a>
-      <button onclick="closeTenantProfile()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:18px;padding:4px 8px">\u2715</button>
+      <button onclick="closeTenantProfile()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:18px;padding:4px 8px">[x]</button>
     </div>
   </div>
 
@@ -14918,7 +14918,7 @@ async function loadTrialSignups() {
         '<td><span style="color:#818cf8">' + t.slug + '.clockinproof.com</span></td>' +
         '<td style="color:#94a3b8">' + t.admin_email + '</td>' +
         '<td><span style="color:' + daysColor + ';font-weight:600">' + daysLabel + '</span></td>' +
-        '<td style="text-align:center">' + (t.worker_count || '\u2014') + '</td>' +
+        '<td style="text-align:center">' + (t.worker_count || '--') + '</td>' +
         '<td><span class="pill badge-trial">trial</span></td>' +
         '</tr>'
     }).join('')
@@ -15243,7 +15243,7 @@ async function saveTenant() {
 async function suspendTenant(id) {
   if (!confirm('Suspend this tenant? Workers will not be able to clock in.')) return
   await api('/api/super/tenants/'+id, { method:'PUT', body:JSON.stringify({status:'suspended'}) })
-  showToast('\u23F8 Tenant suspended'); loadTenants()
+  showToast('[pause] Tenant suspended'); loadTenants()
 }
 async function activateTenant(id) {
   await api('/api/super/tenants/'+id, { method:'PUT', body:JSON.stringify({status:'active'}) })
@@ -15300,7 +15300,7 @@ async function executeDeleteTenant() {
     resultEl.style.color = '#86efac'
     resultEl.innerHTML = '<i class="fas fa-check-circle" style="margin-right:6px"></i><strong>' + _deleteName + '</strong> has been archived successfully. Workers can no longer clock in.'
     btn.style.display = 'none'
-    showToast('\u1F5D1 ' + _deleteName + ' archived')
+    showToast('[del]1 ' + _deleteName + ' archived')
     setTimeout(() => { closeDeleteModal(); loadTenants(); switchTenantTab('archived') }, 2500)
   } catch(e) {
     resultEl.style.display = 'block'
@@ -15328,7 +15328,7 @@ function onEmailSlugInput() {
 }
 function updateEmailPreview(val) {
   const p = document.getElementById('email-preview')
-  if (val) { p.textContent = '\u2192 admin.'+val+'@clockinproof.com'; p.style.display='block' }
+  if (val) { p.textContent = '-> admin.'+val+'@clockinproof.com'; p.style.display='block' }
   else p.style.display='none'
 }
 document.getElementById('new-company').addEventListener('input', function() {
@@ -15345,7 +15345,7 @@ async function checkSlug(val) {
   clearTimeout(slugCheckTimer)
   const el = document.getElementById('slug-check')
   if (!val) { el.textContent=''; return }
-  el.textContent = '\u23F3'
+  el.textContent = '[wait]'
   slugCheckTimer = setTimeout(async () => {
     try {
       const d = await fetch('/api/tenants/check-slug?slug='+encodeURIComponent(val)).then(r=>r.json())
@@ -15384,7 +15384,7 @@ async function createTenant() {
     document.getElementById('new-plan').value = 'growth'
     document.getElementById('slug-check').textContent = ''
     document.getElementById('email-preview').style.display = 'none'
-    showToast('\u1F389 Tenant created!')
+    showToast('[gift]9 Tenant created!')
     allTenants = []
   } catch { 
     res.style.cssText = 'display:block;padding:12px;border-radius:8px;background:#7f1d1d33;border:1px solid #dc2626;color:#fca5a5;font-size:13px'
@@ -15492,7 +15492,7 @@ async function sendTestEmail() {
 async function changeSuperPin() {
   const newPin = document.getElementById('new-super-pin').value.trim()
   if (!newPin || newPin.length < 6) { showToast('[X] PIN must be at least 6 characters', true); return }
-  showToast('\u2139 To change the PIN, update SUPER_ADMIN_PIN secret in Cloudflare Pages dashboard', false)
+  showToast('[i] To change the PIN, update SUPER_ADMIN_PIN secret in Cloudflare Pages dashboard', false)
   document.getElementById('new-super-pin').value = ''
 }
 
@@ -15536,7 +15536,7 @@ async function savePlatformUrls() {
       body: JSON.stringify(payload)
     })
     if (!res.ok) throw new Error('Save failed')
-    if (statusEl) { statusEl.textContent = '\u2713 URLs saved successfully'; statusEl.style.display = 'block' }
+    if (statusEl) { statusEl.textContent = '[v] URLs saved successfully'; statusEl.style.display = 'block' }
     showToast('[OK] Platform URLs saved')
     setTimeout(() => { if (statusEl) statusEl.style.display = 'none' }, 4000)
   } catch(e) { showToast('[X] Failed to save URLs', true) }
@@ -15563,7 +15563,7 @@ async function savePlatformTwilio() {
       body: JSON.stringify(payload)
     })
     if (!res.ok) throw new Error('Save failed')
-    if (statusEl) { statusEl.textContent = '\u2713 Twilio credentials saved to DB (Cloudflare secrets override these at runtime)'; statusEl.style.display = 'block' }
+    if (statusEl) { statusEl.textContent = '[v] Twilio credentials saved to DB (Cloudflare secrets override these at runtime)'; statusEl.style.display = 'block' }
     showToast('[OK] Twilio credentials saved')
     setTimeout(() => { if (statusEl) statusEl.style.display = 'none' }, 5000)
   } catch(e) { showToast('[X] Failed to save Twilio credentials', true) }
@@ -15583,7 +15583,7 @@ async function savePlatformResend() {
       body: JSON.stringify(payload)
     })
     if (!res.ok) throw new Error('Save failed')
-    if (statusEl) { statusEl.textContent = '\u2713 Resend config saved (RESEND_API_KEY secret overrides at runtime)'; statusEl.style.display = 'block' }
+    if (statusEl) { statusEl.textContent = '[v] Resend config saved (RESEND_API_KEY secret overrides at runtime)'; statusEl.style.display = 'block' }
     showToast('[OK] Resend config saved')
     setTimeout(() => { if (statusEl) statusEl.style.display = 'none' }, 5000)
   } catch(e) { showToast('[X] Failed to save Resend config', true) }
@@ -15592,7 +15592,7 @@ async function savePlatformResend() {
 async function testPlatformSms() {
   const adminPhone = prompt('Send test SMS to which number? (include + country code)')
   if (!adminPhone) return
-  showToast('\u1F4E4 Sending test SMS...')
+  showToast('[msg]4 Sending test SMS...')
   try {
     const res = await fetch('/api/test/sms', {
       method: 'POST',
@@ -15608,7 +15608,7 @@ async function testPlatformSms() {
 async function testPlatformEmail() {
   const toEmail = prompt('Send test email to which address?')
   if (!toEmail) return
-  showToast('\u1F4E4 Sending test email...')
+  showToast('[msg]4 Sending test email...')
   try {
     const res = await fetch('/api/test/email', {
       method: 'POST',
@@ -15703,7 +15703,7 @@ async function openTicket(id) {
     document.getElementById('tkt-modal-number').textContent  = t.ticket_number
     document.getElementById('tkt-modal-subject').textContent = t.subject
     document.getElementById('tkt-modal-meta').textContent    =
-      (t.company_name||'') + ' \u00B7 ' + (t.submitter_email||'') + ' \u00B7 ' + new Date(t.created_at).toLocaleString()
+      (t.company_name||'') + ' . ' + (t.submitter_email||'') + ' . ' + new Date(t.created_at).toLocaleString()
     const ss = STATUS_STYLES[t.status]     || STATUS_STYLES.open
     const ps = PRIORITY_STYLES[t.priority] || PRIORITY_STYLES.normal
     document.getElementById('tkt-modal-status-badge').innerHTML =
@@ -15758,7 +15758,7 @@ async function sendTicketReply() {
     })
     document.getElementById('tkt-reply-text').value = ''
     document.getElementById('tkt-internal-note').checked = false
-    showToast(isInternal ? '\u1F4DD Internal note added' : '[OK] Reply sent to tenant')
+    showToast(isInternal ? '[U1F4D]D Internal note added' : '[OK] Reply sent to tenant')
     await openTicket(currentTicketId)
     loadTickets()
   } catch { showToast('[X] Failed to send reply', true) }
@@ -15787,7 +15787,7 @@ async function resolveAndClose() {
     await api('/api/super/tickets/' + currentTicketId + '/status', {
       method: 'PUT', body: JSON.stringify({ status: 'closed', resolution_note: note || '' })
     })
-    showToast('\u1F512 Ticket closed -- tenant notified by email')
+    showToast('[lock]2 Ticket closed -- tenant notified by email')
     closeTicketModal()
     loadTickets()
   } catch { showToast('[X] Failed to close ticket', true) }
@@ -15850,7 +15850,7 @@ async function loadTenantProfile(id) {
     plBadge.className    = 'pill ' + (t.plan==='pro'?'badge-pro':t.plan==='growth'?'badge-growth':'badge-starter')
 
     const since = t.days_active != null ? t.days_active + ' days active' : ''
-    document.getElementById('tp-meta').textContent = [t.admin_email, since, 'Slug: ' + t.slug].filter(Boolean).join('  \u00B7  ')
+    document.getElementById('tp-meta').textContent = [t.admin_email, since, 'Slug: ' + t.slug].filter(Boolean).join('  .  ')
 
     document.getElementById('tp-admin-link').href = t.admin_url || '#'
     document.getElementById('tp-app-link').href   = t.app_url   || '#'
@@ -15863,7 +15863,7 @@ async function loadTenantProfile(id) {
     document.getElementById('tp-body').innerHTML = \`
     <!-- KPI row -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:20px">
-      \${kpiCard('fas fa-users','Workers',\`\${st.total_workers||0} / \${t.max_workers||'\u221E'}\`,'#6366f1')}
+      \${kpiCard('fas fa-users','Workers',\`\${st.total_workers||0} / \${t.max_workers||'inf'}\`,'#6366f1')}
       \${kpiCard('fas fa-clock','Clocked In Now',nowIn,'#22c55e')}
       \${kpiCard('fas fa-history','Total Sessions',st.total_sessions||0,'#818cf8')}
       \${kpiCard('fas fa-hourglass-half','Total Hours',(st.total_hours||0)+'h','#f59e0b')}
@@ -15901,7 +15901,7 @@ async function loadTenantProfile(id) {
       <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">
         <i class="fas fa-id-badge"></i> Worker Roster
         <span style="color:#475569;font-weight:400;text-transform:none;font-size:12px;margin-left:6px">
-          \${st.active_workers||0} active \u00B7 \${st.on_holiday||0} holiday \u00B7 \${st.sick_leave||0} sick \u00B7 \${st.suspended||0} suspended
+          \${st.active_workers||0} active . \${st.on_holiday||0} holiday . \${st.sick_leave||0} sick . \${st.suspended||0} suspended
         </span>
       </div>
       \${(d.workers||[]).length === 0
@@ -15914,7 +15914,7 @@ async function loadTenantProfile(id) {
               <span style="width:8px;height:8px;border-radius:50%;background:\${sc2};flex-shrink:0"></span>
               <div style="flex:1;min-width:0">
                 <div style="color:#e2e8f0;font-size:13px;font-weight:600">\${w.name}</div>
-                <div style="color:#64748b;font-size:11px">\${w.phone} \u00B7 \${w.session_count||0} sessions \u00B7 Last: \${last}</div>
+                <div style="color:#64748b;font-size:11px">\${w.phone} . \${w.session_count||0} sessions . Last: \${last}</div>
               </div>
               <span style="font-size:11px;color:#475569">\${w.status}</span>
               \${w.device_id ? '' : '<span style="font-size:10px;color:#f59e0b;background:#1c1400;border:1px solid #f59e0b;border-radius:4px;padding:1px 5px">no device</span>'}
@@ -15956,7 +15956,7 @@ async function loadTenantProfile(id) {
         \${infoRow('Admin Email', t.admin_email||'--')}
         \${infoRow('Admin PIN', t.admin_pin ? '****' : '--')}
         \${infoRow('Plan', (t.plan||'starter').toUpperCase())}
-        \${infoRow('Max Workers', t.max_workers||'\u221E')}
+        \${infoRow('Max Workers', t.max_workers||'inf')}
         \${infoRow('Status', t.status||'--')}
         \${infoRow('Created', t.created_at ? new Date(t.created_at).toLocaleDateString() : '--')}
         \${infoRow('Primary Color', t.primary_color||'--')}
@@ -16125,9 +16125,9 @@ function showPlanMsg(txt, isErr) {
 </html>`
 }
 
-// \u2500\u2500\u2500 CLOUDFLARE SCHEDULED TRIGGER \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-// Fires every Friday at 23:59 UTC  \u2192  cron: "59 23 * * 5"
-// Also fires every 30 min for Encircle sync  \u2192  cron: "*/30 * * * *"
+// --- CLOUDFLARE SCHEDULED TRIGGER --------------------------------------------
+// Fires every Friday at 23:59 UTC  ->  cron: "59 23 * * 5"
+// Also fires every 30 min for Encircle sync  ->  cron: "*/30 * * * *"
 export default {
   fetch: app.fetch,
   async scheduled(event: any, env: any, _ctx: any) {
