@@ -1,9 +1,9 @@
-// CIP Super Admin — Tax Compliance Module
-// Auto-extracted from src/index.tsx — do not edit manually
+// CIP Super Admin -- Tax Compliance Module
+// Auto-extracted from src/index.tsx -- do not edit manually
 
-// ══════════════════════════════════════════════════════════════════════════════
-// ── TAX COMPLIANCE MODULE ────────────────────────────────────────────────────
-// ══════════════════════════════════════════════════════════════════════════════
+// ------------------------------------------------------------------------------
+// -- TAX COMPLIANCE MODULE ----------------------------------------------------
+// ------------------------------------------------------------------------------
 
 let _taxSummary = null
 let _taxLedgerPage = 1
@@ -11,7 +11,7 @@ let _activeTaxTab = 'monthly'
 
 function fmtUSD(n) { return '$' + (n||0).toLocaleString('en-CA', {minimumFractionDigits:2,maximumFractionDigits:2}) }
 function fmtCAD(n) { return 'CA$' + (n||0).toLocaleString('en-CA', {minimumFractionDigits:2,maximumFractionDigits:2}) }
-function fmtRate(n) { return n ? n.toFixed(4) : '—' }
+function fmtRate(n) { return n ? n.toFixed(4) : '--' }
 
 async function loadTax() {
   const year = document.getElementById('tax-year-select')?.value || new Date().getFullYear()
@@ -62,7 +62,7 @@ async function loadTax() {
 
     // Render active sub-tab
     showTaxTab(_activeTaxTab, d)
-  } catch(e) { showToast('❌ Failed to load tax data: ' + e.message, true) }
+  } catch(e) { showToast('[X] Failed to load tax data: ' + e.message, true) }
 }
 
 function showTaxTab(tab, data) {
@@ -88,7 +88,7 @@ function renderTaxMonthly(monthly) {
   const tbody = document.getElementById('tax-monthly-tbody')
   if (!tbody) return
   if (!monthly?.length) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:30px;color:#475569">No transactions yet — click "Sync Stripe" to import</td></tr>'
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:30px;color:#475569">No transactions yet -- click "Sync Stripe" to import</td></tr>'
     return
   }
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -124,16 +124,16 @@ async function loadTaxLedger() {
       const isNeg = t.usd_amount < 0
       const usdColor = isNeg ? 'color:#f87171' : 'color:#34d399'
       const statusPill = t.status === 'reconciled'
-        ? '<span style="background:#065f46;color:#6ee7b7;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px">✓ RECONCILED</span>'
+        ? '<span style="background:#065f46;color:#6ee7b7;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px">[v] RECONCILED</span>'
         : '<span style="background:#78350f;color:#fcd34d;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px">PENDING</span>'
       return `<tr style="border-bottom:1px solid #1e293b">
         <td style="padding:8px 12px;color:#94a3b8;font-size:12px">${t.date}</td>
-        <td style="padding:8px 12px;color:#e2e8f0;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.description||''}">${t.description||'—'}</td>
-        <td style="padding:8px 12px;color:#64748b;font-size:12px">${t.processor||'—'}</td>
-        <td style="padding:8px 12px;font-size:11px;font-weight:700;text-transform:uppercase;${catColors[t.category]||'color:#94a3b8'}">${t.category||'—'}</td>
+        <td style="padding:8px 12px;color:#e2e8f0;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.description||''}">${t.description||'--'}</td>
+        <td style="padding:8px 12px;color:#64748b;font-size:12px">${t.processor||'--'}</td>
+        <td style="padding:8px 12px;font-size:11px;font-weight:700;text-transform:uppercase;${catColors[t.category]||'color:#94a3b8'}">${t.category||'--'}</td>
         <td style="padding:8px 12px;text-align:right;font-weight:600;${usdColor}">${fmtUSD(t.usd_amount)}</td>
-        <td style="padding:8px 12px;text-align:right;color:#475569;font-size:11px">${t.exchange_rate ? t.exchange_rate.toFixed(4) : '—'}</td>
-        <td style="padding:8px 12px;text-align:right;color:#818cf8;font-size:12px">${t.cad_amount ? fmtCAD(t.cad_amount) : '—'}</td>
+        <td style="padding:8px 12px;text-align:right;color:#475569;font-size:11px">${t.exchange_rate ? t.exchange_rate.toFixed(4) : '--'}</td>
+        <td style="padding:8px 12px;text-align:right;color:#818cf8;font-size:12px">${t.cad_amount ? fmtCAD(t.cad_amount) : '--'}</td>
         <td style="padding:8px 12px;text-align:center">${statusPill}</td>
         <td style="padding:8px 12px;text-align:right;display:flex;gap:4px;justify-content:flex-end">
           ${t.status === 'pending' ? `<button onclick="reconcileTx(${t.id})" class="btn btn-ghost" style="font-size:11px;padding:3px 8px" title="Mark reconciled"><i class="fas fa-check"></i></button>` : ''}
@@ -156,7 +156,7 @@ function renderTaxDeadlines(deadlines) {
   }
   const statusColors = {
     pending: { bg:'#1e293b', border:'#334155', label:'UPCOMING', lc:'#94a3b8' },
-    filed:   { bg:'#065f46', border:'#059669', label:'FILED ✓',  lc:'#6ee7b7' },
+    filed:   { bg:'#065f46', border:'#059669', label:'FILED [v]',  lc:'#6ee7b7' },
     overdue: { bg:'#7f1d1d', border:'#dc2626', label:'OVERDUE',  lc:'#fca5a5' }
   }
   grid.innerHTML = deadlines.map(d => {
@@ -173,7 +173,7 @@ function renderTaxDeadlines(deadlines) {
       </div>
       <div style="font-size:12px;color:#94a3b8;margin-bottom:4px"><i class="fas fa-calendar" style="width:14px"></i> Due: ${d.due_date}</div>
       ${d.extended_date ? `<div style="font-size:12px;color:#64748b;margin-bottom:4px"><i class="fas fa-calendar-plus" style="width:14px"></i> Extended: ${d.extended_date}</div>` : ''}
-      ${d.status !== 'filed' ? `<div style="font-size:12px;font-weight:700;color:${daysLeft <= 14 ? '#f59e0b' : '#64748b'};margin-bottom:10px">${isPast ? '⚠️ OVERDUE' : daysLeft + ' days remaining'}</div>` : `<div style="font-size:12px;color:#34d399;margin-bottom:10px">Filed: ${d.filed_date||'—'}${d.filed_by ? ' by ' + d.filed_by : ''}</div>`}
+      ${d.status !== 'filed' ? `<div style="font-size:12px;font-weight:700;color:${daysLeft <= 14 ? '#f59e0b' : '#64748b'};margin-bottom:10px">${isPast ? '[!] OVERDUE' : daysLeft + ' days remaining'}</div>` : `<div style="font-size:12px;color:#34d399;margin-bottom:10px">Filed: ${d.filed_date||'--'}${d.filed_by ? ' by ' + d.filed_by : ''}</div>`}
       ${d.status !== 'filed' ? `<button onclick="markDeadlineFiled(${d.id})" class="btn btn-success" style="font-size:11px;padding:4px 10px;width:100%"><i class="fas fa-check"></i> Mark as Filed</button>` : `<button onclick="resetDeadline(${d.id})" class="btn btn-ghost" style="font-size:11px;padding:4px 10px;width:100%"><i class="fas fa-undo"></i> Reset to Pending</button>`}
     </div>`
   }).join('')
@@ -187,35 +187,35 @@ function renderTaxForms(d) {
   // Form 5472
   const f5472 = document.getElementById('form5472-data')
   if (f5472) f5472.innerHTML = `
-    <div>📋 <strong>Entity:</strong> Wyoming LLC (Foreign-Owned SMLLC)</div>
-    <div>🗓 <strong>Fiscal Year:</strong> ${year} (Jan 1 – Dec 31)</div>
-    <div>💰 <strong>Gross US Revenue (ECI):</strong> ${fmtUSD(ytd.gross_usd)}</div>
-    <div>💸 <strong>Processor Fees (Deductible):</strong> ${fmtUSD(ytd.fees_usd)}</div>
-    <div>🔄 <strong>Refunds/Chargebacks:</strong> ${fmtUSD(Math.abs(ytd.refunds_usd||0))}</div>
-    <div>✅ <strong>Net Reportable Income:</strong> ${fmtUSD(ytd.net_usd)}</div>
-    <div>📝 <strong>Ownership:</strong> 100% (Single-Member)</div>
+    <div> <strong>Entity:</strong> Wyoming LLC (Foreign-Owned SMLLC)</div>
+    <div> <strong>Fiscal Year:</strong> ${year} (Jan 1 - Dec 31)</div>
+    <div> <strong>Gross US Revenue (ECI):</strong> ${fmtUSD(ytd.gross_usd)}</div>
+    <div> <strong>Processor Fees (Deductible):</strong> ${fmtUSD(ytd.fees_usd)}</div>
+    <div> <strong>Refunds/Chargebacks:</strong> ${fmtUSD(Math.abs(ytd.refunds_usd||0))}</div>
+    <div>[OK] <strong>Net Reportable Income:</strong> ${fmtUSD(ytd.net_usd)}</div>
+    <div> <strong>Ownership:</strong> 100% (Single-Member)</div>
     <div style="margin-top:8px;padding:8px;background:#0f172a;border-radius:6px;font-size:11px;color:#64748b">
-      Filed with pro-forma Form 1120 — due April 15 each year (extension: October 15 via Form 7004)
+      Filed with pro-forma Form 1120 -- due April 15 each year (extension: October 15 via Form 7004)
     </div>`
 
   // T1135
   const t1135 = document.getElementById('formt1135-data')
   if (t1135) t1135.innerHTML = `
-    <div>🍁 <strong>Reporting Currency:</strong> CAD</div>
-    <div>💰 <strong>YTD CAD Equivalent:</strong> ${fmtCAD(ytd.gross_cad)}</div>
-    <div>⚠️ <strong>Threshold:</strong> CA$100,000</div>
+    <div> <strong>Reporting Currency:</strong> CAD</div>
+    <div> <strong>YTD CAD Equivalent:</strong> ${fmtCAD(ytd.gross_cad)}</div>
+    <div>[!] <strong>Threshold:</strong> CA$100,000</div>
     <div style="margin-top:8px;padding:8px;background:${alerts.t1135_triggered ? '#7c2d12' : '#0f172a'};border-radius:6px">
-      <strong style="color:${alerts.t1135_triggered ? '#fb923c' : '#34d399'}">${alerts.t1135_triggered ? '🚨 T1135 REQUIRED — File with Canadian return' : '✅ Below threshold — T1135 not required yet'}</strong>
+      <strong style="color:${alerts.t1135_triggered ? '#fb923c' : '#34d399'}">${alerts.t1135_triggered ? ' T1135 REQUIRED -- File with Canadian return' : '[OK] Below threshold -- T1135 not required yet'}</strong>
     </div>`
 
   // FBAR
   const fbar = document.getElementById('fbar-data')
   if (fbar) fbar.innerHTML = `
-    <div>🏦 <strong>YTD USD Revenue:</strong> ${fmtUSD(ytd.gross_usd)}</div>
-    <div>⚠️ <strong>Threshold:</strong> $10,000 USD</div>
-    <div>📅 <strong>Due:</strong> April 15 (auto-extended to Oct 15)</div>
+    <div> <strong>YTD USD Revenue:</strong> ${fmtUSD(ytd.gross_usd)}</div>
+    <div>[!] <strong>Threshold:</strong> $10,000 USD</div>
+    <div> <strong>Due:</strong> April 15 (auto-extended to Oct 15)</div>
     <div style="margin-top:8px;padding:8px;background:${alerts.fbar_triggered ? '#1e3a5f' : '#0f172a'};border-radius:6px">
-      <strong style="color:${alerts.fbar_triggered ? '#60a5fa' : '#34d399'}">${alerts.fbar_triggered ? '⚠️ FBAR REQUIRED — File at bsaefiling.fincen.treas.gov' : '✅ Below $10K threshold — FBAR not required'}</strong>
+      <strong style="color:${alerts.fbar_triggered ? '#60a5fa' : '#34d399'}">${alerts.fbar_triggered ? '[!] FBAR REQUIRED -- File at bsaefiling.fincen.treas.gov' : '[OK] Below $10K threshold -- FBAR not required'}</strong>
     </div>`
 }
 
@@ -226,7 +226,7 @@ async function loadTaxRates() {
     const d = await api('/api/super/tax/rates')
     const rates = d.rates || []
     if (!rates.length) {
-      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:30px;color:#475569">No rates stored yet — click "Get Today\'s Rate"</td></tr>'
+      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:30px;color:#475569">No rates stored yet -- click "Get Today\'s Rate"</td></tr>'
       return
     }
     tbody.innerHTML = rates.map(r => `<tr style="border-bottom:1px solid #1e293b">
@@ -250,7 +250,7 @@ async function loadTaxAudit() {
     tbody.innerHTML = logs.map(l => `<tr style="border-bottom:1px solid #1e293b">
       <td style="padding:8px 12px;color:#64748b;font-size:12px;white-space:nowrap">${l.created_at}</td>
       <td style="padding:8px 12px;color:#818cf8;font-size:12px;font-weight:600">${l.action}</td>
-      <td style="padding:8px 12px;color:#94a3b8;font-size:12px">${l.details||'—'}</td>
+      <td style="padding:8px 12px;color:#94a3b8;font-size:12px">${l.details||'--'}</td>
     </tr>`).join('')
   } catch(e) { tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;padding:30px;color:#ef4444">${e.message}</td></tr>` }
 }
@@ -260,9 +260,9 @@ async function syncStripe() {
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...' }
   try {
     const d = await api('/api/super/tax/sync-stripe', { method: 'POST' })
-    showToast(`✅ Stripe sync complete — ${d.added} new, ${d.skipped} already imported`)
+    showToast(`[OK] Stripe sync complete -- ${d.added} new, ${d.skipped} already imported`)
     loadTax()
-  } catch(e) { showToast('❌ Stripe sync failed: ' + e.message, true)
+  } catch(e) { showToast('[X] Stripe sync failed: ' + e.message, true)
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sync"></i> Sync Stripe' }
   }
@@ -273,9 +273,9 @@ async function fetchTodayRate() {
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Fetching...' }
   try {
     const d = await api('/api/super/tax/fetch-rate', { method: 'POST' })
-    showToast(`✅ Rate for ${d.date}: 1 USD = ${d.rate} CAD`)
+    showToast(`[OK] Rate for ${d.date}: 1 USD = ${d.rate} CAD`)
     loadTax()
-  } catch(e) { showToast('❌ ' + e.message, true)
+  } catch(e) { showToast('[X] ' + e.message, true)
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-exchange-alt"></i> Get Today\'s Rate' }
   }
@@ -284,22 +284,22 @@ async function fetchTodayRate() {
 async function saveManualRate() {
   const date = document.getElementById('rate-manual-date')?.value
   const val  = parseFloat(document.getElementById('rate-manual-val')?.value)
-  if (!date || !val) { showToast('❌ Date and rate are required', true); return }
+  if (!date || !val) { showToast('[X] Date and rate are required', true); return }
   await api('/api/super/tax/rates', { method: 'POST', body: JSON.stringify({ rate_date: date, usd_cad: val }) })
-  showToast('✅ Rate saved: ' + date + ' = ' + val)
+  showToast('[OK] Rate saved: ' + date + ' = ' + val)
   loadTaxRates()
 }
 
 async function reconcileTx(id) {
   await api('/api/super/tax/reconcile/' + id, { method: 'POST', body: JSON.stringify({}) })
-  showToast('✅ Marked as reconciled')
+  showToast('[OK] Marked as reconciled')
   loadTaxLedger()
 }
 
 async function deleteTx(id) {
   if (!confirm('Delete this transaction? This cannot be undone.')) return
   await api('/api/super/tax/transactions/' + id, { method: 'DELETE' })
-  showToast('🗑 Transaction deleted')
+  showToast(' Transaction deleted')
   loadTaxLedger()
 }
 
@@ -308,13 +308,13 @@ async function markDeadlineFiled(id) {
   if (filedBy === null) return
   const filedDate = new Date().toISOString().split('T')[0]
   await api('/api/super/tax/deadlines/' + id, { method: 'PUT', body: JSON.stringify({ status: 'filed', filed_date: filedDate, filed_by: filedBy }) })
-  showToast('✅ Marked as filed')
+  showToast('[OK] Marked as filed')
   loadTax()
 }
 
 async function resetDeadline(id) {
   await api('/api/super/tax/deadlines/' + id, { method: 'PUT', body: JSON.stringify({ status: 'pending', filed_date: null, filed_by: null }) })
-  showToast('↩ Reset to pending')
+  showToast(' Reset to pending')
   loadTax()
 }
 
@@ -356,11 +356,11 @@ async function saveNewTx() {
   const usd    = parseFloat(document.getElementById('ntx-usd')?.value)
   const cat    = document.getElementById('ntx-cat')?.value
   const notes  = document.getElementById('ntx-notes')?.value
-  if (!date || !desc || isNaN(usd)) { showToast('❌ Date, description, and amount are required', true); return }
+  if (!date || !desc || isNaN(usd)) { showToast('[X] Date, description, and amount are required', true); return }
   try {
     const r = await api('/api/super/tax/transactions', { method: 'POST', body: JSON.stringify({ date, description: desc, usd_amount: usd, category: cat, notes }) })
-    showToast(`✅ Transaction saved${r.cad_amount ? ' — CAD: ' + fmtCAD(r.cad_amount) : ' (no rate on file for this date)'}`)
+    showToast(`[OK] Transaction saved${r.cad_amount ? ' -- CAD: ' + fmtCAD(r.cad_amount) : ' (no rate on file for this date)'}`)
     document.getElementById('add-tx-modal')?.remove()
     loadTax()
-  } catch(e) { showToast('❌ ' + e.message, true) }
+  } catch(e) { showToast('[X] ' + e.message, true) }
 }

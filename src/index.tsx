@@ -13178,6 +13178,7 @@ function getSuperAdminHTML(): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ClockInProof -- Super Admin</title>
+<link rel="icon" href="/icon-180.png" type="image/png">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -13265,10 +13266,12 @@ select.input option{background:#1e293b}
       <p style="color:#64748b;font-size:13px;margin-top:4px">ClockInProof Platform Control</p>
     </div>
     <div id="login-error" style="display:none;background:#7f1d1d33;border:1px solid #dc2626;color:#fca5a5;border-radius:8px;padding:10px 14px;font-size:13px;margin-bottom:16px"></div>
+    <form onsubmit="doSuperLogin();return false;" style="margin:0">
     <input type="password" id="super-pin" class="input" style="text-align:center;font-size:22px;letter-spacing:8px;margin-bottom:14px" placeholder="********" maxlength="30" autocomplete="current-password">
-    <button id="login-btn" class="btn btn-primary" style="width:100%;justify-content:center;padding:10px" onclick="doSuperLogin()">
+    <button id="login-btn" type="submit" class="btn btn-primary" style="width:100%;justify-content:center;padding:10px">
       <i class="fas fa-unlock-keyhole"></i> Access Portal
     </button>
+    </form>
     <p style="text-align:center;font-size:11px;color:#334155;margin-top:16px">Protected -- authorized personnel only</p>
   </div>
 </div>
@@ -14878,7 +14881,7 @@ function genEmailSnippet() {
     'Best,',
     '[Your Name]'
   ]
-  const txt = lines.join('\n')
+  const txt = lines.join(String.fromCharCode(10))
   document.getElementById('snippet-title').textContent = 'Email Snippet'
   document.getElementById('snippet-text').value = txt
   document.getElementById('snippet-modal').style.display = 'flex'

@@ -1,4 +1,4 @@
-// ── DARK / LIGHT MODE ────────────────────────────────────────────────────────
+// -- DARK / LIGHT MODE --------------------------------------------------------
 function toggleTheme() {
   const isDark = document.documentElement.classList.toggle('dark')
   localStorage.setItem('cip_theme', isDark ? 'dark' : 'light')
@@ -16,9 +16,9 @@ function _updateThemeIcon() {
 }
 // Sync icon on load
 document.addEventListener('DOMContentLoaded', _updateThemeIcon)
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
-// ── apiFetch: auto-injects X-Tenant-ID so server resolves tenant on reserved subdomains ──
+// -- apiFetch: auto-injects X-Tenant-ID so server resolves tenant on reserved subdomains --
 function apiFetch(url, opts) {
   opts = opts || {}
   const tid = window.__TENANT__?.tenant_id
@@ -27,17 +27,17 @@ function apiFetch(url, opts) {
   }
   return fetch(url, opts)
 }
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 let adminMap = null
 let currentPeriod = 'today'
 let allSessionsData = []
-let sessionStore = {}  // id → session object for modal lookup
-// Address search location anchor — set from job sites or settings
+let sessionStore = {}  // id -> session object for modal lookup
+// Address search location anchor -- set from job sites or settings
 let _adminSearchLat = 45.42   // Ottawa centre fallback
 let _adminSearchLng = -75.70
 
-// ── Shared helpers ───────────────────────────────────────────────────────────────
+// -- Shared helpers ---------------------------------------------------------------
 
 // Strip legacy prefixes and normalize auto_clockout_reason
 function cleanReason(raw) {
@@ -50,7 +50,7 @@ function cleanReason(raw) {
 }
 
 // Full human-readable guardrail label for a session
-// Returns a SINGLE clean label — never double-prefixed
+// Returns a SINGLE clean label -- never double-prefixed
 function autoClockoutLabel(s) {
   const r = cleanReason(s.auto_clockout_reason)
   if (s.drift_flag)                              return 'Auto Clock-Out: Left Geofence'
@@ -74,7 +74,7 @@ function isSystemNote(notes) {
          l === 'admin clock-out'
 }
 
-// ── Admin Login ───────────────────────────────────────────────────────────────
+// -- Admin Login ---------------------------------------------------------------
 async function adminLogin() {
   const email = (document.getElementById('admin-email-input')?.value || '').trim()
   const pin   = document.getElementById('admin-pin-input').value.trim()
@@ -136,13 +136,13 @@ async function adminLogin() {
       if (hash && validTabs.includes(hash)) {
         showTab(hash)
       } else if (data.plan === 'trial') {
-        // New trial tenant — go straight to Settings so they can configure their account
+        // New trial tenant -- go straight to Settings so they can configure their account
         showTab('settings')
         setTimeout(() => {
           const banner = document.createElement('div')
           banner.id = 'welcome-banner'
           banner.style.cssText = 'position:fixed;top:68px;left:50%;transform:translateX(-50%);z-index:9999;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;padding:14px 24px;border-radius:12px;box-shadow:0 8px 32px rgba(79,70,229,.5);font-size:14px;font-weight:600;display:flex;align-items:center;gap:10px;max-width:90vw'
-          banner.innerHTML = '<i class="fas fa-rocket" style="font-size:18px"></i><span>Welcome! Start by reviewing your company settings below 👇</span><button onclick="this.parentElement.remove()" style="margin-left:12px;background:rgba(255,255,255,.2);border:none;color:#fff;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:12px">✕</button>'
+          banner.innerHTML = '<i class="fas fa-rocket" style="font-size:18px"></i><span>Welcome! Start by reviewing your company settings below ?</span><button onclick="this.parentElement.remove()" style="margin-left:12px;background:rgba(255,255,255,.2);border:none;color:#fff;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:12px">[x]</button>'
           document.body.appendChild(banner)
           setTimeout(() => { if (banner.parentElement) banner.remove() }, 8000)
         }, 300)
@@ -155,7 +155,7 @@ async function adminLogin() {
       document.getElementById('admin-pin-input').select()
     }
   } catch(e) {
-    errEl.textContent = 'Connection error — please try again.'
+    errEl.textContent = 'Connection error -- please try again.'
     errEl.classList.remove('hidden')
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-unlock mr-2"></i>Access Dashboard' }
@@ -175,7 +175,7 @@ document.getElementById('admin-email-input')?.addEventListener('keyup', e => {
   if (e.key === 'Enter') adminLogin()
 })
 
-// ── Data Loading ──────────────────────────────────────────────────────────────
+// -- Data Loading --------------------------------------------------------------
 async function refreshAll() {
   document.getElementById('admin-last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString()
   await Promise.all([loadStats(), loadLive(), loadWorkers(), loadSessions()])
@@ -183,7 +183,7 @@ async function refreshAll() {
   loadOverrides().catch(() => {})
   loadDisputes().catch(() => {})
   loadDeviceResetRequests().catch(() => {})
-  // Trigger server-side watchdog — auto-clocks out workers who left geofence / exceeded max shift
+  // Trigger server-side watchdog -- auto-clocks out workers who left geofence / exceeded max shift
   // This ensures auto-clockout fires even if the worker's phone is offline
   runAdminWatchdog().catch(() => {})
 }
@@ -195,7 +195,7 @@ async function runAdminWatchdog() {
     const data = await res.json()
     const acted = (data.results || []).filter(r => r.action && r.action.startsWith('auto_clocked_out'))
     if (acted.length > 0) {
-      // Workers were auto-clocked out — refresh live + stats immediately
+      // Workers were auto-clocked out -- refresh live + stats immediately
       await Promise.all([loadLive(), loadStats(), loadWorkers()])
       // Show admin alert banner
       showGeofenceAlert(acted)
@@ -217,7 +217,7 @@ function showGeofenceAlert(actedWorkers) {
   const names = actedWorkers.map(w => w.worker_name).join(', ')
   const reasons = { auto_clocked_out: 'max shift', auto_clocked_out_eod: 'end of day', auto_clocked_out_drift: 'left job site' }
   const reasonText = actedWorkers.map(w => reasons[w.action] || 'auto clock-out').join('; ')
-  banner.innerHTML = `<span>🚨 Auto Clock-Out: <strong>${names}</strong> — ${reasonText}</span><button onclick="document.getElementById('admin-geofence-alert').remove()" style="background:rgba(255,255,255,.2);border:none;color:#fff;padding:4px 12px;border-radius:8px;cursor:pointer;font-weight:700">✕ Dismiss</button>`
+  banner.innerHTML = `<span>? Auto Clock-Out: <strong>${names}</strong> -- ${reasonText}</span><button onclick="document.getElementById('admin-geofence-alert').remove()" style="background:rgba(255,255,255,.2);border:none;color:#fff;padding:4px 12px;border-radius:8px;cursor:pointer;font-weight:700">[x] Dismiss</button>`
   // Auto-dismiss after 30 seconds
   setTimeout(() => { if (document.getElementById('admin-geofence-alert')) document.getElementById('admin-geofence-alert').remove() }, 30000)
 }
@@ -235,7 +235,7 @@ function updateDriftBanner(driftedWorkers) {
     document.body.insertBefore(banner, document.body.firstChild)
   }
   const names = driftedWorkers.map(w => w.worker_name).join(', ')
-  banner.innerHTML = `<span>⚠️ Outside Geofence: <strong>${names}</strong> — left the job site. Will auto clock-out if still away.</span><button onclick="document.getElementById('admin-drift-banner').remove()" style="background:rgba(255,255,255,.2);border:none;color:#fff;padding:4px 12px;border-radius:8px;cursor:pointer;font-weight:700">✕</button>`
+  banner.innerHTML = `<span>[!]? Outside Geofence: <strong>${names}</strong> -- left the job site. Will auto clock-out if still away.</span><button onclick="document.getElementById('admin-drift-banner').remove()" style="background:rgba(255,255,255,.2);border:none;color:#fff;padding:4px 12px;border-radius:8px;cursor:pointer;font-weight:700">[x]</button>`
 }
 
 async function loadStats() {
@@ -261,7 +261,7 @@ async function loadStats() {
   } catch(e) { console.error(e) }
 }
 
-// ── Worker Detail Drawer ──────────────────────────────────────────────────────
+// -- Worker Detail Drawer ------------------------------------------------------
 let _currentDrawerWorker = null  // store full worker object for edit modal
 
 async function openWorkerDrawer(workerId) {
@@ -303,7 +303,7 @@ async function openWorkerDrawer(workerId) {
       const totalE = sessions.reduce((s, x) => s + (x.earnings || 0), 0)
       document.getElementById('wd-total-hours').textContent = totalH.toFixed(1) + 'h'
       document.getElementById('wd-total-earned').textContent = '$' + totalE.toFixed(2)
-      // Status badge — uses new worker_status field
+      // Status badge -- uses new worker_status field
       const ws = worker.worker_status || (worker.active ? 'active' : 'terminated')
       const wsConf2 = WS_CONFIG[ws] || WS_CONFIG['active']
       let statusBadge = ''
@@ -315,7 +315,7 @@ async function openWorkerDrawer(workerId) {
       document.getElementById('wd-status-badge').innerHTML = statusBadge
       document.getElementById('wd-filter-sessions-btn').dataset.workerId = workerId
 
-      // Invite link badge in drawer — always shows as active (link is permanent)
+      // Invite link badge in drawer -- always shows as active (link is permanent)
       const wdInviteBadge = document.getElementById('wd-invite-badge')
       if (wdInviteBadge) {
         wdInviteBadge.innerHTML = `<button onclick="closeWorkerDrawer();generateInviteLink(${workerId},'${worker.name.replace(/'/g,"\\'")}');"
@@ -340,15 +340,15 @@ async function openWorkerDrawer(workerId) {
         }
       }
 
-      // ── Populate Profile tab ──
-      document.getElementById('wd-p-phone').textContent     = worker.phone || '–'
-      document.getElementById('wd-p-email').textContent     = worker.email || '–'
-      document.getElementById('wd-p-address').textContent   = worker.home_address || '–'
-      document.getElementById('wd-p-emergency').textContent = worker.emergency_contact || '–'
-      document.getElementById('wd-p-title').textContent     = worker.job_title || '–'
+      // -- Populate Profile tab --
+      document.getElementById('wd-p-phone').textContent     = worker.phone || '-'
+      document.getElementById('wd-p-email').textContent     = worker.email || '-'
+      document.getElementById('wd-p-address').textContent   = worker.home_address || '-'
+      document.getElementById('wd-p-emergency').textContent = worker.emergency_contact || '-'
+      document.getElementById('wd-p-title').textContent     = worker.job_title || '-'
       document.getElementById('wd-p-start').textContent     = worker.start_date
         ? new Date(worker.start_date + 'T00:00:00').toLocaleDateString('en-CA', {year:'numeric',month:'short',day:'numeric'})
-        : '–'
+        : '-'
       document.getElementById('wd-p-paytype').textContent   = payType === 'salary' ? 'Salary' : 'Hourly'
       document.getElementById('wd-p-comp').textContent      = payType === 'salary'
         ? '$' + Number(worker.salary_amount||0).toLocaleString() + ' / year'
@@ -361,7 +361,7 @@ async function openWorkerDrawer(workerId) {
         notesBlock.classList.add('hidden')
       }
 
-      // ── Populate License tab ──
+      // -- Populate License tab --
       document.getElementById('wd-l-number').textContent = worker.drivers_license_number || 'Not recorded'
       const frontEl = document.getElementById('wd-l-front')
       const backEl  = document.getElementById('wd-l-back')
@@ -389,11 +389,11 @@ async function openWorkerDrawer(workerId) {
       const isActive = s.status === 'active'
       const flags = []
       if (s.session_type === 'material_pickup') {
-        const dest = s.pickup_destination ? ' → ' + s.pickup_destination.split(',')[0] : ''
+        const dest = s.pickup_destination ? ' -> ' + s.pickup_destination.split(',')[0] : ''
         const eta  = s.pickup_eta_minutes ? ' (~' + (s.pickup_eta_minutes < 60 ? s.pickup_eta_minutes + 'm' : Math.floor(s.pickup_eta_minutes/60) + 'h' + s.pickup_eta_minutes%60 + 'm') + ')' : ''
-        flags.push('<span class="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-full">📦 Pickup' + dest + eta + '</span>')
+        flags.push('<span class="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-full">? Pickup' + dest + eta + '</span>')
       }
-      if (s.session_type === 'emergency_job')   flags.push('<span class="bg-rose-100 text-rose-700 text-[10px] px-1.5 py-0.5 rounded-full">🚨 Emergency</span>')
+      if (s.session_type === 'emergency_job')   flags.push('<span class="bg-rose-100 text-rose-700 text-[10px] px-1.5 py-0.5 rounded-full">? Emergency</span>')
       if (s.drift_flag)    flags.push('<span class="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded-full">\u26a0 Left Site</span>')
       if (s.away_flag)     flags.push('<span class="bg-yellow-100 text-yellow-700 text-[10px] px-1.5 py-0.5 rounded-full">\u23f0 Away</span>')
       if (s.auto_clockout) flags.push('<span class="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded-full">\ud83d\udd34 Auto Out</span>')
@@ -442,7 +442,7 @@ function closeWorkerDrawer() {
   document.body.style.overflow = ''
 }
 
-// ── Worker Status Tab ─────────────────────────────────────────────────────────
+// -- Worker Status Tab ---------------------------------------------------------
 
 // Status display config (colour + icon + label)
 const WS_CONFIG = {
@@ -511,7 +511,7 @@ async function loadWorkerStatusTab(workerId, currentStatus) {
       if (log.length > 0) {
         const latest = log[0]
         const dt = new Date(latest.changed_at).toLocaleString([],{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})
-        sinceEl.textContent = `Since ${dt} · set by ${latest.changed_by}`
+        sinceEl.textContent = `Since ${dt} . set by ${latest.changed_by}`
       } else {
         sinceEl.textContent = 'No status changes recorded yet'
       }
@@ -541,7 +541,7 @@ async function loadWorkerStatusTab(workerId, currentStatus) {
             </span>
             <span class="ml-auto text-[10px] text-gray-400">${dt}</span>
           </div>
-          <p class="text-xs text-gray-700 font-medium"><i class="fas fa-comment-alt mr-1 text-gray-300"></i>${entry.reason || '—'}</p>
+          <p class="text-xs text-gray-700 font-medium"><i class="fas fa-comment-alt mr-1 text-gray-300"></i>${entry.reason || '--'}</p>
           ${returnStr}
           <p class="text-[10px] text-gray-400 mt-1"><i class="fas fa-user mr-1"></i>By: ${entry.changed_by}</p>
         </div>`
@@ -585,7 +585,7 @@ async function confirmWorkerStatusChange() {
     const data = await res.json()
     if (data.success) {
       const conf = wsConf(status)
-      showAdminToast(`✅ ${_currentDrawerWorker.name} status → ${conf.label}`, 'success')
+      showAdminToast(`[OK] ${_currentDrawerWorker.name} status -> ${conf.label}`, 'success')
       // Clear form
       if (reasonEl) reasonEl.value = ''
       const rdEl = document.getElementById('wd-s-return-date')
@@ -611,7 +611,7 @@ async function confirmWorkerStatusChange() {
   }
 }
 
-// ── Edit Worker Modal ─────────────────────────────────────────────────────────
+// -- Edit Worker Modal ---------------------------------------------------------
 function openEditWorkerModal(focusTab) {
   const w = _currentDrawerWorker
   if (!w) return
@@ -700,7 +700,7 @@ async function saveEditWorker() {
       body: JSON.stringify(payload)
     })
     if (res.ok) {
-      showAdminToast('✅ Worker profile updated!', 'success')
+      showAdminToast('[OK] Worker profile updated!', 'success')
       closeEditWorkerModal()
       await openWorkerDrawer(parseInt(id))
       await loadWorkers()
@@ -737,7 +737,7 @@ function filterSessionsByDate(workerId, dateStr) {
   }, 100)
 }
 
-// ── Session Detail Modal ──────────────────────────────────────────────────────
+// -- Session Detail Modal ------------------------------------------------------
 function openSessionModal(s) {
   // s can be object or JSON string (from onclick attribute)
   if (typeof s === 'string') {
@@ -862,7 +862,7 @@ function closeSessionModal() {
   document.body.style.overflow = ''
 }
 
-// ── Admin Clock-Out Modal ─────────────────────────────────────────────────────
+// -- Admin Clock-Out Modal -----------------------------------------------------
 let pendingClockoutSessionId = null
 
 function openAdminClockoutModal(sessionId) {
@@ -882,7 +882,7 @@ function openAdminClockoutModal(sessionId) {
     infoEl.innerHTML = `
       <div class="flex justify-between text-sm mb-1">
         <span class="text-gray-500"><i class="fas fa-user mr-1 text-gray-400"></i>Worker</span>
-        <span class="font-semibold text-gray-800">${s.worker_name || '–'}</span>
+        <span class="font-semibold text-gray-800">${s.worker_name || '-'}</span>
       </div>
       <div class="flex justify-between text-sm mb-1">
         <span class="text-gray-500"><i class="fas fa-map-marker-alt mr-1 text-red-400"></i>Job Site</span>
@@ -924,7 +924,7 @@ function closeAdminClockoutModal() {
   if (errEl)  errEl.classList.add('hidden')
 }
 
-// Quick-reason chip helper — fills textarea AND clears error state
+// Quick-reason chip helper -- fills textarea AND clears error state
 function pickAcoReason(text) {
   const noteEl = document.getElementById('aco-note')
   const errEl  = document.getElementById('aco-note-error')
@@ -932,7 +932,7 @@ function pickAcoReason(text) {
   if (errEl)  errEl.classList.add('hidden')
 }
 
-// ── Admin Clock-Out Hold-to-Confirm ───────────────────────────────────────────
+// -- Admin Clock-Out Hold-to-Confirm -------------------------------------------
 let _acoHoldTimer = null
 let _acoHoldFrame = null
 let _acoHoldStart = null
@@ -940,7 +940,7 @@ const ACO_HOLD_MS  = 2000   // 2 seconds to confirm
 
 function startAcoHold(e) {
   if (e) e.preventDefault()
-  // Validate note FIRST — don't start hold if empty
+  // Validate note FIRST -- don't start hold if empty
   const noteEl = document.getElementById('aco-note')
   const errEl  = document.getElementById('aco-note-error')
   const note   = noteEl ? noteEl.value.trim() : ''
@@ -963,7 +963,7 @@ function startAcoHold(e) {
     if (pct < 100) {
       _acoHoldFrame = requestAnimationFrame(tick)
     } else {
-      // Held long enough — fire!
+      // Held long enough -- fire!
       cancelAcoHold()
       confirmAdminClockout()
     }
@@ -1010,7 +1010,7 @@ async function confirmAdminClockout() {
 
     if (data.success) {
       closeAdminClockoutModal()
-      showAdminToast(`✅ ${data.message} · ${data.total_hours}h · $${(data.earnings||0).toFixed(2)}`, 'success')
+      showAdminToast(`[OK] ${data.message} . ${data.total_hours}h . $${(data.earnings||0).toFixed(2)}`, 'success')
       // Small delay so D1 write propagates before we re-read
       await new Promise(r => setTimeout(r, 400))
       // Sequential refresh: live first (removes the card), then sessions + stats
@@ -1026,7 +1026,7 @@ async function confirmAdminClockout() {
   }
 }
 
-// ── Bulk Drift Clock-Out Modal ────────────────────────────────────────────────
+// -- Bulk Drift Clock-Out Modal ------------------------------------------------
 let pendingDriftedSessions = []
 
 async function showBulkClockoutModal() {
@@ -1073,13 +1073,13 @@ async function confirmBulkClockout() {
     const res = await fetch('/api/sessions/clockout-drifted', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ note: 'Worker left job site — stopped by admin' })
+      body: JSON.stringify({ note: 'Worker left job site -- stopped by admin' })
     })
     const data = await res.json()
 
     if (data.success) {
       closeBulkClockoutModal()
-      showAdminToast(`✅ ${data.message} (${data.count} session${data.count !== 1 ? 's' : ''} closed)`, 'success')
+      showAdminToast(`[OK] ${data.message} (${data.count} session${data.count !== 1 ? 's' : ''} closed)`, 'success')
       await Promise.all([loadLive(), loadSessions(), loadStats()])
     } else {
       showAdminToast('Bulk clock-out failed', 'error')
@@ -1093,7 +1093,7 @@ async function confirmBulkClockout() {
   }
 }
 
-// ── Day Detail Modal ──────────────────────────────────────────────────────────
+// -- Day Detail Modal ----------------------------------------------------------
 function openDayModal(dateStr) {
   const sessions = (calCurrentData.sessions_by_date || {})[dateStr] || []
   if (sessions.length === 0) return
@@ -1133,11 +1133,11 @@ function openDayModal(dateStr) {
     const cout = s.clock_out_time ? new Date(s.clock_out_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : null
     const isActive = s.status === 'active'
     const flags = []
-    if (s.session_type === 'material_pickup') flags.push('<span class="text-amber-600 text-[10px]">📦 Pickup</span>')
-    if (s.session_type === 'emergency_job')   flags.push('<span class="text-rose-600 text-[10px]">🚨 Emergency</span>')
-    if (s.drift_flag)    flags.push('<span class="text-orange-600 text-[10px]">⚠ Left Site</span>')
-    if (s.away_flag)     flags.push('<span class="text-yellow-600 text-[10px]">⏰ Away</span>')
-    if (s.auto_clockout) flags.push('<span class="text-red-600 text-[10px]">🔴 Auto Out</span>')
+    if (s.session_type === 'material_pickup') flags.push('<span class="text-amber-600 text-[10px]">? Pickup</span>')
+    if (s.session_type === 'emergency_job')   flags.push('<span class="text-rose-600 text-[10px]">? Emergency</span>')
+    if (s.drift_flag)    flags.push('<span class="text-orange-600 text-[10px]">[!] Left Site</span>')
+    if (s.away_flag)     flags.push('<span class="text-yellow-600 text-[10px]">? Away</span>')
+    if (s.auto_clockout) flags.push('<span class="text-red-600 text-[10px]">? Auto Out</span>')
 
     return `<div class="bg-gray-50 border border-gray-100 rounded-xl p-4 hover:border-indigo-300 hover:shadow-sm transition-all cursor-pointer" onclick=\"closeDayModal();openSessionById(${s.id})\">
       <div class="flex items-start justify-between gap-3">
@@ -1149,9 +1149,9 @@ function openDayModal(dateStr) {
           ${s.job_location ? `<p class="text-xs text-gray-500 mb-1 ml-9"><i class="fas fa-map-marker-alt text-red-400 mr-1"></i>${s.job_location}</p>` : ''}
           ${s.job_description ? `<p class="text-xs text-gray-400 mb-1 ml-9 truncate"><i class="fas fa-tools text-blue-300 mr-1"></i>${s.job_description}</p>` : ''}
           <p class="text-xs text-gray-400 ml-9">
-            ${cin} → ${isActive ? '<span class="text-green-600 font-medium">Active</span>' : cout}
+            ${cin} -> ${isActive ? '<span class="text-green-600 font-medium">Active</span>' : cout}
           </p>
-          ${flags.length ? `<div class="flex gap-2 mt-1 ml-9">${flags.join(' · ')}</div>` : ''}
+          ${flags.length ? `<div class="flex gap-2 mt-1 ml-9">${flags.join(' . ')}</div>` : ''}
         </div>
         <div class="text-right flex-shrink-0">
           ${isActive
@@ -1194,7 +1194,7 @@ async function loadLive() {
       if (driftedCount > 0) {
         bulkBtn.classList.remove('hidden')
         document.getElementById('bulk-clockout-label').textContent =
-          `Clock Out ${driftedCount} — Left Site`
+          `Clock Out ${driftedCount} -- Left Site`
       } else {
         bulkBtn.classList.add('hidden')
       }
@@ -1235,7 +1235,7 @@ async function loadLive() {
         ? `<p class="text-xs text-red-600 mt-1 italic"><i class="fas fa-info-circle mr-1"></i>${_cleanR}</p>`
         : ''
 
-      // Admin clock-out button — only for active sessions
+      // Admin clock-out button -- only for active sessions
       const adminBtn = isActive
         ? `<button onclick="event.stopPropagation();openAdminClockoutModal(${s.id})"
             class="w-full mt-3 flex items-center justify-center gap-1.5 bg-red-50 hover:bg-red-100 text-red-600 font-semibold text-xs py-2 rounded-xl border border-red-200 hover:border-red-400 transition-all">
@@ -1275,7 +1275,7 @@ async function loadLive() {
   } catch(e) { console.error(e) }
 }
 
-// ── Workforce dropdown (sidebar) ─────────────────────────────────────────────
+// -- Workforce dropdown (sidebar) ---------------------------------------------
 let _currentWorkersView = 'all'
 let _workforceOpen = false
 
@@ -1430,7 +1430,7 @@ function updateOnsiteBadge(count) {
   else { badge.classList.add('hidden') }
 }
 
-// ── Worker filter state ──────────────────────────────────────────────────────
+// -- Worker filter state ------------------------------------------------------
 let _workerFilter = 'all'
 let _allWorkersData = []
 
@@ -1479,7 +1479,7 @@ function renderWorkersTable() {
       ? '<span class="bg-green-100 text-green-700 text-xs px-2 py-1 rounded-full pulse font-medium flex items-center gap-1 justify-center"><span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span>Working</span>'
       : `<span class="${wsC2.bg} ${wsC2.text} text-xs px-2 py-1 rounded-full font-medium"><i class="fas ${wsC2.icon} mr-1"></i>${wsC2.label}</span>`
 
-    // Invite link — always active (permanent /join/:id URL)
+    // Invite link -- always active (permanent /join/:id URL)
     const canInvite = ['active','on_holiday','sick_leave'].includes(ws2)
     const linkBadge = canInvite
       ? `<span class="bg-green-50 text-green-600 border border-green-200 text-[10px] px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap"><i class="fas fa-circle" style="font-size:5px"></i> Active</span>`
@@ -1602,9 +1602,9 @@ async function loadSessions() {
                 <div class="w-7 h-7 bg-indigo-100 rounded-full flex items-center justify-center flex-shrink-0">
                   <span class="text-indigo-600 text-xs font-bold">${(sess.worker_name||'?').charAt(0).toUpperCase()}</span>
                 </div>
-                <span class="font-bold text-gray-800 text-sm">${sess.worker_name || '–'}</span>
+                <span class="font-bold text-gray-800 text-sm">${sess.worker_name || '-'}</span>
                 <span class="text-gray-400 text-xs">${sess.worker_phone || ''}</span>
-                ${isActive ? `<span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium pulse ml-auto">● LIVE</span>`
+                ${isActive ? `<span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium pulse ml-auto">? LIVE</span>`
                   : sess.auto_clockout ? (() => {
                       const lbl = autoClockoutLabel(sess)
                       const isGeo = lbl.includes('Geofence')
@@ -1622,17 +1622,17 @@ async function loadSessions() {
                   <p class="text-sm font-semibold text-gray-700">${sess.job_location}</p>
                 </div>
               ` : ''}
-              <!-- Admin clock-out reason — geofence deduction gets special treatment -->
+              <!-- Admin clock-out reason -- geofence deduction gets special treatment -->
               ${sess.auto_clockout && sess.geofence_exit_time ? `
                 <div class="ml-9 mb-2 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2">
-                  <p class="text-xs font-semibold text-orange-700 mb-1"><i class="fas fa-map-marker-slash mr-1"></i>Geofence Auto Clock-Out — Deduction Record</p>
+                  <p class="text-xs font-semibold text-orange-700 mb-1"><i class="fas fa-map-marker-slash mr-1"></i>Geofence Auto Clock-Out -- Deduction Record</p>
                   <div class="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs text-gray-600">
                     <span class="text-gray-400">Left site at:</span>
                     <span class="font-medium text-orange-700">${new Date(sess.geofence_exit_time).toLocaleTimeString('en-CA',{hour:'2-digit',minute:'2-digit',hour12:true})}</span>
                     <span class="text-gray-400">Grace period:</span>
                     <span class="font-medium">${sess.geofence_deduction_min} min</span>
                     <span class="text-gray-400">Clocked out at:</span>
-                    <span class="font-medium text-red-600">${sess.clock_out_time ? new Date(sess.clock_out_time).toLocaleTimeString('en-CA',{hour:'2-digit',minute:'2-digit',hour12:true}) : '—'}</span>
+                    <span class="font-medium text-red-600">${sess.clock_out_time ? new Date(sess.clock_out_time).toLocaleTimeString('en-CA',{hour:'2-digit',minute:'2-digit',hour12:true}) : '--'}</span>
                     <span class="text-gray-400">Hours paid:</span>
                     <span class="font-medium text-gray-800">${(sess.total_hours||0).toFixed(2)}h</span>
                   </div>
@@ -1643,7 +1643,7 @@ async function loadSessions() {
               <!-- Time row -->
               <div class="flex items-center gap-3 ml-9 text-xs text-gray-500">
                 <span><i class="fas fa-sign-in-alt text-green-500 mr-1"></i>${clockIn}</span>
-                <span class="text-gray-300">→</span>
+                <span class="text-gray-300">-></span>
                 ${isActive
                   ? `<span class="text-green-600 font-medium">Still working...</span>`
                   : `<span><i class="fas fa-sign-out-alt text-red-400 mr-1"></i>${clockOut}</span>`
@@ -1703,9 +1703,9 @@ async function loadMap() {
   // Remove any stale overlay
   document.querySelectorAll('#admin-map > div[style*="pointer-events:none"]').forEach(el => el.remove())
 
-  // Map header — update label
+  // Map header -- update label
   const mapHeader = document.getElementById('map-live-label')
-  if (mapHeader) mapHeader.textContent = 'Live — Currently Onsite'
+  if (mapHeader) mapHeader.textContent = 'Live -- Currently Onsite'
 
   try {
     // Only fetch ACTIVE sessions (workers currently clocked in)
@@ -1725,7 +1725,7 @@ async function loadMap() {
     
     const bounds = []
     sessions.forEach(s => {
-      // All markers are green — map only shows live workers
+      // All markers are green -- map only shows live workers
       const m = L.circleMarker([s.clock_in_lat, s.clock_in_lng], {
         color: '#16a34a', fillColor: '#22c55e', fillOpacity: 0.85, radius: 11, weight: 2
       }).addTo(adminMap)
@@ -1734,9 +1734,9 @@ async function loadMap() {
         <div style="font-family:system-ui;min-width:160px">
           <div style="font-weight:700;font-size:13px;color:#111">${s.worker_name}</div>
           <div style="color:#6b7280;font-size:11px;margin-bottom:4px">${s.worker_phone || ''}</div>
-          <div style="font-size:11px;color:#15803d;font-weight:600">🟢 Clocked in ${hoursWorked}h ago</div>
+          <div style="font-size:11px;color:#15803d;font-weight:600">? Clocked in ${hoursWorked}h ago</div>
           <div style="font-size:11px;color:#6b7280">In: ${new Date(s.clock_in_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>
-          ${s.job_location ? `<div style="font-size:11px;color:#6b7280;margin-top:2px">📍 ${s.job_location}</div>` : ''}
+          ${s.job_location ? `<div style="font-size:11px;color:#6b7280;margin-top:2px">? ${s.job_location}</div>` : ''}
         </div>
       `)
       bounds.push([s.clock_in_lat, s.clock_in_lng])
@@ -1750,7 +1750,7 @@ async function loadMap() {
   } catch(e) { console.error(e) }
 }
 
-// ── Workers Management ────────────────────────────────────────────────────────
+// -- Workers Management --------------------------------------------------------
 function showAddWorkerModal() {
   // Reset all fields
   const ids = ['modal-name','modal-phone','modal-email','modal-address','modal-emergency',
@@ -1780,7 +1780,7 @@ function previewLicense(input, previewId, hiddenId) {
   if (!file) return
   // Warn if file is very large
   if (file.size > 3 * 1024 * 1024) {
-    showAdminToast('Image too large — use under 3MB', 'error')
+    showAdminToast('Image too large -- use under 3MB', 'error')
     return
   }
   const reader = new FileReader()
@@ -1825,7 +1825,7 @@ async function addWorker() {
 
   try {
     // 1. Register (creates worker record with name + phone)
-    // consent_given:true here means the admin is creating the record — the worker
+    // consent_given:true here means the admin is creating the record -- the worker
     // will give their own device consent when they first open their personal link.
     // No device_id is sent from admin, so no device lock is set at this stage.
     const res = await fetch('/api/workers/register', {
@@ -1837,12 +1837,12 @@ async function addWorker() {
 
     // Backend now returns 409 + duplicate_phone error for duplicate phones
     if (!res.ok && data.error === 'duplicate_phone') {
-      showAdminToast(`⚠️ ${data.message}`, 'error')
+      showAdminToast(`[!]? ${data.message}`, 'error')
       return
     }
     // Legacy fallback: if backend returns isNew:false (shouldn't happen now, but just in case)
     if (data.worker && data.isNew === false) {
-      showAdminToast(`⚠️ Phone ${phone} is already registered to worker "${data.worker.name}". Each worker must have a unique phone number.`, 'error')
+      showAdminToast(`[!]? Phone ${phone} is already registered to worker "${data.worker.name}". Each worker must have a unique phone number.`, 'error')
       return
     }
     if (!data.worker) { showAdminToast(data.message || data.error || 'Could not add worker', 'error'); return }
@@ -1910,7 +1910,7 @@ async function editWorkerRate(id, name, currentRate) {
   } catch(e) { showAdminToast('Error updating rate', 'error') }
 }
 
-// ── Delete Worker Modal ───────────────────────────────────────────────────────
+// -- Delete Worker Modal -------------------------------------------------------
 let _pendingDeleteWorkerId   = null
 let _pendingDeleteWorkerName = ''
 
@@ -1943,7 +1943,7 @@ async function confirmDeleteWorker() {
       showAdminToast(_pendingDeleteWorkerName + ' removed permanently', 'success')
       await loadWorkers()
     } else {
-      showAdminToast(data.error || 'Could not delete — they may have active sessions', 'error')
+      showAdminToast(data.error || 'Could not delete -- they may have active sessions', 'error')
     }
   } catch(e) {
     showAdminToast('Connection error', 'error')
@@ -1953,8 +1953,8 @@ async function confirmDeleteWorker() {
   }
 }
 
-// ── Invite Link Management ────────────────────────────────────────────────────
-// Opens invite modal with the permanent /join/:id link — no codes involved
+// -- Invite Link Management ----------------------------------------------------
+// Opens invite modal with the permanent /join/:id link -- no codes involved
 async function generateInviteLink(id, name) {
   try {
     const res  = await fetch('/api/workers/' + id + '/invite')
@@ -1980,7 +1980,7 @@ async function generateInviteLink(id, name) {
             <i class="fas fa-link text-green-600 text-lg"></i>
           </div>
           <div class="flex-1 min-w-0">
-            <h3 class="font-bold text-gray-800 text-base">${name} — App Link</h3>
+            <h3 class="font-bold text-gray-800 text-base">${name} -- App Link</h3>
             <p class="text-xs text-gray-400">${workerPhone}</p>
           </div>
           <span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 flex items-center gap-1">
@@ -1991,7 +1991,7 @@ async function generateInviteLink(id, name) {
         <!-- Info notice -->
         <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 flex items-start gap-2">
           <i class="fas fa-info-circle text-blue-500 mt-0.5 flex-shrink-0"></i>
-          <p class="text-xs text-blue-700 leading-relaxed">This link works forever. Send it once — the worker taps it to open the app anytime.</p>
+          <p class="text-xs text-blue-700 leading-relaxed">This link works forever. Send it once -- the worker taps it to open the app anytime.</p>
         </div>
 
         <!-- Link display -->
@@ -2047,15 +2047,15 @@ async function sendInviteViaTwilio(workerId, workerName) {
       status.classList.remove('hidden')
       btn.innerHTML = '<i class="fas fa-check mr-2"></i>SMS Sent!'
       btn.className = 'w-full bg-gray-200 text-gray-500 font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2 cursor-default'
-      showAdminToast('✅ App link sent to ' + workerName, 'success')
+      showAdminToast('[OK] App link sent to ' + workerName, 'success')
     } else {
       let errMsg = data.error || 'SMS failed'
       if (data.twilio_code === 21211) errMsg = 'Invalid phone number format'
-      else if (data.twilio_code === 21265) errMsg = 'Phone needs country code — save as +1XXXXXXXXXX'
-      else if (data.twilio_code === 21608) errMsg = 'Unverified number on Twilio trial — verify at twilio.com or upgrade account'
-      else if (data.twilio_code === 21219) errMsg = 'Phone not verified — upgrade Twilio or verify the number'
-      else if (data.twilio_code === 20003) errMsg = 'SMS auth failed — contact your ClockInProof administrator to verify credentials'
-      else if (data.twilio_missing)        errMsg = 'SMS not configured — contact your ClockInProof administrator'
+      else if (data.twilio_code === 21265) errMsg = 'Phone needs country code -- save as +1XXXXXXXXXX'
+      else if (data.twilio_code === 21608) errMsg = 'Unverified number on Twilio trial -- verify at twilio.com or upgrade account'
+      else if (data.twilio_code === 21219) errMsg = 'Phone not verified -- upgrade Twilio or verify the number'
+      else if (data.twilio_code === 20003) errMsg = 'SMS auth failed -- contact your ClockInProof administrator to verify credentials'
+      else if (data.twilio_missing)        errMsg = 'SMS not configured -- contact your ClockInProof administrator'
 
       status.className = 'mb-3 p-3 rounded-xl text-sm font-medium bg-red-50 border border-red-200 text-red-700'
       status.innerHTML = `<i class="fas fa-exclamation-triangle mr-2"></i>${errMsg}`
@@ -2065,13 +2065,13 @@ async function sendInviteViaTwilio(workerId, workerName) {
     }
   } catch(e) {
     status.className = 'mb-3 p-3 rounded-xl text-sm font-medium bg-red-50 border border-red-200 text-red-700'
-    status.innerHTML = '<i class="fas fa-times-circle mr-2"></i>Network error — check your connection'
+    status.innerHTML = '<i class="fas fa-times-circle mr-2"></i>Network error -- check your connection'
     status.classList.remove('hidden')
     btn.disabled = false
     btn.innerHTML = '<i class="fas fa-paper-plane mr-2"></i>Retry SMS'
   }
 }
-// ── Export CSV ────────────────────────────────────────────────────────────────
+// -- Export CSV ----------------------------------------------------------------
 function exportCSV() {
   if (!allSessionsData.length) { showAdminToast('No data to export', 'error'); return }
   const headers = ['Worker', 'Phone', 'Date', 'Clock In', 'Clock Out', 'Hours', 'Earnings', 'Location', 'Status']
@@ -2095,7 +2095,7 @@ function exportCSV() {
   showAdminToast('CSV exported!', 'success')
 }
 
-// ── Tabs ──────────────────────────────────────────────────────────────────────
+// -- Tabs ----------------------------------------------------------------------
 function showTab(name) {
   // Destroy admin map when leaving the map tab to prevent sticky Leaflet
   if (name !== 'map' && adminMap) {
@@ -2180,7 +2180,7 @@ function changePeriod(period) {
   loadStats()
 }
 
-// ── Calendar ──────────────────────────────────────────────────────────────────
+// -- Calendar ------------------------------------------------------------------
 let calYear = new Date().getFullYear()
 let calMonth = new Date().getMonth() + 1  // 1-based
 let calHolidays = []
@@ -2375,7 +2375,7 @@ function renderHolidayList(calData) {
             <p class="text-xs text-gray-500">${new Date(h.date + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric'})}</p>
           </div>
           <span class="bg-amber-100 text-amber-700 text-xs px-2.5 py-1 rounded-full font-semibold">
-            ${h.stat_multiplier || 1.5}× pay
+            ${h.stat_multiplier || 1.5}? pay
           </span>
         </div>
       `).join('')}
@@ -2385,7 +2385,7 @@ function renderHolidayList(calData) {
   document.getElementById('cal-holidays').innerHTML = html
 }
 
-// ── Settings ──────────────────────────────────────────────────────────────────
+// -- Settings ------------------------------------------------------------------
 const PROVINCE_DATA = {
   'CA': [
     {code:'ON', name:'Ontario'}, {code:'BC', name:'British Columbia'},
@@ -2426,14 +2426,14 @@ const STAT_MULTIPLIERS = {
 const STAT_PAY_NOTES = {
   'CA-ON': 'Ontario: 1.5x for working on stat holidays + regular pay for the day off.',
   'CA-BC': 'BC: Must receive regular day pay for stat; 1.5x if working on the holiday.',
-  'CA-AB': 'Alberta: General holidays — regular pay off or 1.5x if working.',
+  'CA-AB': 'Alberta: General holidays -- regular pay off or 1.5x if working.',
   'CA-QC': 'Quebec: Regular pay for the stat day; no premium for working (unless collective agreement).',
   'CA-MB': 'Manitoba: 1.5x for working on a general holiday.',
   'CA-SK': 'Saskatchewan: 1.5x for working on statutory holidays.',
   'CA-NL': 'Newfoundland: 2x pay for working on public holidays.',
   'US-CA': 'California: No state mandate; federal FLSA has no holiday premium. Industry standard 1.5x.',
   'US-NY': 'New York: No state mandate for holiday premium pay. 1.5x is common practice.',
-  'US-TX': 'Texas: Follows federal FLSA — no holiday pay mandate. 1.5x by employer policy.',
+  'US-TX': 'Texas: Follows federal FLSA -- no holiday pay mandate. 1.5x by employer policy.',
   'AU-NSW': 'NSW: Double time for working on public holidays (penalty rates).',
   'AU-VIC': 'Victoria: Double time for public holiday work.',
   'GB-ENG': 'England: No legal right to extra pay on bank holidays (contract dependent).'
@@ -2444,7 +2444,7 @@ let activeDays = [1,2,3,4,5]
 
 async function loadSettings() {
   try {
-    // ── Load tenant branding data first ──────────────────────────────────────
+    // -- Load tenant branding data first --------------------------------------
     const tenantRes = await fetch('/api/tenant/current')
     const tenantData = await tenantRes.json()
     const tenant = tenantData.tenant || {}
@@ -2512,7 +2512,7 @@ async function loadSettings() {
     // Apply branding to navbar + sidebar
     applyTenantBranding(tenant.logo_url || '', tenant.company_name || '')
 
-    // ── Load tenant settings ──────────────────────────────────────────────────
+    // -- Load tenant settings --------------------------------------------------
     const res = await apiFetch('/api/settings')
     const data = await res.json()
     currentSettings = data.settings || {}
@@ -2555,7 +2555,7 @@ async function loadSettings() {
     if (notifySmsEl) notifySmsEl.checked = currentSettings.notify_sms === '1'
     const adminPhoneEl = document.getElementById('s-admin-phone')
     if (adminPhoneEl) adminPhoneEl.value = currentSettings.admin_phone || ''
-    // Twilio credentials are platform-managed (Super Admin only) — not loaded here
+    // Twilio credentials are platform-managed (Super Admin only) -- not loaded here
 
     // Country dropdown
     const country = currentSettings.country_code || 'CA'
@@ -2582,7 +2582,7 @@ async function loadSettings() {
     const qbClientIdEl = document.getElementById('s-qb-client-id')
     if (qbClientIdEl) qbClientIdEl.value = currentSettings.qb_client_id || ''
     const qbClientSecretEl = document.getElementById('s-qb-client-secret')
-    if (qbClientSecretEl && currentSettings.qb_client_secret) qbClientSecretEl.placeholder = '••••••• (saved)'
+    if (qbClientSecretEl && currentSettings.qb_client_secret) qbClientSecretEl.placeholder = '------- (saved)'
     const qbEnvEl = document.getElementById('s-qb-environment')
     if (qbEnvEl) qbEnvEl.value = currentSettings.qb_environment || 'production'
     // Show redirect URI
@@ -2624,11 +2624,11 @@ function updateProvinceList(selectedProvince = null) {
 
 function updateStatPayInfo(country, province) {
   const key = country + '-' + province
-  const note = STAT_PAY_NOTES[key] || `Standard stat pay: ${STAT_MULTIPLIERS[key] || 1.5}× for working on statutory holidays.`
+  const note = STAT_PAY_NOTES[key] || `Standard stat pay: ${STAT_MULTIPLIERS[key] || 1.5}? for working on statutory holidays.`
   const mult = STAT_MULTIPLIERS[key] || 1.5
   document.getElementById('stat-pay-info').innerHTML = `
     <p><strong>Jurisdiction:</strong> ${key}</p>
-    <p><strong>Rate:</strong> ${mult}× pay on statutory holidays</p>
+    <p><strong>Rate:</strong> ${mult}? pay on statutory holidays</p>
     <p class="mt-1 italic">${note}</p>
   `
 }
@@ -2681,7 +2681,7 @@ async function saveSettings() {
     notify_email: document.getElementById('s-notify-email')?.checked ? '1' : '0',
     notify_sms: document.getElementById('s-notify-sms')?.checked ? '1' : '0',
     admin_phone: document.getElementById('s-admin-phone')?.value?.trim() || '',
-    // Twilio credentials managed by platform Super Admin — not saved from tenant settings
+    // Twilio credentials managed by platform Super Admin -- not saved from tenant settings
     pay_frequency: document.getElementById('s-pay-frequency')?.value || 'biweekly',
     pay_period_anchor: document.getElementById('s-pay-anchor')?.value || '2026-03-06',
     show_pay_to_workers: document.getElementById('s-show-pay-workers')?.checked ? '1' : '0',
@@ -2689,7 +2689,7 @@ async function saveSettings() {
     company_name: document.getElementById('s-company-name')?.value?.trim() || '',
     // QB OAuth credentials (only save non-empty values to avoid overwriting tokens)
     ...(document.getElementById('s-qb-client-id')?.value?.trim() ? { qb_client_id: document.getElementById('s-qb-client-id').value.trim() } : {}),
-    ...(document.getElementById('s-qb-client-secret')?.value?.trim() && !document.getElementById('s-qb-client-secret').value.includes('•') ? { qb_client_secret: document.getElementById('s-qb-client-secret').value.trim() } : {}),
+    ...(document.getElementById('s-qb-client-secret')?.value?.trim() && !document.getElementById('s-qb-client-secret').value.includes('-') ? { qb_client_secret: document.getElementById('s-qb-client-secret').value.trim() } : {}),
     qb_environment: document.getElementById('s-qb-environment')?.value || 'production'
   }
 
@@ -2715,10 +2715,10 @@ async function saveSettings() {
         company_address: companyAddr,
         company_phone: companyPhone
       })
-    }).catch(() => {}) // non-blocking — settings save is primary
+    }).catch(() => {}) // non-blocking -- settings save is primary
 
     if (res.ok) {
-      showAdminToast('Settings saved! ✅', 'success')
+      showAdminToast('Settings saved! [OK]', 'success')
       currentSettings = payload
       // Refresh the branded header
       loadSettings()
@@ -2728,7 +2728,7 @@ async function saveSettings() {
   } catch(e) { showAdminToast('Error saving settings', 'error') }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// -- Helpers -------------------------------------------------------------------
 
 // Preview logo in the settings header when URL is entered
 function previewSettingsLogo(url) {
@@ -2745,7 +2745,7 @@ function previewSettingsLogo(url) {
   logoImg.onerror = () => { logoImg.classList.add('hidden'); logoIcon.classList.remove('hidden') }
 }
 
-// ── Logo Upload (drag-and-drop / file picker) ─────────────────────────────────
+// -- Logo Upload (drag-and-drop / file picker) ---------------------------------
 
 function handleLogoDrop(event) {
   event.preventDefault()
@@ -2767,7 +2767,7 @@ function _processLogoFile(file) {
     showAdminToast('Please upload a PNG, JPG, SVG or WebP image', 'error'); return
   }
   if (file.size > 512 * 1024) {
-    showAdminToast('Image too large — max 500 KB', 'error'); return
+    showAdminToast('Image too large -- max 500 KB', 'error'); return
   }
 
   const reader = new FileReader()
@@ -2785,7 +2785,7 @@ function _processLogoFile(file) {
     // Update the settings header preview
     previewSettingsLogo(dataUrl)
 
-    // Upload to backend — stores as base64 data URL in tenants.logo_url
+    // Upload to backend -- stores as base64 data URL in tenants.logo_url
     try {
       const res = await fetch('/api/tenant/logo', {
         method: 'POST',
@@ -2797,17 +2797,17 @@ function _processLogoFile(file) {
         // Store in hidden field for saveSettings reference
         const hiddenInput = document.getElementById('s-logo-url')
         if (hiddenInput) hiddenInput.value = result.logo_url || dataUrl
-        showAdminToast('Logo uploaded! ✅ Save Settings to apply.', 'success')
+        showAdminToast('Logo uploaded! [OK] Save Settings to apply.', 'success')
         // Apply branding immediately across the dashboard
         applyTenantBranding(result.logo_url || dataUrl, null)
       } else {
-        showAdminToast('Logo upload failed — try again', 'error')
+        showAdminToast('Logo upload failed -- try again', 'error')
       }
     } catch (err) {
       // Optimistic: still store locally so saveSettings can push it
       const hiddenInput = document.getElementById('s-logo-url')
       if (hiddenInput) hiddenInput.value = dataUrl
-      showAdminToast('Logo ready — will save with Settings', 'success')
+      showAdminToast('Logo ready -- will save with Settings', 'success')
     }
   }
   reader.readAsDataURL(file)
@@ -2827,11 +2827,11 @@ function clearLogoUpload() {
   previewSettingsLogo('')
 }
 
-// ── Apply Tenant Branding to Navbar + Sidebar ─────────────────────────────────
-// Call with (logoUrl, companyName) — pass null to skip either update
+// -- Apply Tenant Branding to Navbar + Sidebar ---------------------------------
+// Call with (logoUrl, companyName) -- pass null to skip either update
 
 function applyTenantBranding(logoUrl, companyName) {
-  // ── Navbar ────────────────────────────────────────────────────────────────
+  // -- Navbar ----------------------------------------------------------------
   const navLogoWrap     = document.getElementById('navbar-logo-wrap')
   const navLogoImg      = document.getElementById('navbar-logo-img')
   const navLogoFallback = document.getElementById('navbar-logo-fallback')
@@ -2858,7 +2858,7 @@ function applyTenantBranding(logoUrl, companyName) {
     }
   }
 
-  // ── Sidebar ───────────────────────────────────────────────────────────────
+  // -- Sidebar ---------------------------------------------------------------
   const sideLogoImg      = document.getElementById('sidebar-logo-img')
   const sideLogoInitials = document.getElementById('sidebar-logo-initials')
   const sideName         = document.getElementById('sidebar-company-name')
@@ -2890,7 +2890,7 @@ function applyTenantBranding(logoUrl, companyName) {
   }
 }
 
-// ── Export Tab ────────────────────────────────────────────────────────────────
+// -- Export Tab ----------------------------------------------------------------
 function getMonWeekStart(offsetWeeks = 0) {
   const d = new Date()
   const day = d.getDay()
@@ -2907,14 +2907,14 @@ function setExportWeek(offset) {
 
 function updateExportWeekLabel() {
   const dateVal = document.getElementById('export-week-date').value
-  if (!dateVal) { document.getElementById('export-week-label').textContent = '—'; return }
+  if (!dateVal) { document.getElementById('export-week-label').textContent = '--'; return }
   const d = new Date(dateVal + 'T12:00:00')
   const day = d.getDay()
   const diffToMon = day === 0 ? -6 : 1 - day
   const mon = new Date(d); mon.setDate(d.getDate() + diffToMon)
   const fri = new Date(mon); fri.setDate(mon.getDate() + 4)
   const fmt = dt => dt.toLocaleDateString('en-CA', { weekday:'short', month:'short', day:'numeric' })
-  document.getElementById('export-week-label').textContent = fmt(mon) + ' → ' + fmt(fri)
+  document.getElementById('export-week-label').textContent = fmt(mon) + ' -> ' + fmt(fri)
 }
 
 let _exportInited = false
@@ -2936,7 +2936,7 @@ async function initExportTab() {
       workers.forEach(w => {
         const opt = document.createElement('option')
         opt.value = w.id
-        opt.textContent = `👤 ${w.name} ($${(w.hourly_rate||0).toFixed(2)}/hr)`
+        opt.textContent = `? ${w.name} ($${(w.hourly_rate||0).toFixed(2)}/hr)`
         sel.appendChild(opt)
       })
       sel.addEventListener('change', () => {
@@ -2947,7 +2947,7 @@ async function initExportTab() {
           badge.className = 'px-3 py-1.5 bg-indigo-50 text-indigo-700 text-xs font-bold rounded-full border border-indigo-200'
         } else {
           const opt = sel.options[sel.selectedIndex]
-          badge.textContent = opt.textContent.replace('👤 ','')
+          badge.textContent = opt.textContent.replace('? ','')
           badge.className = 'px-3 py-1.5 bg-green-50 text-green-700 text-xs font-bold rounded-full border border-green-200'
         }
       })
@@ -2996,7 +2996,7 @@ async function emailWeeklyReport() {
 
   const workerSel = document.getElementById('export-worker-select')
   const workerId  = workerSel ? workerSel.value : ''
-  const workerName = workerId ? workerSel.options[workerSel.selectedIndex].textContent.replace('👤 ','').split(' (')[0] : 'All Staff'
+  const workerName = workerId ? workerSel.options[workerSel.selectedIndex].textContent.replace('? ','').split(' (')[0] : 'All Staff'
 
   const btn = document.getElementById('email-report-btn')
   btn.disabled = true
@@ -3018,7 +3018,7 @@ async function emailWeeklyReport() {
     if (data.success) {
       statusEl.className = 'rounded-xl p-4 mb-4 text-sm bg-green-50 border border-green-200 text-green-800'
       statusEl.innerHTML = `<i class="fas fa-check-circle mr-2"></i><strong>Report sent for ${workerName}!</strong> ${data.message}`
-      showAdminToast(`✅ Report sent — ${workerName}`, 'success')
+      showAdminToast(`[OK] Report sent -- ${workerName}`, 'success')
       document.getElementById('last-email-sent-info').textContent = 'Last sent: ' + new Date().toLocaleString()
     } else {
       statusEl.className = 'rounded-xl p-4 mb-4 text-sm bg-amber-50 border border-amber-200 text-amber-800'
@@ -3037,7 +3037,7 @@ async function emailWeeklyReport() {
   btn.innerHTML = '<i class="fas fa-paper-plane mr-1"></i>Send Email'
 }
 
-// ── GPS Override Management ───────────────────────────────────────────────────
+// -- GPS Override Management ---------------------------------------------------
 let overrideHistoryVisible = false
 
 async function loadOverrides() {
@@ -3104,7 +3104,7 @@ async function loadOverrides() {
           <span class="font-medium text-gray-700">Task: </span>${r.job_description || 'Not specified'}
         </div>
         <div class="mb-3">
-          <input type="text" id="override-note-${r.id}" placeholder="Admin note (optional — e.g. verified by phone call)"
+          <input type="text" id="override-note-${r.id}" placeholder="Admin note (optional -- e.g. verified by phone call)"
             class="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"/>
         </div>
         <div class="flex gap-3">
@@ -3139,7 +3139,7 @@ async function approveOverride(id) {
     })
     const data = await res.json()
     if (data.success) {
-      showAdminToast('Override approved — worker clocked in', 'success')
+      showAdminToast('Override approved -- worker clocked in', 'success')
       loadOverrides()
       loadLive()
       loadStats()
@@ -3209,7 +3209,7 @@ async function resendNotify(id) {
     } else if (data.errors && data.errors.length > 0) {
       showAdminToast('Notify failed: ' + data.errors[0], 'error')
     } else {
-      showAdminToast('No channels configured — contact your ClockInProof administrator', 'info')
+      showAdminToast('No channels configured -- contact your ClockInProof administrator', 'info')
     }
   } catch(e) { showAdminToast('Connection error', 'error') }
 }
@@ -3226,7 +3226,7 @@ setInterval(async () => {
   } catch(e) {}
 }, 60000)
 
-// ── Payroll Totals Tab ────────────────────────────────────────────────────────
+// -- Payroll Totals Tab --------------------------------------------------------
 async function loadPayrollTab() {
   const listEl = document.getElementById('payroll-workers-list')
   const ptPayroll = document.getElementById('pt-total-payroll')
@@ -3274,7 +3274,7 @@ async function loadPayrollTab() {
             </div>
             <div class="min-w-0">
               <p class="font-semibold text-gray-800 truncate">${w.name}</p>
-              <p class="text-xs text-gray-400">${w.phone} · ${w.sessions.length} shift${w.sessions.length !== 1 ? 's' : ''}</p>
+              <p class="text-xs text-gray-400">${w.phone} . ${w.sessions.length} shift${w.sessions.length !== 1 ? 's' : ''}</p>
             </div>
           </div>
           <div class="text-right flex-shrink-0">
@@ -3299,7 +3299,7 @@ async function loadPayrollTab() {
   }
 }
 
-// ── Accountant Weekly Summary Tab ─────────────────────────────────────────────
+// -- Accountant Weekly Summary Tab ---------------------------------------------
 let acctWeekOffset = 0
 
 function getMondayOf(offset = 0) {
@@ -3319,7 +3319,7 @@ function setAcctWeek(offset) {
   const dateInput = document.getElementById('acct-week-date')
   const label     = document.getElementById('acct-week-label')
   if (dateInput) dateInput.value = monday.toISOString().split('T')[0]
-  if (label) label.textContent = fmt(monday) + ' – ' + fmt(friday)
+  if (label) label.textContent = fmt(monday) + ' - ' + fmt(friday)
 }
 
 function initAcctTab() {
@@ -3345,7 +3345,7 @@ async function loadAcctPreview() {
 
     previewEl.innerHTML = `
       <div class="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4">
-        <p class="text-sm font-semibold text-amber-800"><i class="fas fa-info-circle mr-1"></i>Preview: ${workers.length} worker${workers.length !== 1 ? 's' : ''} — ${data.label || ''}</p>
+        <p class="text-sm font-semibold text-amber-800"><i class="fas fa-info-circle mr-1"></i>Preview: ${workers.length} worker${workers.length !== 1 ? 's' : ''} -- ${data.label || ''}</p>
       </div>
     ` + workers.map(w => `
       <div class="bg-white border border-gray-100 rounded-2xl p-4 mb-3">
@@ -3368,8 +3368,8 @@ async function loadAcctPreview() {
             const cout = s.clock_out_time ? new Date(s.clock_out_time) : null
             return `<div class="flex items-center justify-between text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5">
               <span><i class="fas fa-calendar mr-1 text-gray-400"></i>${cin.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})}</span>
-              <span>${cin.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} → ${cout ? cout.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : 'Active'}</span>
-              <span class="font-semibold text-gray-700">${(s.total_hours||0).toFixed(1)}h · $${(s.earnings||0).toFixed(2)}</span>
+              <span>${cin.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} -> ${cout ? cout.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : 'Active'}</span>
+              <span class="font-semibold text-gray-700">${(s.total_hours||0).toFixed(1)}h . $${(s.earnings||0).toFixed(2)}</span>
             </div>`
           }).join('')}
         </div>
@@ -3402,7 +3402,7 @@ async function sendAcctSummary() {
     const data = await res.json()
     if (data.success) {
       if (statusEl) { statusEl.className = 'mt-4 rounded-xl p-4 text-sm bg-green-50 border border-green-200 text-green-700'; statusEl.innerHTML = `<i class="fas fa-check-circle mr-2"></i><strong>Sent!</strong> Weekly summary emailed to ${emailEl.value}` }
-      showAdminToast('✅ Weekly summary sent to accountant!', 'success')
+      showAdminToast('[OK] Weekly summary sent to accountant!', 'success')
     } else {
       if (statusEl) { statusEl.className = 'mt-4 rounded-xl p-4 text-sm bg-red-50 border border-red-200 text-red-700'; statusEl.innerHTML = '<i class="fas fa-times-circle mr-2"></i>' + (data.error || 'Send failed') }
       showAdminToast(data.error || 'Send failed', 'error')
@@ -3416,7 +3416,7 @@ async function sendAcctSummary() {
   }
 }
 
-// ─── QUICKBOOKS PAYROLL EXPORT ────────────────────────────────────────────────
+// --- QUICKBOOKS PAYROLL EXPORT ------------------------------------------------
 
 let qbPayPeriods = []
 
@@ -3442,7 +3442,7 @@ async function initQbTab() {
     } else if (current) {
       setQbPeriod(current.start, current.end)
     } else {
-      // No past or current pay periods — default to this month
+      // No past or current pay periods -- default to this month
       setQbCustomRange('this_month')
     }
   } catch(e) {
@@ -3467,7 +3467,7 @@ function renderQbPeriodList() {
         : 'bg-gray-50 border-gray-200 text-gray-400 hover:bg-gray-100 cursor-pointer'
     return `<button onclick="setQbPeriod('${p.start}','${p.end}')"
       class="px-3 py-1.5 rounded-xl border text-xs font-medium transition-all ${cls}">
-      ${isCurrent ? '▶ ' : isFuture ? '⏳ ' : ''}${p.label}
+      ${isCurrent ? '? ' : isFuture ? '[wait] ' : ''}${p.label}
     </button>`
   }).join('')
 }
@@ -3480,7 +3480,7 @@ function setQbPeriod(start, end) {
   const label = document.getElementById('qb-period-label')
   if (label) {
     const fmtDate = d => new Date(d + 'T00:00:00').toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
-    label.textContent = `${fmtDate(start)} → ${fmtDate(end)}`
+    label.textContent = `${fmtDate(start)} -> ${fmtDate(end)}`
   }
   loadQbPreview()
 }
@@ -3557,7 +3557,7 @@ async function loadQbPreview() {
             </div>
             <div class="flex-1">
               <p class="font-semibold text-gray-800 text-sm">${w.worker_name}</p>
-              <p class="text-xs text-gray-400">${(w.sessions||[]).length} shifts · ${(w.total_hours||0).toFixed(1)}h</p>
+              <p class="text-xs text-gray-400">${(w.sessions||[]).length} shifts . ${(w.total_hours||0).toFixed(1)}h</p>
             </div>
             <div class="text-right">
               <p class="font-bold text-green-700">$${(w.total_earnings||0).toFixed(2)}</p>
@@ -3592,7 +3592,7 @@ function downloadQbFile(type) {
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
-  showAdminToast(`✅ ${type.toUpperCase()} file downloading...`, 'success')
+  showAdminToast(`[OK] ${type.toUpperCase()} file downloading...`, 'success')
 }
 
 async function sendQbToAccountant() {
@@ -3624,7 +3624,7 @@ async function sendQbToAccountant() {
         statusEl.innerHTML = `<i class="fas fa-check-circle mr-2"></i><strong>Sent!</strong> Payroll report emailed to ${data.sent_to?.join(', ')}` +
           (data.formats_attached?.length ? `<br><span class="text-xs">Attached: ${data.formats_attached.join(', ')}</span>` : '')
       }
-      showAdminToast('✅ Payroll report sent to accountant!', 'success')
+      showAdminToast('[OK] Payroll report sent to accountant!', 'success')
 
       // Auto-save accountant email to settings
       if (currentSettings) {
@@ -3649,7 +3649,7 @@ async function sendQbToAccountant() {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 // Helper: set an input value by id (avoids single-quote issues in onclick attrs)
 function setVal(id, val) {
@@ -3681,9 +3681,9 @@ function showAdminToast(msg, type = 'info') {
   setTimeout(() => t.classList.add('hidden'), 3500)
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// FEATURE 1 — SESSION TIME EDITOR
-// ═══════════════════════════════════════════════════════════════════════════════
+// -------------------------------------------------------------------------------
+// FEATURE 1 -- SESSION TIME EDITOR
+// -------------------------------------------------------------------------------
 
 let editingSessionId = null
 let editingSessionData = null
@@ -3729,10 +3729,10 @@ function openSessionEditModal(sessionId) {
           const h = Math.round(((new Date(outVal) - new Date(inVal)) / 3600000) * 100) / 100
           const rate = sess.hourly_rate || 0
           if (h > 0) {
-            el.textContent = `New total: ${h.toFixed(2)}h → $${(h * rate).toFixed(2)} earnings`
+            el.textContent = `New total: ${h.toFixed(2)}h -> $${(h * rate).toFixed(2)} earnings`
             el.classList.remove('hidden')
           } else {
-            el.textContent = '⚠ Clock-out must be after clock-in'
+            el.textContent = '[!] Clock-out must be after clock-in'
             el.classList.remove('hidden')
           }
         } else {
@@ -3783,7 +3783,7 @@ async function confirmSessionEdit() {
     })
     const data = await res.json()
     if (data.success) {
-      showAdminToast(`✅ Session updated — ${data.new_hours}h / $${data.new_earnings.toFixed(2)}`, 'success')
+      showAdminToast(`[OK] Session updated -- ${data.new_hours}h / $${data.new_earnings.toFixed(2)}`, 'success')
       closeSessionEditModal()
       loadSessions()
       loadStats()
@@ -3799,9 +3799,9 @@ async function confirmSessionEdit() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// FEATURE 2 — JOB SITES MANAGER
-// ═══════════════════════════════════════════════════════════════════════════════
+// -------------------------------------------------------------------------------
+// FEATURE 2 -- JOB SITES MANAGER
+// -------------------------------------------------------------------------------
 
 let editingSiteId = null
 let _lastJobSites = []  // cached sites for expand/detail lookups
@@ -3893,7 +3893,7 @@ async function loadJobSites() {
         </div>
         <!-- Expandable detail panel (Encircle sites only) -->
         ${isEncircle ? `<div id="site-detail-${s.id}" class="hidden border-t border-gray-100 bg-gray-50 px-4 py-3">
-          <p class="text-xs text-gray-400 italic text-center py-2"><i class="fas fa-spinner fa-spin mr-1"></i>Loading claim details…</p>
+          <p class="text-xs text-gray-400 italic text-center py-2"><i class="fas fa-spinner fa-spin mr-1"></i>Loading claim details...</p>
         </div>` : ''}
       </div>`
     }).join('')
@@ -3902,13 +3902,13 @@ async function loadJobSites() {
   }
 }
 
-// ── Mask sensitive string: show first char + ████ + last 2 ───────────────────
+// -- Mask sensitive string: show first char + ???? + last 2 -------------------
 function maskSensitive(val) {
-  if (!val || val.length < 4) return val || '—'
-  return val[0] + '••••••' + val.slice(-2)
+  if (!val || val.length < 4) return val || '--'
+  return val[0] + '------' + val.slice(-2)
 }
 
-// ── Toggle expand/collapse for Encircle job cards in Job Sites tab ────────────
+// -- Toggle expand/collapse for Encircle job cards in Job Sites tab ------------
 let _siteDetailCache = {}  // cache claim data so we don't re-fetch
 
 async function toggleSiteExpand(siteId, headerEl) {
@@ -3960,7 +3960,7 @@ function renderSiteDetailPanel(siteId, job) {
   if (!panel) return
 
   const typeColor = lossColor ? lossColor(job.type_of_loss) : 'bg-gray-100 text-gray-600'
-  const typeLabel = (job.type_of_loss || '—').replace('type_of_loss_','').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())
+  const typeLabel = (job.type_of_loss || '--').replace('type_of_loss_','').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())
   const mapsUrl   = `https://maps.google.com/?q=${encodeURIComponent(job.full_address || '')}`
   const phoneRaw  = job.policyholder_phone || ''
   const phoneClean = phoneRaw.replace(/\D/g,'')
@@ -3984,14 +3984,14 @@ function renderSiteDetailPanel(siteId, job) {
     <!-- Read-only notice -->
     <div class="flex items-center gap-1.5 mb-3 text-[11px] text-sky-600 bg-sky-50 rounded-lg px-3 py-2">
       <i class="fas fa-lock text-[10px]"></i>
-      <span>Read-only — synced <strong>from</strong> Encircle. No changes sent back.</span>
+      <span>Read-only -- synced <strong>from</strong> Encircle. No changes sent back.</span>
     </div>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-xs pb-1">
       <!-- Policyholder -->
       <div class="sm:col-span-2 flex items-start justify-between gap-3">
         <div>
           <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Policyholder</span>
-          <p class="mt-0.5 font-bold text-gray-800 text-sm">${escHtml(job.policyholder_name || '—')}</p>
+          <p class="mt-0.5 font-bold text-gray-800 text-sm">${escHtml(job.policyholder_name || '--')}</p>
         </div>
         <div class="flex items-center gap-2 mt-1">
           <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${typeColor}">${escHtml(typeLabel)}</span>
@@ -4003,7 +4003,7 @@ function renderSiteDetailPanel(siteId, job) {
         <span class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Address</span>
         <div class="mt-0.5">
           <a href="${mapsUrl}" target="_blank" class="text-gray-700 hover:text-sky-600 hover:underline inline-flex items-center gap-1">
-            <i class="fas fa-map-marked-alt text-sky-400 text-[10px]"></i>${escHtml(job.full_address || '—')}
+            <i class="fas fa-map-marked-alt text-sky-400 text-[10px]"></i>${escHtml(job.full_address || '--')}
           </a>
         </div>
       </div>
@@ -4079,7 +4079,7 @@ function revealField(btn, val) {
     <button onclick="this.parentElement.innerHTML='${maskSensitive(val).replace(/'/g,"&#39;")} <button onclick=\\'revealField(this,\\&quot;${val.replace(/"/g,'&quot;')}\\&quot;)\\' class=\\'text-[9px] text-sky-500 hover:text-sky-700 border border-sky-200 rounded px-1 py-0.5 ml-1\\'>Show</button>'" class="text-[9px] text-gray-400 border border-gray-200 rounded px-1 py-0.5 ml-1">Hide</button>`
 }
 
-// ── Full-screen Encircle site detail / edit modal ─────────────────────────────
+// -- Full-screen Encircle site detail / edit modal -----------------------------
 function openEncircleSiteDetail(siteId, encircleClaimId) {
   // Try cache first, else fetch
   const cached = _siteDetailCache[siteId]
@@ -4153,7 +4153,7 @@ function _showEncircleDetailModal(siteId, job) {
     <!-- Read-only banner -->
     <div class="bg-sky-50 border-b border-sky-100 px-6 py-2.5 flex items-center gap-2">
       <i class="fas fa-lock text-sky-400 text-xs"></i>
-      <span class="text-xs text-sky-700 font-medium">Read-only — this data is synced <strong>from</strong> Encircle. No changes are sent back.</span>
+      <span class="text-xs text-sky-700 font-medium">Read-only -- this data is synced <strong>from</strong> Encircle. No changes are sent back.</span>
     </div>
 
     <!-- Modal Body -->
@@ -4167,7 +4167,7 @@ function _showEncircleDetailModal(siteId, job) {
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div class="bg-gray-50 rounded-xl p-3">
             <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Full Name</p>
-            <p class="text-sm font-bold text-gray-800">${escHtml(job.policyholder_name || '—')}</p>
+            <p class="text-sm font-bold text-gray-800">${escHtml(job.policyholder_name || '--')}</p>
           </div>
           <div class="bg-gray-50 rounded-xl p-3">
             <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Phone</p>
@@ -4184,7 +4184,7 @@ function _showEncircleDetailModal(siteId, job) {
           <div class="bg-gray-50 rounded-xl p-3 sm:col-span-2">
             <p class="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-1">Property Address</p>
             <a href="${mapsUrl}" target="_blank" class="text-sm text-gray-800 hover:text-sky-600 hover:underline inline-flex items-center gap-2">
-              <i class="fas fa-map-marked-alt text-sky-400"></i>${escHtml(job.full_address || '—')}
+              <i class="fas fa-map-marked-alt text-sky-400"></i>${escHtml(job.full_address || '--')}
             </a>
           </div>
         </div>
@@ -4259,12 +4259,12 @@ function _showEncircleDetailModal(siteId, job) {
       <section>
         <h3 class="text-xs font-bold text-emerald-700 uppercase tracking-wider mb-3 flex items-center gap-2">
           <i class="fas fa-map-marker-alt"></i> ClockIn Geofence
-          <span class="text-[9px] text-gray-400 font-normal normal-case">Local only – never sent to Encircle</span>
+          <span class="text-[9px] text-gray-400 font-normal normal-case">Local only - never sent to Encircle</span>
         </h3>
         <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-4 space-y-3">
           <div class="flex items-start gap-2 text-xs text-emerald-700">
             <i class="fas fa-info-circle mt-0.5 flex-shrink-0"></i>
-            <span>Workers clock in at this address. You can rename the display label below — this only affects how it appears in ClockIn, nothing is sent to Encircle.</span>
+            <span>Workers clock in at this address. You can rename the display label below -- this only affects how it appears in ClockIn, nothing is sent to Encircle.</span>
           </div>
           <div>
             <label class="text-xs font-semibold text-gray-600 block mb-1">Display Name for Workers</label>
@@ -4279,7 +4279,7 @@ function _showEncircleDetailModal(siteId, job) {
           </div>
           <div class="flex items-center gap-2 text-[11px] text-gray-400">
             <i class="fas fa-circle-notch text-emerald-400"></i>
-            <span>50 m GPS geofence radius · Address auto-synced from Encircle</span>
+            <span>50 m GPS geofence radius . Address auto-synced from Encircle</span>
           </div>
         </div>
       </section>
@@ -4289,7 +4289,7 @@ function _showEncircleDetailModal(siteId, job) {
     <div class="border-t border-gray-100 px-6 py-4 flex items-center justify-between bg-gray-50">
       <div class="flex items-center gap-1.5 text-xs text-gray-400">
         <i class="fas fa-sync-alt text-[10px]"></i>
-        <span>One-way sync from Encircle → ClockIn · ${new Date().toLocaleDateString()}</span>
+        <span>One-way sync from Encircle -> ClockIn . ${new Date().toLocaleDateString()}</span>
       </div>
       <button onclick="closeEncircleDetailModal()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors">
         Close
@@ -4334,7 +4334,7 @@ async function saveEncircleSiteName(siteId) {
       body: JSON.stringify({ name: newName })
     })
     if (!res.ok) throw new Error('Save failed')
-    showAdminToast('✅ Site name updated', 'success')
+    showAdminToast('[OK] Site name updated', 'success')
     closeEncircleDetailModal()
     _siteDetailCache = {}  // clear cache so names refresh
     loadJobSites()
@@ -4348,11 +4348,11 @@ function openAddSiteModal() {
 }
 
 function openEditSiteModal(id, name, address) {
-  // Kept for backward compat — route to full-screen editor
+  // Kept for backward compat -- route to full-screen editor
   openEditSiteFullScreen(id, typeof name === 'string' ? decodeURIComponent(name) : name, typeof address === 'string' ? decodeURIComponent(address) : address)
 }
 
-// ── Full-screen Edit panel for manual (non-Encircle) job sites ────────────────
+// -- Full-screen Edit panel for manual (non-Encircle) job sites ----------------
 function openEditSiteFullScreen(id, name, address) {
   editingSiteId = id
   let modal = document.getElementById('site-edit-fs-modal')
@@ -4405,7 +4405,7 @@ function openEditSiteFullScreen(id, name, address) {
           <i class="fas fa-map-marked-alt text-sky-500 mr-1.5"></i>Address <span class="text-red-500">*</span>
         </label>
         <input id="fs-site-address" type="text"
-          placeholder="Start typing an address…"
+          placeholder="Start typing an address..."
           value="${escHtml(address || '')}"
           autocomplete="off"
           class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm transition-colors"
@@ -4437,7 +4437,7 @@ function openEditSiteFullScreen(id, name, address) {
       <div class="bg-sky-50 border border-sky-200 rounded-xl px-4 py-3 flex items-start gap-3">
         <i class="fas fa-circle-notch text-sky-400 mt-0.5"></i>
         <div>
-          <p class="text-xs font-semibold text-sky-700">GPS Geofence – 50 m radius</p>
+          <p class="text-xs font-semibold text-sky-700">GPS Geofence - 50 m radius</p>
           <p class="text-xs text-sky-600 mt-0.5">Workers must be within 50 metres of this address to clock in.</p>
         </div>
       </div>
@@ -4513,7 +4513,7 @@ async function saveSiteFS() {
   if (!address) { showAdminToast('Address is required', 'error'); return }
 
   const btn = document.getElementById('fs-site-save-btn')
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…' }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...' }
 
   try {
     const url    = editingSiteId ? `/api/job-sites/${editingSiteId}` : '/api/job-sites'
@@ -4524,7 +4524,7 @@ async function saveSiteFS() {
     })
     const data = await res.json()
     if (data.success || data.id) {
-      showAdminToast(editingSiteId ? '✅ Site updated' : '✅ Site added', 'success')
+      showAdminToast(editingSiteId ? '[OK] Site updated' : '[OK] Site added', 'success')
       closeSiteEditFSModal()
       loadJobSites()
     } else {
@@ -4562,7 +4562,7 @@ async function saveSite() {
     })
     const data = await res.json()
     if (data.success || data.id) {
-      showAdminToast(editingSiteId ? '✅ Site updated' : '✅ Site added', 'success')
+      showAdminToast(editingSiteId ? '[OK] Site updated' : '[OK] Site added', 'success')
       closeSiteModal()
       loadJobSites()
     } else {
@@ -4590,9 +4590,9 @@ async function deleteSite(id, name) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// FEATURE 3 — ISSUE REPORTS (DISPUTES)
-// ═══════════════════════════════════════════════════════════════════════════════
+// -------------------------------------------------------------------------------
+// FEATURE 3 -- ISSUE REPORTS (DISPUTES)
+// -------------------------------------------------------------------------------
 
 async function loadDisputes() {
   try {
@@ -4622,9 +4622,9 @@ async function loadDisputes() {
     }
 
     listEl.innerHTML = disputes.map(d => {
-      const sessionDate = d.clock_in_time ? new Date(d.clock_in_time).toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'}) : '—'
-      const hours   = d.total_hours  ? d.total_hours.toFixed(2) + 'h'   : '—'
-      const earn    = d.earnings     ? '$' + d.earnings.toFixed(2) : '—'
+      const sessionDate = d.clock_in_time ? new Date(d.clock_in_time).toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'}) : '--'
+      const hours   = d.total_hours  ? d.total_hours.toFixed(2) + 'h'   : '--'
+      const earn    = d.earnings     ? '$' + d.earnings.toFixed(2) : '--'
       return `
       <div class="border-2 border-rose-200 rounded-2xl p-5 bg-rose-50" id="dispute-card-${d.id}">
         <div class="flex items-start justify-between gap-3 mb-3">
@@ -4715,7 +4715,7 @@ async function loadDisputeHistory() {
 }
 
 
-// ── Admin Job Site Address Autocomplete (Photon — typo tolerant) ──────────────
+// -- Admin Job Site Address Autocomplete (Photon -- typo tolerant) --------------
 let siteAcTimer = null
 
 async function filterSiteAddressSuggestions(val) {
@@ -4729,7 +4729,7 @@ async function filterSiteAddressSuggestions(val) {
 
   siteAcTimer = setTimeout(async () => {
     try {
-      // Photon geocoder — typo-tolerant, fast, biased by lat/lon to local area
+      // Photon geocoder -- typo-tolerant, fast, biased by lat/lon to local area
       const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(val)}&limit=8&lang=en&lat=${_adminSearchLat}&lon=${_adminSearchLng}`
       const res  = await fetch(url)
       const data = await res.json()
@@ -4784,15 +4784,15 @@ function selectSiteAddress(address, lat, lng) {
   if (box) box.classList.add('hidden')
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 // QUICKBOOKS OAUTH INTEGRATION
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 let qbStatus = null  // cache: {connected, token_valid, company_name, ...}
 let qbEmployees = []  // QB employee list
 let qbWorkers = []   // Our workers with mapping status
 
-// ── Update status badges in the Settings tab QB section ──────────────────
+// -- Update status badges in the Settings tab QB section ------------------
 async function updateQbSettingsStatus() {
   try {
     const res = await fetch('/api/qb/status')
@@ -4807,21 +4807,21 @@ async function updateQbSettingsStatus() {
 
     if (qbStatus.connected && qbStatus.token_valid) {
       if (dot) dot.className = 'w-3 h-3 rounded-full bg-green-500 flex-shrink-0'
-      if (text) text.textContent = '✅ Connected to QuickBooks'
+      if (text) text.textContent = '[OK] Connected to QuickBooks'
       if (company) company.textContent = qbStatus.company_name || `Realm: ${qbStatus.realm_id}`
       if (connectBtn) connectBtn.style.display = 'none'
       if (disconnectBtn) disconnectBtn.style.display = ''
-      if (badge) { badge.textContent = '●'; badge.className = 'ml-auto text-[10px] text-white font-bold bg-green-500 px-1.5 py-0.5 rounded-full' }
+      if (badge) { badge.textContent = '?'; badge.className = 'ml-auto text-[10px] text-white font-bold bg-green-500 px-1.5 py-0.5 rounded-full' }
     } else if (qbStatus.connected && !qbStatus.token_valid) {
       if (dot) dot.className = 'w-3 h-3 rounded-full bg-yellow-500 flex-shrink-0'
-      if (text) text.textContent = '⚠️ Token expired — reconnect needed'
+      if (text) text.textContent = '[!]? Token expired -- reconnect needed'
       if (company) company.textContent = qbStatus.company_name || ''
       if (connectBtn) { connectBtn.style.display = ''; connectBtn.textContent = 'Reconnect' }
       if (disconnectBtn) disconnectBtn.style.display = 'none'
       if (badge) { badge.textContent = '!'; badge.className = 'ml-auto text-[10px] text-white font-bold bg-yellow-500 px-1.5 py-0.5 rounded-full' }
     } else {
       if (dot) dot.className = 'w-3 h-3 rounded-full bg-gray-300 flex-shrink-0'
-      if (text) text.textContent = qbStatus.has_client_id ? 'Not connected — click Connect to authorize' : 'Enter Client ID & Secret in Settings, then click Connect'
+      if (text) text.textContent = qbStatus.has_client_id ? 'Not connected -- click Connect to authorize' : 'Enter Client ID & Secret in Settings, then click Connect'
       if (company) company.textContent = ''
       if (connectBtn) connectBtn.style.display = ''
       if (disconnectBtn) disconnectBtn.style.display = 'none'
@@ -4830,12 +4830,12 @@ async function updateQbSettingsStatus() {
   } catch (e) { console.warn('QB status check failed:', e) }
 }
 
-// ── Connect: open OAuth popup ─────────────────────────────────────────────
+// -- Connect: open OAuth popup ---------------------------------------------
 function qbConnect() {
   const popup = window.open('/api/qb/connect', 'QuickBooks Connect',
     'width=600,height=700,scrollbars=yes,resizable=yes')
   if (!popup) {
-    showAdminToast('Popup blocked — allow popups for this site then try again', 'error')
+    showAdminToast('Popup blocked -- allow popups for this site then try again', 'error')
     return
   }
   // Listen for callback message
@@ -4843,7 +4843,7 @@ function qbConnect() {
     if (e.data?.type !== 'qb_oauth') return
     window.removeEventListener('message', handler)
     if (e.data.success) {
-      showAdminToast('✅ QuickBooks connected successfully!', 'success')
+      showAdminToast('[OK] QuickBooks connected successfully!', 'success')
       await updateQbSettingsStatus()
       if (document.getElementById('tab-quickbooks')?.classList.contains('block')) {
         initQbTabFull()
@@ -4855,7 +4855,7 @@ function qbConnect() {
   window.addEventListener('message', handler)
 }
 
-// ── Disconnect ────────────────────────────────────────────────────────────
+// -- Disconnect ------------------------------------------------------------
 async function qbDisconnect() {
   if (!confirm('Disconnect QuickBooks? Saved tokens will be cleared. Your QB data stays intact.')) return
   try {
@@ -4870,7 +4870,7 @@ async function qbDisconnect() {
   } catch (e) { showAdminToast('Disconnect error: ' + e.message, 'error') }
 }
 
-// ── Full QB tab initialization ────────────────────────────────────────────
+// -- Full QB tab initialization --------------------------------------------
 async function initQbTabFull() {
   try {
     const res = await fetch('/api/qb/status')
@@ -4893,7 +4893,7 @@ async function initQbTabFull() {
     // Connected & healthy
     if (statusCard) { statusCard.className = 'rounded-2xl border-2 border-green-200 bg-green-50 p-5 mb-6 flex items-center gap-4' }
     if (statusIcon) statusIcon.innerHTML = '<i class="fas fa-check-circle text-green-600"></i>'
-    if (statusTitle) statusTitle.textContent = '✅ Connected to QuickBooks'
+    if (statusTitle) statusTitle.textContent = '[OK] Connected to QuickBooks'
     if (statusSub) statusSub.textContent = qbStatus.company_name ? `Company: ${qbStatus.company_name}` : `Realm ID: ${qbStatus.realm_id}`
     if (connectBtn) connectBtn.className = connectBtn.className.replace('hidden', '') + ' hidden'
     if (disconnectBtn) disconnectBtn.classList.remove('hidden')
@@ -4908,19 +4908,19 @@ async function initQbTabFull() {
   } else if (qbStatus.connected && !qbStatus.token_valid) {
     if (statusCard) { statusCard.className = 'rounded-2xl border-2 border-yellow-200 bg-yellow-50 p-5 mb-6 flex items-center gap-4' }
     if (statusIcon) statusIcon.innerHTML = '<i class="fas fa-exclamation-triangle text-yellow-500"></i>'
-    if (statusTitle) statusTitle.textContent = '⚠️ Token Expired'
+    if (statusTitle) statusTitle.textContent = '[!]? Token Expired'
     if (statusSub) statusSub.textContent = 'Your QuickBooks access token has expired. Please reconnect.'
-    if (connectBtn) { connectBtn.classList.remove('hidden'); connectBtn.textContent = '🔄 Reconnect to QuickBooks' }
+    if (connectBtn) { connectBtn.classList.remove('hidden'); connectBtn.textContent = '? Reconnect to QuickBooks' }
     if (disconnectBtn) disconnectBtn.classList.add('hidden')
     if (setupSteps) setupSteps.classList.add('hidden')
   } else {
     if (statusCard) { statusCard.className = 'rounded-2xl border-2 border-gray-200 bg-gray-50 p-5 mb-6 flex items-center gap-4' }
     if (statusIcon) statusIcon.innerHTML = '<i class="fas fa-unlink text-gray-400"></i>'
-    if (statusTitle) statusTitle.textContent = qbStatus.has_client_id ? 'Not connected — authorize ClockInProof in QuickBooks' : 'Setup Required — enter Client ID & Secret in Settings'
-    if (statusSub) statusSub.textContent = qbStatus.has_client_id ? 'Click Connect to open the QuickBooks authorization window' : 'Go to Settings → QuickBooks Direct Connect section'
+    if (statusTitle) statusTitle.textContent = qbStatus.has_client_id ? 'Not connected -- authorize ClockInProof in QuickBooks' : 'Setup Required -- enter Client ID & Secret in Settings'
+    if (statusSub) statusSub.textContent = qbStatus.has_client_id ? 'Click Connect to open the QuickBooks authorization window' : 'Go to Settings -> QuickBooks Direct Connect section'
     if (connectBtn) {
       connectBtn.classList.remove('hidden')
-      connectBtn.textContent = qbStatus.has_client_id ? '🔗 Connect to QuickBooks' : '⚙️ Go to Settings'
+      connectBtn.textContent = qbStatus.has_client_id ? '? Connect to QuickBooks' : '?? Go to Settings'
       if (!qbStatus.has_client_id) {
         connectBtn.onclick = () => showTab('settings')
       } else {
@@ -4935,11 +4935,11 @@ async function initQbTabFull() {
   }
 }
 
-// ── Load employee mapping ─────────────────────────────────────────────────
+// -- Load employee mapping -------------------------------------------------
 async function loadQbMapping() {
   const list = document.getElementById('qb-mapping-list')
   if (!list) return
-  list.innerHTML = '<p class="text-gray-400 text-sm text-center py-4"><i class="fas fa-spinner fa-spin mr-2"></i>Loading QB employees…</p>'
+  list.innerHTML = '<p class="text-gray-400 text-sm text-center py-4"><i class="fas fa-spinner fa-spin mr-2"></i>Loading QB employees...</p>'
 
   try {
     const [empRes, workerRes] = await Promise.all([
@@ -4993,7 +4993,7 @@ async function loadQbMapping() {
               <div class="flex items-center gap-2">
                 <select id="qb-emp-select-${w.id}"
                   class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-green-400 max-w-[200px]">
-                  <option value="">— Select QB employee —</option>
+                  <option value="">-- Select QB employee --</option>
                   ${empOptions}
                 </select>
                 <button onclick="qbMapWorker(${w.id})" 
@@ -5033,7 +5033,7 @@ async function qbMapWorker(workerId) {
     })
     const data = await res.json()
     if (data.success) {
-      showAdminToast(`✅ Mapped to ${empName}`, 'success')
+      showAdminToast(`[OK] Mapped to ${empName}`, 'success')
       loadQbMapping()
     } else {
       showAdminToast(data.error || 'Mapping failed', 'error')
@@ -5076,14 +5076,14 @@ async function qbAutoMap() {
     }
   }
   if (matched > 0) {
-    showAdminToast(`✅ Auto-matched ${matched} worker(s)`, 'success')
+    showAdminToast(`[OK] Auto-matched ${matched} worker(s)`, 'success')
     loadQbMapping()
   } else {
-    showAdminToast('No automatic matches found — please link manually', 'info')
+    showAdminToast('No automatic matches found -- please link manually', 'info')
   }
 }
 
-// ── Set sync date range ───────────────────────────────────────────────────
+// -- Set sync date range ---------------------------------------------------
 async function setQbSyncPeriod(type) {
   const startEl = document.getElementById('qb-sync-start')
   const endEl = document.getElementById('qb-sync-end')
@@ -5127,7 +5127,7 @@ async function setQbSyncPeriod(type) {
   }
 }
 
-// ── Run sync ──────────────────────────────────────────────────────────────
+// -- Run sync --------------------------------------------------------------
 async function runQbSync(dryRun) {
   const start = document.getElementById('qb-sync-start')?.value
   const end = document.getElementById('qb-sync-end')?.value
@@ -5138,7 +5138,7 @@ async function runQbSync(dryRun) {
 
   resultsEl.classList.remove('hidden')
   resultsEl.className = 'rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm'
-  resultsEl.innerHTML = `<p class="text-gray-500 text-center py-4"><i class="fas fa-spinner fa-spin mr-2"></i>${dryRun ? 'Running preview…' : 'Pushing to QuickBooks…'}</p>`
+  resultsEl.innerHTML = `<p class="text-gray-500 text-center py-4"><i class="fas fa-spinner fa-spin mr-2"></i>${dryRun ? 'Running preview...' : 'Pushing to QuickBooks...'}</p>`
 
   try {
     const res = await fetch('/api/qb/sync', {
@@ -5159,7 +5159,7 @@ async function runQbSync(dryRun) {
 
     let html = `
       <div class="flex items-center gap-2 mb-3">
-        <span class="text-lg">${dryRun ? '👁️' : (isSuccess ? '✅' : '⚠️')}</span>
+        <span class="text-lg">${dryRun ? '??' : (isSuccess ? '[OK]' : '[!]?')}</span>
         <span class="font-bold text-gray-800">${dryRun ? 'Preview Results' : (isSuccess ? 'Sync Complete!' : 'Sync Completed with Errors')}</span>
         <span class="ml-auto text-xs text-gray-500">${data.period}</span>
       </div>
@@ -5190,7 +5190,7 @@ async function runQbSync(dryRun) {
     if (data.results?.length > 0) {
       html += `<div class="space-y-1 max-h-48 overflow-y-auto mt-2">`
       data.results.forEach(r => {
-        const icon = r.status === 'success' ? '✅' : r.status === 'dry_run' ? '👁️' : r.status === 'skipped' ? '⏭️' : '❌'
+        const icon = r.status === 'success' ? '[OK]' : r.status === 'dry_run' ? '??' : r.status === 'skipped' ? '??' : '[X]'
         const color = r.status === 'success' ? 'text-green-700' : r.status === 'error' ? 'text-red-600' : 'text-gray-500'
         html += `<div class="flex items-center gap-2 text-xs ${color}">
           <span>${icon}</span>
@@ -5207,7 +5207,7 @@ async function runQbSync(dryRun) {
       html += `
         <div class="mt-3 p-3 bg-green-100 rounded-xl text-xs text-green-800">
           <i class="fas fa-info-circle mr-1"></i>
-          Hours are now in QuickBooks! Go to <strong>QuickBooks → Payroll → Run Payroll</strong> and the time will be pre-populated.
+          Hours are now in QuickBooks! Go to <strong>QuickBooks -> Payroll -> Run Payroll</strong> and the time will be pre-populated.
         </div>`
       loadQbSyncLog()
     }
@@ -5219,7 +5219,7 @@ async function runQbSync(dryRun) {
   }
 }
 
-// ── Sync history log ──────────────────────────────────────────────────────
+// -- Sync history log ------------------------------------------------------
 async function loadQbSyncLog() {
   const logEl = document.getElementById('qb-sync-log')
   if (!logEl) return
@@ -5237,10 +5237,10 @@ async function loadQbSyncLog() {
       const isOk = l.status === 'success'
       return `
         <div class="flex items-center gap-3 p-3 rounded-xl border ${isOk ? 'border-green-100 bg-green-50' : 'border-yellow-100 bg-yellow-50'}">
-          <span class="text-base">${isOk ? '✅' : '⚠️'}</span>
+          <span class="text-base">${isOk ? '[OK]' : '[!]?'}</span>
           <div class="flex-1 min-w-0">
-            <p class="text-xs font-semibold text-gray-700">${l.pay_period_start} → ${l.pay_period_end}</p>
-            <p class="text-xs text-gray-500">${l.worker_count} workers · ${l.time_activity_count} activities ${l.error_message ? '· ' + l.error_message : ''}</p>
+            <p class="text-xs font-semibold text-gray-700">${l.pay_period_start} -> ${l.pay_period_end}</p>
+            <p class="text-xs text-gray-500">${l.worker_count} workers . ${l.time_activity_count} activities ${l.error_message ? '. ' + l.error_message : ''}</p>
           </div>
           <span class="text-xs text-gray-400 flex-shrink-0">${dateStr}</span>
         </div>`
@@ -5250,7 +5250,7 @@ async function loadQbSyncLog() {
   }
 }
 
-// ── Boot: check QB status on page load ───────────────────────────────────
+// -- Boot: check QB status on page load -----------------------------------
 window.addEventListener('DOMContentLoaded', () => {
   setTimeout(updateQbSettingsStatus, 1500)
 
@@ -5282,9 +5282,9 @@ window.addEventListener('DOMContentLoaded', () => {
 })
 
 
-// ══════════════════════════════════════════════════════════════════════════════
-// ── DEVICE SECURITY (Admin Side) ──────────────────────────────────────────────
-// ══════════════════════════════════════════════════════════════════════════════
+// ------------------------------------------------------------------------------
+// -- DEVICE SECURITY (Admin Side) ----------------------------------------------
+// ------------------------------------------------------------------------------
 
 function populateDeviceStatus(worker) {
   const labelEl  = document.getElementById('ew-device-label')
@@ -5295,7 +5295,7 @@ function populateDeviceStatus(worker) {
   if (!labelEl) return
 
   if (worker.device_id && worker.device_consent_given) {
-    labelEl.textContent  = 'Device Locked ✓'
+    labelEl.textContent  = 'Device Locked [v]'
     subEl.textContent    = `Consent given ${worker.device_consent_at ? new Date(worker.device_consent_at + 'Z').toLocaleDateString() : ''}. Clock-ins restricted to registered phone.`
     iconBg.className     = 'w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 bg-green-100'
     iconEl.className     = 'fas fa-mobile-alt text-sm text-green-600'
@@ -5327,7 +5327,7 @@ async function adminResetWorkerDevice() {
     const res  = await fetch('/api/workers/' + id + '/reset-device', { method: 'POST' })
     const data = await res.json()
     if (data.success) {
-      showAdminToast('✅ Device lock cleared. ' + name + ' can register their new phone.', 'success')
+      showAdminToast('[OK] Device lock cleared. ' + name + ' can register their new phone.', 'success')
       // Update local worker object so status refreshes
       if (window._currentDrawerWorker) {
         window._currentDrawerWorker.device_id = null
@@ -5335,7 +5335,7 @@ async function adminResetWorkerDevice() {
         populateDeviceStatus(window._currentDrawerWorker)
       }
     } else {
-      showAdminToast('❌ ' + (data.error || 'Reset failed'), 'error')
+      showAdminToast('[X] ' + (data.error || 'Reset failed'), 'error')
     }
   } catch (e) {
     showAdminToast('Connection error', 'error')
@@ -5344,7 +5344,7 @@ async function adminResetWorkerDevice() {
   }
 }
 
-// ── Device Reset Requests panel (Workers tab notification badge) ──────────────
+// -- Device Reset Requests panel (Workers tab notification badge) --------------
 async function loadDeviceResetRequests() {
   const listEl = document.getElementById('device-reset-list')
   const banner = document.getElementById('device-reset-banner')
@@ -5386,7 +5386,7 @@ function renderDeviceResetRequests(requests) {
   if (banner) banner.classList.remove('hidden')
   el.innerHTML = pending.map(r => `
 <div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
-  <!-- Worker identity — name + phone clearly visible -->
+  <!-- Worker identity -- name + phone clearly visible -->
   <div class="flex items-start gap-3 mb-3">
     <div class="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0">
       <i class="fas fa-mobile-alt text-amber-600 text-lg"></i>
@@ -5417,7 +5417,7 @@ async function approveDeviceReset(id, name) {
   try {
     const d = await tktFetch('/api/device-reset-requests/' + id + '/approve', { method: 'POST' })
     if (d.success) {
-      showAdminToast('✅ Device reset approved for ' + name, 'success')
+      showAdminToast('[OK] Device reset approved for ' + name, 'success')
       loadDeviceResetRequests()
     }
   } catch (e) { showAdminToast('Failed to approve', 'error') }
@@ -5431,7 +5431,7 @@ async function denyDeviceReset(id) {
   } catch (e) { showAdminToast('Failed to deny', 'error') }
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
+// ------------------------------------------------------------------------------
 
 let currentTenantTicketId = null
 
@@ -5442,7 +5442,7 @@ async function tktFetch(url, opts) {
   return res.json()
 }
 
-// ── Load & render tenant's own tickets ───────────────────────────────────────
+// -- Load & render tenant's own tickets ---------------------------------------
 async function loadTenantTickets() {
   const el = document.getElementById('tenant-tickets-list')
   if (!el) return
@@ -5465,7 +5465,7 @@ async function loadTenantTickets() {
       const statusColor = { open:'bg-amber-100 text-amber-700', in_progress:'bg-indigo-100 text-indigo-700', resolved:'bg-green-100 text-green-700', closed:'bg-gray-100 text-gray-500' }[t.status] || 'bg-gray-100 text-gray-500'
       const prioColor = { urgent:'bg-red-100 text-red-700', high:'bg-orange-100 text-orange-700', normal:'bg-blue-100 text-blue-700', low:'bg-gray-100 text-gray-400' }[t.priority] || 'bg-gray-100 text-gray-400'
       const statusLabel = { open:'Open', in_progress:'In Progress', resolved:'Resolved', closed:'Closed' }[t.status] || t.status
-      const ago = t.updated_at ? timeSince(new Date(t.updated_at + 'Z')) : '—'
+      const ago = t.updated_at ? timeSince(new Date(t.updated_at + 'Z')) : '--'
       const canReply = t.status !== 'closed'
       return `
 <div class="border border-gray-100 rounded-xl p-4 hover:border-indigo-200 transition-colors cursor-pointer" onclick="openTenantTicketModal(${t.id})">
@@ -5477,7 +5477,7 @@ async function loadTenantTickets() {
         <span class="text-xs font-semibold px-2 py-0.5 rounded-full ${prioColor}">${t.priority}</span>
       </div>
       <p class="text-sm font-semibold text-gray-800 truncate">${escHtml(t.subject)}</p>
-      <p class="text-xs text-gray-400 mt-0.5">${escHtml(t.category || 'general')} · Updated ${ago}${t.message_count > 0 ? ` · <span class="text-indigo-500 font-semibold">${t.message_count} message${t.message_count > 1 ? 's' : ''}</span>` : ''}</p>
+      <p class="text-xs text-gray-400 mt-0.5">${escHtml(t.category || 'general')} . Updated ${ago}${t.message_count > 0 ? ` . <span class="text-indigo-500 font-semibold">${t.message_count} message${t.message_count > 1 ? 's' : ''}</span>` : ''}</p>
     </div>
     <button class="text-xs text-indigo-600 hover:text-indigo-800 font-semibold whitespace-nowrap flex-shrink-0">
       ${canReply ? '<i class="fas fa-comment-dots mr-1"></i>View / Reply' : '<i class="fas fa-eye mr-1"></i>View'}
@@ -5490,7 +5490,7 @@ async function loadTenantTickets() {
   }
 }
 
-// ── Submit new ticket ─────────────────────────────────────────────────────────
+// -- Submit new ticket ---------------------------------------------------------
 async function submitTenantTicket() {
   const subject     = (document.getElementById('tkt-subject')?.value || '').trim()
   const description = (document.getElementById('tkt-description')?.value || '').trim()
@@ -5499,8 +5499,8 @@ async function submitTenantTicket() {
   const submitter   = (document.getElementById('tkt-submitter')?.value || '').trim()
   const msgEl       = document.getElementById('tkt-submit-msg')
   const btn         = document.getElementById('tkt-submit-btn')
-  if (!subject) { if (msgEl) { msgEl.textContent = '⚠️ Subject is required.'; msgEl.className = 'text-sm text-red-500' }; return }
-  if (!description) { if (msgEl) { msgEl.textContent = '⚠️ Description is required.'; msgEl.className = 'text-sm text-red-500' }; return }
+  if (!subject) { if (msgEl) { msgEl.textContent = '[!]? Subject is required.'; msgEl.className = 'text-sm text-red-500' }; return }
+  if (!description) { if (msgEl) { msgEl.textContent = '[!]? Description is required.'; msgEl.className = 'text-sm text-red-500' }; return }
   btn.disabled = true
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...'
   if (msgEl) { msgEl.textContent = ''; msgEl.className = 'text-sm' }
@@ -5520,14 +5520,14 @@ async function submitTenantTicket() {
     if (msgEl) { msgEl.innerHTML = `<span class="text-green-600 font-semibold"><i class="fas fa-check-circle mr-1"></i>Ticket <strong>${d.ticket_number}</strong> submitted! You'll receive an email confirmation.</span>`; msgEl.className = 'text-sm' }
     loadTenantTickets()
   } catch (e) {
-    if (msgEl) { msgEl.textContent = '❌ Failed to submit. Please try again.'; msgEl.className = 'text-sm text-red-500' }
+    if (msgEl) { msgEl.textContent = '[X] Failed to submit. Please try again.'; msgEl.className = 'text-sm text-red-500' }
   } finally {
     btn.disabled = false
     btn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Ticket'
   }
 }
 
-// ── Ticket detail modal ───────────────────────────────────────────────────────
+// -- Ticket detail modal -------------------------------------------------------
 function openTenantTicketModal(id) {
   currentTenantTicketId = id
   // Build modal if it doesn't exist
@@ -5542,11 +5542,11 @@ function openTenantTicketModal(id) {
   <div class="flex items-center justify-between px-5 py-4 border-b flex-shrink-0">
     <div>
       <div class="flex items-center gap-2 flex-wrap">
-        <span id="ttm-number" class="font-mono text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">—</span>
+        <span id="ttm-number" class="font-mono text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">--</span>
         <span id="ttm-status" class="text-xs font-bold px-2 py-0.5 rounded-full"></span>
         <span id="ttm-priority" class="text-xs font-semibold px-2 py-0.5 rounded-full"></span>
       </div>
-      <h3 id="ttm-subject" class="text-base font-bold text-gray-800 mt-1">—</h3>
+      <h3 id="ttm-subject" class="text-base font-bold text-gray-800 mt-1">--</h3>
     </div>
     <button onclick="closeTenantTicketModal()" class="text-gray-400 hover:text-gray-600 p-1 rounded-lg"><i class="fas fa-times text-lg"></i></button>
   </div>
@@ -5606,7 +5606,7 @@ async function loadTenantTicketThread(id) {
       const bg = isSystem ? 'bg-yellow-50 border-yellow-200' : isAdmin ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-gray-200'
       const align = isAdmin ? 'flex-row-reverse' : ''
       const bubbleBg = isSystem ? 'bg-yellow-100 text-yellow-800' : isAdmin ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-800'
-      const timeStr = m.created_at ? new Date(m.created_at + 'Z').toLocaleString() : '—'
+      const timeStr = m.created_at ? new Date(m.created_at + 'Z').toLocaleString() : '--'
       return `
 <div class="flex gap-3 ${align}">
   <div class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${isSystem ? 'bg-yellow-200' : isAdmin ? 'bg-indigo-600' : 'bg-gray-200'}">
@@ -5649,14 +5649,14 @@ async function sendTenantReply() {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// -- Helpers -------------------------------------------------------------------
 function escHtml(str) {
   if (!str) return ''
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
 }
 
 function timeSince(date) {
-  if (!date || isNaN(date)) return '—'
+  if (!date || isNaN(date)) return '--'
   const secs = Math.floor((Date.now() - date.getTime()) / 1000)
   if (secs < 60) return 'just now'
   if (secs < 3600) return Math.floor(secs/60) + 'm ago'
@@ -5667,7 +5667,7 @@ function timeSince(date) {
 
 
 
-// ─── ENCIRCLE INTEGRATION ─────────────────────────────────────────────────────
+// --- ENCIRCLE INTEGRATION -----------------------------------------------------
 
 let _encircleAllJobs = []
 
@@ -5705,7 +5705,7 @@ async function loadEncircleStatus() {
 
     if (data.connected) {
       connectedPill.classList.remove('hidden')
-      statusSub.textContent = '911 Restoration of Ottawa — job sites sync automatically every 30 min'
+      statusSub.textContent = '911 Restoration of Ottawa -- job sites sync automatically every 30 min'
       connectedActions.classList.remove('hidden')
       connectedActions.classList.add('flex')
       setupCard.classList.add('hidden')
@@ -5777,10 +5777,10 @@ function filterEncircleJobs() {
   const countEl = document.getElementById('encircle-showing-count')
   if (countEl) {
     const closedLabel = closedJobs.length > 0
-      ? ` · <span class="text-gray-400">${closedJobs.length} closed hidden</span>`
+      ? ` . <span class="text-gray-400">${closedJobs.length} closed hidden</span>`
       : ''
     const closedLabelActive = closedJobs.length > 0
-      ? ` · <span class="text-amber-600">${closedJobs.length} closed shown</span>`
+      ? ` . <span class="text-amber-600">${closedJobs.length} closed shown</span>`
       : ''
     countEl.innerHTML = `Showing <strong>${filtered.length}</strong> of <strong>${activeJobs.length}</strong> active jobs`
       + (showClosed ? closedLabelActive : closedLabel)
@@ -5833,17 +5833,17 @@ function renderEncircleCards(jobs) {
     const policyMasked = j.policy_number
       ? `<span class="font-mono text-gray-600" id="enc-policy-${claimKey}">${maskSensitive(j.policy_number)}</span>
          <button onclick="revealEncircleCardField('enc-policy-${claimKey}','${j.policy_number.replace(/'/g,'\\\'')}')" class="ml-1 text-[9px] text-sky-500 border border-sky-200 rounded px-1 py-0.5 hover:bg-sky-50">Show</button>`
-      : '<span class="text-gray-300 italic text-[11px]">—</span>'
+      : '<span class="text-gray-300 italic text-[11px]">--</span>'
 
     const insurerRefMasked = j.insurer_identifier
       ? `<span class="font-mono text-gray-600 text-[11px]" id="enc-insurer-${claimKey}">${maskSensitive(j.insurer_identifier)}</span>
          <button onclick="revealEncircleCardField('enc-insurer-${claimKey}','${j.insurer_identifier.replace(/'/g,'\\\'')}')" class="ml-1 text-[9px] text-sky-500 border border-sky-200 rounded px-1 py-0.5 hover:bg-sky-50">Show</button>`
-      : '<span class="text-gray-300 italic text-[11px]">—</span>'
+      : '<span class="text-gray-300 italic text-[11px]">--</span>'
 
     const notesHtml = j.loss_details
       ? `<div class="bg-amber-50 border border-amber-100 rounded-xl p-3 mt-1">
            <p class="text-[10px] font-bold text-amber-700 uppercase tracking-wide mb-1 flex items-center gap-1"><i class="fas fa-clipboard-list"></i> Loss Notes</p>
-           <p class="text-xs text-gray-600 leading-relaxed italic">${escHtml(j.loss_details.substring(0,220))}${j.loss_details.length > 220 ? '…' : ''}</p>
+           <p class="text-xs text-gray-600 leading-relaxed italic">${escHtml(j.loss_details.substring(0,220))}${j.loss_details.length > 220 ? '...' : ''}</p>
          </div>`
       : ''
 
@@ -5851,17 +5851,17 @@ function renderEncircleCards(jobs) {
     <div class="bg-white rounded-2xl shadow-sm border ${j.status === 'closed' ? 'border-red-100 opacity-80' : 'border-gray-100 hover:shadow-md hover:border-sky-200'} transition-all duration-200 overflow-hidden cursor-pointer" onclick="openEncircleCardDetail('${claimKey}')">
 
       ${j.status === 'closed' ? `
-      <!-- CIP-Closed banner — this job was closed inside ClockInProof -->
+      <!-- CIP-Closed banner -- this job was closed inside ClockInProof -->
       <div class="flex items-center justify-between px-4 py-1.5 bg-red-50 border-b border-red-100">
         <div class="flex items-center gap-2">
           <i class="fas fa-lock text-red-400 text-xs"></i>
           <span class="text-xs font-bold text-red-500 uppercase tracking-wide">Closed in CIP</span>
-          ${j.cip_closed_note ? `<span class="text-[10px] text-red-400 italic">— ${escHtml(j.cip_closed_note)}</span>` : ''}
+          ${j.cip_closed_note ? `<span class="text-[10px] text-red-400 italic">-- ${escHtml(j.cip_closed_note)}</span>` : ''}
         </div>
         ${j.cip_closed_at ? `<span class="text-[10px] text-red-300">${new Date(j.cip_closed_at).toLocaleDateString('en-CA',{month:'short',day:'numeric'})}</span>` : ''}
       </div>` : ''}
 
-      <!-- ── Card Top Bar ── -->
+      <!-- -- Card Top Bar -- -->
       <div class="flex items-center gap-3 px-4 pt-4 pb-3">
         <!-- Type icon -->
         <div class="w-10 h-10 rounded-xl ${typeColor.split(' ')[0]} flex items-center justify-center flex-shrink-0 ${j.status === 'closed' ? 'opacity-50' : ''}">
@@ -5875,43 +5875,43 @@ function renderEncircleCards(jobs) {
         <!-- GPS + Encircle link -->
         <div class="flex flex-col items-end gap-1.5 flex-shrink-0 ml-1">
           ${hasGPS
-            ? `<span class="text-[10px] text-emerald-600 font-bold flex items-center gap-1 bg-emerald-50 px-1.5 py-0.5 rounded-full"><i class="fas fa-map-marker-alt"></i>GPS ✓</span>`
+            ? `<span class="text-[10px] text-emerald-600 font-bold flex items-center gap-1 bg-emerald-50 px-1.5 py-0.5 rounded-full"><i class="fas fa-map-marker-alt"></i>GPS [v]</span>`
             : `<span class="text-[10px] text-amber-500 font-bold flex items-center gap-1 bg-amber-50 px-1.5 py-0.5 rounded-full"><i class="fas fa-map-marker-alt"></i>No GPS</span>`
           }
           ${encLink}
         </div>
       </div>
 
-      <!-- ── Address row ── -->
+      <!-- -- Address row -- -->
       <div class="px-4 pb-3 border-b border-gray-50">
         <a href="${mapsUrl}" target="_blank" onclick="event.stopPropagation()"
            class="inline-flex items-center gap-2 text-xs text-gray-700 hover:text-sky-600 hover:underline transition-colors leading-snug">
           <i class="fas fa-map-marked-alt text-sky-400 flex-shrink-0"></i>
-          <span class="leading-snug">${escHtml(j.full_address || '—')}</span>
+          <span class="leading-snug">${escHtml(j.full_address || '--')}</span>
         </a>
       </div>
 
-      <!-- ── Contact grid ── -->
+      <!-- -- Contact grid -- -->
       <div class="px-4 py-3 grid grid-cols-2 gap-x-4 gap-y-2.5 text-xs border-b border-gray-50">
         <div>
-          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">📞 Phone</p>
+          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">? Phone</p>
           ${phoneLink}
         </div>
         <div class="min-w-0">
-          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">✉️ Email</p>
+          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">?? Email</p>
           <div class="truncate">${emailLink}</div>
         </div>
         ${date ? `<div>
-          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">📅 Date of Loss</p>
+          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">? Date of Loss</p>
           <p class="text-gray-700 font-medium">${date}</p>
         </div>` : ''}
         ${j.project_manager_name ? `<div>
-          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">👤 Project Manager</p>
+          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">? Project Manager</p>
           <p class="text-gray-800 font-semibold truncate">${escHtml(j.project_manager_name)}</p>
         </div>` : ''}
       </div>
 
-      <!-- ── Insurance (masked) ── -->
+      <!-- -- Insurance (masked) -- -->
       ${(j.insurance_company_name || j.policy_number || j.insurer_identifier) ? `
       <div class="px-4 py-3 bg-amber-50/40 border-b border-amber-100/60 grid grid-cols-1 gap-2 text-xs">
         <p class="text-[10px] font-bold text-amber-700 uppercase tracking-wide flex items-center gap-1 mb-0.5"><i class="fas fa-shield-alt"></i> Insurance</p>
@@ -5920,10 +5920,10 @@ function renderEncircleCards(jobs) {
         ${j.insurer_identifier ? `<div class="flex items-center gap-2"><span class="text-gray-500 w-24 flex-shrink-0">Insurer Ref</span><span class="flex items-center gap-0.5">${insurerRefMasked}</span></div>` : ''}
       </div>` : ''}
 
-      <!-- ── Loss Notes ── -->
+      <!-- -- Loss Notes -- -->
       ${notesHtml ? `<div class="px-4 pb-3 pt-2">${notesHtml}</div>` : ''}
 
-      <!-- ── Card Footer ── -->
+      <!-- -- Card Footer -- -->
       <div class="px-4 py-2.5 bg-gray-50 flex items-center justify-between text-[11px] text-gray-400 border-t border-gray-100">
         <span class="flex items-center gap-1"><i class="fas fa-hashtag text-[9px]"></i>Claim ${j.encircle_claim_id}</span>
         <div class="flex items-center gap-2">
@@ -5951,15 +5951,15 @@ function renderEncircleCards(jobs) {
 // Cache for Encircle tab cards (populated by renderEncircleCards)
 let _encircleJobsCache = []
 
-// Manually close an Encircle job — CIP is source of truth, survives all future syncs
+// Manually close an Encircle job -- CIP is source of truth, survives all future syncs
 async function closeEncircleJob(claimId, jobName) {
-  // Quick inline prompt — reason is optional but useful for audit trail
+  // Quick inline prompt -- reason is optional but useful for audit trail
   const reason = prompt(
     `Close "${jobName || 'this job'}" in CIP?\n\n` +
     `NOTE: Encircle's API does not expose job status.\n` +
     `Closing here removes it from GPS geofence and active jobs.\n` +
     `Sync will never re-activate it.\n\n` +
-    `Reason (optional — press OK to skip):`,
+    `Reason (optional -- press OK to skip):`,
     'Closed in Encircle'
   )
   // null = user pressed Cancel
@@ -5973,19 +5973,19 @@ async function closeEncircleJob(claimId, jobName) {
     })
     const data = await res.json().catch(() => ({}))
     if (res.ok && data.success) {
-      showAdminToast('Job closed in CIP ✅ — sync will ignore it permanently', 'success')
+      showAdminToast('Job closed in CIP [OK] -- sync will ignore it permanently', 'success')
       loadEncircleStatus()
     } else {
-      showAdminToast('Failed to close job — try again', 'error')
+      showAdminToast('Failed to close job -- try again', 'error')
       console.error('Close failed:', data)
     }
   } catch(e) {
-    showAdminToast('Connection error — try again', 'error')
+    showAdminToast('Connection error -- try again', 'error')
     console.error('closeEncircleJob error:', e)
   }
 }
 
-// Reopen a CIP-closed Encircle job — intentional admin override
+// Reopen a CIP-closed Encircle job -- intentional admin override
 async function reopenEncircleJob(claimId) {
   if (!confirm('Reopen this job in CIP?\n\nIt will become active again and CIP will sync updates from Encircle.')) return
   try {
@@ -5996,12 +5996,12 @@ async function reopenEncircleJob(claimId) {
     })
     const data = await res.json().catch(() => ({}))
     if (res.ok && data.success) {
-      showAdminToast('Job reopened ✅ — active and syncing', 'success')
+      showAdminToast('Job reopened [OK] -- active and syncing', 'success')
       loadEncircleStatus()
     } else {
-      showAdminToast('Failed to reopen job — try again', 'error')
+      showAdminToast('Failed to reopen job -- try again', 'error')
     }
-  } catch(e) { showAdminToast('Connection error — try again', 'error') }
+  } catch(e) { showAdminToast('Connection error -- try again', 'error') }
 }
 
 // Reveal a masked field inside an Encircle card
@@ -6042,14 +6042,14 @@ function renderEncircleLog(logs) {
   if (empty) empty.classList.add('hidden')
   tbody.innerHTML = logs.map(l => {
     const badge = l.status === 'success'
-      ? '<span class="bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold">✅ Success</span>'
-      : '<span class="bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold">❌ Error</span>'
+      ? '<span class="bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold">[OK] Success</span>'
+      : '<span class="bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold">[X] Error</span>'
     const err = l.error_message ? `<div class="text-red-500 text-[10px] mt-0.5 max-w-xs truncate">${escHtml(l.error_message)}</div>` : ''
     return `<tr class="hover:bg-gray-50 text-xs">
       <td class="py-2 text-gray-600 whitespace-nowrap pr-3">${new Date(l.synced_at + 'Z').toLocaleString()}</td>
       <td class="py-2 text-center font-bold text-green-600 px-2">+${l.jobs_added}</td>
-      <td class="py-2 text-center font-bold text-sky-600 px-2">↻${l.jobs_updated}</td>
-      <td class="py-2 text-center font-bold text-amber-600 px-2">✕${l.jobs_closed}</td>
+      <td class="py-2 text-center font-bold text-sky-600 px-2">?${l.jobs_updated}</td>
+      <td class="py-2 text-center font-bold text-amber-600 px-2">[x]${l.jobs_closed}</td>
       <td class="py-2 px-2">${badge}${err}</td>
     </tr>`
   }).join('')
@@ -6079,7 +6079,7 @@ async function encircleConnect() {
     })
     const data = await res.json()
     if (!res.ok) { showAdminToast(data.error || 'Connection failed', 'error'); return }
-    showAdminToast('✅ Encircle connected! Running first sync…', 'success')
+    showAdminToast('[OK] Encircle connected! Running first sync...', 'success')
     await encircleSync(true)
     await loadEncircleStatus()
   } catch (e) {
@@ -6091,17 +6091,17 @@ async function encircleConnect() {
 
 async function encircleSync(silent = false) {
   const btn = document.getElementById('encircle-sync-btn')
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing…' }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...' }
   try {
     const res  = await fetch('/api/encircle/sync', { method: 'POST' })
     const data = await res.json()
     if (data.status === 'success') {
       if (!silent) {
         const skippedNote = data.jobs_skipped > 0 ? `, ${data.jobs_skipped} closed skipped` : ''
-        showAdminToast(`✅ Sync complete — ${data.jobs_added} added, ${data.jobs_updated} updated${skippedNote}`, 'success', 6000)
+        showAdminToast(`[OK] Sync complete -- ${data.jobs_added} added, ${data.jobs_updated} updated${skippedNote}`, 'success', 6000)
       }
     } else {
-      showAdminToast('⚠️ Sync error: ' + (data.error_message || 'Unknown error'), 'error', 7000)
+      showAdminToast('[!]? Sync error: ' + (data.error_message || 'Unknown error'), 'error', 7000)
     }
     await loadEncircleStatus()
     if (typeof loadJobSites === 'function') loadJobSites()
@@ -6126,15 +6126,15 @@ async function encircleDisconnect() {
 }
 
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ─── JOB DISPATCH ──────────────────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════════════
+// -------------------------------------------------------------------------------
+// --- JOB DISPATCH --------------------------------------------------------------
+// -------------------------------------------------------------------------------
 
 let _dispatchSource = 'encircle'   // 'encircle' | 'manual'
 let _dispatchJobs   = []           // cached job list for the picker
 let _dispatchWorkers = []          // cached workers list
 
-// ── Load Dispatch Tab ─────────────────────────────────────────────────────────
+// -- Load Dispatch Tab ---------------------------------------------------------
 async function loadDispatchTab() {
   await Promise.all([loadDispatchStats(), loadDispatchList()])
 }
@@ -6179,15 +6179,15 @@ async function loadDispatchList() {
 
 function renderDispatchRow(d) {
   const statusConfig = {
-    sent:      { color: 'bg-violet-100 text-violet-700', icon: 'fa-paper-plane',    label: 'Sent – awaiting reply' },
-    replied:   { color: 'bg-sky-100 text-sky-700',       icon: 'fa-reply',          label: 'Replied – on the way' },
+    sent:      { color: 'bg-violet-100 text-violet-700', icon: 'fa-paper-plane',    label: 'Sent - awaiting reply' },
+    replied:   { color: 'bg-sky-100 text-sky-700',       icon: 'fa-reply',          label: 'Replied - on the way' },
     arrived:   { color: 'bg-emerald-100 text-emerald-700', icon: 'fa-map-marker-alt', label: 'Arrived & clocked in' },
     cancelled: { color: 'bg-gray-100 text-gray-500',     icon: 'fa-ban',            label: 'Cancelled' },
     failed:    { color: 'bg-red-100 text-red-600',       icon: 'fa-exclamation-triangle', label: 'SMS failed' },
   }
   const sc = statusConfig[d.status] || statusConfig.sent
   const mapsUrl = `https://maps.google.com/?q=${encodeURIComponent(d.job_address || '')}`
-  const sentAt  = d.created_at ? new Date(d.created_at + 'Z').toLocaleString() : '—'
+  const sentAt  = d.created_at ? new Date(d.created_at + 'Z').toLocaleString() : '--'
   const replyAt = d.reply_at   ? new Date(d.reply_at   + 'Z').toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : null
   const arrivedAt = d.arrived_at ? new Date(d.arrived_at + 'Z').toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : null
 
@@ -6208,13 +6208,13 @@ function renderDispatchRow(d) {
       <!-- Job info -->
       <div class="flex-1 min-w-0">
         <div class="flex items-start justify-between gap-2 flex-wrap">
-          <p class="font-bold text-gray-800 text-sm leading-tight">${escHtml(d.job_name || '—')}</p>
+          <p class="font-bold text-gray-800 text-sm leading-tight">${escHtml(d.job_name || '--')}</p>
           <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${sc.color} flex-shrink-0">${sc.label}</span>
         </div>
         <a href="${mapsUrl}" target="_blank"
            class="inline-flex items-center gap-1 text-xs text-gray-600 hover:text-sky-600 hover:underline mt-0.5 transition-colors">
           <i class="fas fa-map-marked-alt text-sky-400 text-[10px]"></i>
-          ${escHtml(d.job_address || '—')}
+          ${escHtml(d.job_address || '--')}
         </a>
       </div>
     </div>
@@ -6222,12 +6222,12 @@ function renderDispatchRow(d) {
     <!-- Middle row: worker + timeline -->
     <div class="px-4 pb-3 grid grid-cols-2 gap-3 text-xs border-t border-gray-50 pt-3">
       <div>
-        <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">👷 Worker</p>
-        <p class="font-semibold text-gray-800">${escHtml(d.worker_name || '—')}</p>
+        <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">? Worker</p>
+        <p class="font-semibold text-gray-800">${escHtml(d.worker_name || '--')}</p>
         <p class="text-gray-400">${escHtml(phoneDisp)}</p>
       </div>
       <div>
-        <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">⏱ Timeline</p>
+        <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">? Timeline</p>
         <div class="space-y-0.5">
           <p class="text-gray-600"><span class="text-violet-500 font-semibold">Sent</span> ${sentAt}</p>
           ${replyAt   ? `<p class="text-gray-600"><span class="text-sky-500 font-semibold">Replied</span> at ${replyAt}</p>` : ''}
@@ -6239,7 +6239,7 @@ function renderDispatchRow(d) {
     <!-- Reply text if present -->
     ${d.reply_text ? `
     <div class="px-4 pb-3 border-t border-gray-50 pt-2">
-      <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-1">💬 Worker Reply</p>
+      <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-1">? Worker Reply</p>
       <div class="bg-sky-50 border border-sky-100 rounded-xl px-3 py-2 text-xs text-gray-700 italic">
         "${escHtml(d.reply_text)}"
       </div>
@@ -6248,7 +6248,7 @@ function renderDispatchRow(d) {
     <!-- Notes if present -->
     ${d.notes ? `
     <div class="px-4 pb-3 border-t border-gray-50 pt-2">
-      <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-1">📋 Note</p>
+      <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-1">? Note</p>
       <p class="text-xs text-gray-600">${escHtml(d.notes)}</p>
     </div>` : ''}
 
@@ -6274,7 +6274,7 @@ function renderDispatchRow(d) {
   </div>`
 }
 
-// ── Dispatch Modal ────────────────────────────────────────────────────────────
+// -- Dispatch Modal ------------------------------------------------------------
 async function openDispatchModal(prefillJobSiteId, prefillEncircleId, prefillName, prefillAddress) {
   // Populate workers dropdown
   try {
@@ -6296,13 +6296,13 @@ async function openDispatchModal(prefillJobSiteId, prefillEncircleId, prefillNam
   // Populate worker select
   const wSel = document.getElementById('dispatch-worker-select')
   if (wSel) {
-    wSel.innerHTML = '<option value="">— Select a worker —</option>' +
+    wSel.innerHTML = '<option value="">-- Select a worker --</option>' +
       _dispatchWorkers.map(w => {
         const phoneRaw = (w.phone || '').replace(/\D/g,'').slice(-10)
         const phoneDisp = phoneRaw.length === 10
           ? `(${phoneRaw.slice(0,3)}) ${phoneRaw.slice(3,6)}-${phoneRaw.slice(6)}`
           : w.phone || ''
-        return `<option value="${w.id}" data-phone="${escHtml(w.phone||'')}">${escHtml(w.name)} · ${escHtml(phoneDisp)}</option>`
+        return `<option value="${w.id}" data-phone="${escHtml(w.phone||'')}">${escHtml(w.name)} . ${escHtml(phoneDisp)}</option>`
       }).join('')
     wSel.onchange = () => {
       const opt = wSel.options[wSel.selectedIndex]
@@ -6325,13 +6325,13 @@ async function openDispatchModal(prefillJobSiteId, prefillEncircleId, prefillNam
   const eSel = document.getElementById('dispatch-encircle-select')
   if (eSel) {
     if (_dispatchJobs.length === 0) {
-      eSel.innerHTML = '<option value="">— No Encircle jobs synced yet —</option>'
+      eSel.innerHTML = '<option value="">-- No Encircle jobs synced yet --</option>'
     } else {
-      eSel.innerHTML = '<option value="">— Select an Encircle job —</option>' +
+      eSel.innerHTML = '<option value="">-- Select an Encircle job --</option>' +
         _dispatchJobs.map(j => `<option value="${j.encircle_claim_id}"
           data-name="${escHtml(j.policyholder_name||'')}"
           data-address="${escHtml(j.full_address||'')}"
-        >${escHtml(j.policyholder_name||'')} · ${escHtml((j.full_address||'').split(',')[0])}</option>`).join('')
+        >${escHtml(j.policyholder_name||'')} . ${escHtml((j.full_address||'').split(',')[0])}</option>`).join('')
     }
   }
 
@@ -6417,8 +6417,8 @@ function updateDispatchJobPreview(name, address) {
   const mp   = document.getElementById('dispatch-preview-map')
   if (!card) return
   if (name || address) {
-    if (nm) nm.textContent = name || '—'
-    if (ad) ad.textContent = address || '—'
+    if (nm) nm.textContent = name || '--'
+    if (ad) ad.textContent = address || '--'
     if (mp) mp.href = `https://maps.google.com/?q=${encodeURIComponent(address)}`
     card.classList.remove('hidden')
   } else {
@@ -6450,14 +6450,14 @@ function updateDispatchSmsPreview() {
   const job    = getDispatchJobData()
   const notes  = document.getElementById('dispatch-notes')?.value.trim() || ''
   const wSel   = document.getElementById('dispatch-worker-select')
-  const wName  = wSel?.options[wSel.selectedIndex]?.text?.split(' · ')[0] || ''
+  const wName  = wSel?.options[wSel.selectedIndex]?.text?.split(' . ')[0] || ''
   if (!job.name && !job.address) {
-    pre.textContent = 'Select a job and worker to preview the SMS…'
+    pre.textContent = 'Select a job and worker to preview the SMS...'
     return
   }
   const mapsUrl  = `https://maps.google.com/?q=${encodeURIComponent(job.address)}`
   const notesLine = notes ? `\nNote: ${notes}` : ''
-  pre.textContent = `🏠 New Job Assignment\n${job.name || '(job name)'}\n📍 ${job.address || '(address)'}\n\n👆 Tap for directions:\n${mapsUrl}${notesLine}\n\nReply "On my way" or any message when you're heading out. Clock in when you arrive.`
+  pre.textContent = `? New Job Assignment\n${job.name || '(job name)'}\n? ${job.address || '(address)'}\n\n? Tap for directions:\n${mapsUrl}${notesLine}\n\nReply "On my way" or any message when you're heading out. Clock in when you arrive.`
 }
 
 async function sendDispatch() {
@@ -6471,7 +6471,7 @@ async function sendDispatch() {
   if (!workerId)    { showAdminToast('Please select a worker', 'error'); return }
 
   const btn = document.getElementById('dispatch-send-btn')
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…' }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...' }
 
   try {
     const res  = await fetch('/api/dispatch', {
@@ -6487,11 +6487,11 @@ async function sendDispatch() {
     })
     const data = await res.json()
     if (data.success) {
-      showAdminToast(`✅ SMS sent to ${data.worker_name}`, 'success')
+      showAdminToast(`[OK] SMS sent to ${data.worker_name}`, 'success')
       closeDispatchModal()
       loadDispatchTab()
     } else if (data.sms_sent === false) {
-      showAdminToast(`⚠️ Dispatch saved but SMS failed: ${data.error}`, 'error')
+      showAdminToast(`[!]? Dispatch saved but SMS failed: ${data.error}`, 'error')
       closeDispatchModal()
       loadDispatchTab()
     } else {
@@ -6527,7 +6527,7 @@ async function resendDispatch(id, workerId, encodedName, encodedAddress) {
     })
     const data = await res.json()
     if (data.success || data.dispatch_id) {
-      showAdminToast('✅ SMS resent', 'success')
+      showAdminToast('[OK] SMS resent', 'success')
       loadDispatchTab()
     } else {
       showAdminToast(data.error || 'Resend failed', 'error')
@@ -6537,8 +6537,8 @@ async function resendDispatch(id, workerId, encodedName, encodedAddress) {
   }
 }
 
-// ── Quick Dispatch button wired to Encircle cards ─────────────────────────────
-// Called from renderEncircleCards footer — opens modal pre-filled with this job
+// -- Quick Dispatch button wired to Encircle cards -----------------------------
+// Called from renderEncircleCards footer -- opens modal pre-filled with this job
 function dispatchEncircleJob(claimId) {
   const j = (_encircleJobsCache || []).find(x => String(x.encircle_claim_id) === String(claimId))
   if (j) {
@@ -6548,7 +6548,7 @@ function dispatchEncircleJob(claimId) {
   }
 }
 
-// ── Quick Dispatch from Job Sites tab ─────────────────────────────────────────
+// -- Quick Dispatch from Job Sites tab -----------------------------------------
 function dispatchJobSite(siteId) {
   const site = (_lastJobSites || []).find(s => s.id == siteId)
   if (site) {
