@@ -13,11 +13,11 @@ type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>()
 
-// ─── Middleware ────────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 Middleware \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.use('/api/*', cors())
 
-// ─── Static files ─────────────────────────────────────────────────────────────
-// Cache static assets aggressively — files are cache-busted via ?v= query param
+// \u2500\u2500\u2500 Static files \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Cache static assets aggressively \u2014 files are cache-busted via ?v= query param
 app.use('/static/*', async (c, next) => {
   await next()
   // Set long cache for versioned static files (admin.js?v=xxx, worker.js?v=xxx)
@@ -27,10 +27,10 @@ app.use('/static/*', async (c, next) => {
 })
 app.use('/static/*', serveStatic({ root: './' }))
 
-// ─── Tenant Helper ────────────────────────────────────────────────────────────
-// Read subdomain from Host header → return tenant slug
-// e.g. "acme.clockinproof.com" → "acme"
-// "admin.clockinproof.com" or "app.clockinproof.com" → null (platform URLs)
+// \u2500\u2500\u2500 Tenant Helper \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Read subdomain from Host header \u2192 return tenant slug
+// e.g. "acme.clockinproof.com" \u2192 "acme"
+// "admin.clockinproof.com" or "app.clockinproof.com" \u2192 null (platform URLs)
 function getTenantSlug(req: Request): string | null {
   const host = req.headers.get('host') || ''
   const hostname = host.split(':')[0]
@@ -44,12 +44,12 @@ function getTenantSlug(req: Request): string | null {
   return sub
 }
 
-// Load tenant by slug — returns null if not found
+// Load tenant by slug \u2014 returns null if not found
 async function getTenantBySlug(db: D1Database, slug: string) {
   return await db.prepare(`SELECT * FROM tenants WHERE slug = ? AND status != 'deleted'`).bind(slug).first()
 }
 
-// Load tenant settings (merged: platform defaults → tenant overrides)
+// Load tenant settings (merged: platform defaults \u2192 tenant overrides)
 async function getTenantSettings(db: D1Database, tenantId: number): Promise<Record<string, string>> {
   const rows = await db.prepare(`SELECT key, value FROM tenant_settings WHERE tenant_id = ?`).bind(tenantId).all()
   const s: Record<string, string> = {}
@@ -58,7 +58,7 @@ async function getTenantSettings(db: D1Database, tenantId: number): Promise<Reco
 }
 
 
-// ─── Tenant Resolution Helper ─────────────────────────────────────────────────
+// \u2500\u2500\u2500 Tenant Resolution Helper \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // Resolves the current tenant from X-Tenant-ID header or subdomain.
 // Falls back to tenant 1 ONLY as a last resort (should not happen in production).
 async function resolveTenantId(c: any, db: D1Database): Promise<number> {
@@ -75,19 +75,19 @@ async function resolveTenantId(c: any, db: D1Database): Promise<number> {
   return 1
 }
 
-// ─── DB Helper ────────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 DB Helper \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // Cache flag: schema only needs to run once per Worker instance (not every request)
-// Cloudflare Workers reuse instances across requests — this cuts 40+ SQL statements
+// Cloudflare Workers reuse instances across requests \u2014 this cuts 40+ SQL statements
 // from every API call down to just once on cold start. Massive latency improvement.
 let _schemaInitialized = false
 
 async function ensureSchema(db: D1Database) {
-  if (_schemaInitialized) return  // ← skip entirely after first run
+  if (_schemaInitialized) return  // \u2190 skip entirely after first run
   _schemaInitialized = true
 
   // Run each statement individually (D1 exec doesn't support multi-statement)
   const statements = [
-    // ── TENANTS (multi-tenant SaaS foundation) ────────────────────────────────
+    // \u2500\u2500 TENANTS (multi-tenant SaaS foundation) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `CREATE TABLE IF NOT EXISTS tenants (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       slug TEXT UNIQUE NOT NULL,
@@ -107,14 +107,14 @@ async function ensureSchema(db: D1Database) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`,
-    // Insert Tenant #1 — 911 Restoration of Ottawa (your company)
+    // Insert Tenant #1 \u2014 911 Restoration of Ottawa (your company)
     `INSERT OR IGNORE INTO tenants
       (id, slug, company_name, company_address, admin_email, plan, status, max_workers)
      VALUES
       (1, '911restoration-ottawa', '911 Restoration of Ottawa',
        '11 Trustan Court #4, Ottawa, Ontario K2E 8B9',
        'Nasser.o@911restoration.com', 'pro', 'active', 999)`,
-    // ── TENANT SETTINGS (per-tenant key/value, mirrors global settings) ───────
+    // \u2500\u2500 TENANT SETTINGS (per-tenant key/value, mirrors global settings) \u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `CREATE TABLE IF NOT EXISTS tenant_settings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       tenant_id INTEGER NOT NULL,
@@ -124,7 +124,7 @@ async function ensureSchema(db: D1Database) {
       UNIQUE(tenant_id, key),
       FOREIGN KEY (tenant_id) REFERENCES tenants(id)
     )`,
-    // ── STRIPE PLANS reference table ──────────────────────────────────────────
+    // \u2500\u2500 STRIPE PLANS reference table \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `CREATE TABLE IF NOT EXISTS stripe_plans (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -180,7 +180,7 @@ async function ensureSchema(db: D1Database) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (worker_id) REFERENCES workers(id)
     )`,
-    // ALTER TABLE is safe to run repeatedly — D1 ignores if column already exists via try/catch in ensureSchema
+    // ALTER TABLE is safe to run repeatedly \u2014 D1 ignores if column already exists via try/catch in ensureSchema
     `ALTER TABLE sessions ADD COLUMN drift_flag INTEGER DEFAULT 0`,
     `ALTER TABLE sessions ADD COLUMN drift_distance_meters REAL`,
     `ALTER TABLE sessions ADD COLUMN drift_detected_at DATETIME`,
@@ -268,7 +268,7 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('show_pay_to_workers', '1')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('accountant_email', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('company_name', 'ClockInProof')`,
-    // ── QuickBooks OAuth integration ──────────────────────────────────────────
+    // \u2500\u2500 QuickBooks OAuth integration \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_client_id', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_client_secret', '')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_realm_id', '')`,
@@ -278,7 +278,7 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_environment', 'production')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_connected', '0')`,
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('qb_company_name', '')`,
-    // ── QB worker → QB employee mapping table ─────────────────────────────────
+    // \u2500\u2500 QB worker \u2192 QB employee mapping table \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `CREATE TABLE IF NOT EXISTS qb_employee_map (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       worker_id INTEGER NOT NULL UNIQUE,
@@ -287,7 +287,7 @@ async function ensureSchema(db: D1Database) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (worker_id) REFERENCES workers(id)
     )`,
-    // ── QB sync log ───────────────────────────────────────────────────────────
+    // \u2500\u2500 QB sync log \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `CREATE TABLE IF NOT EXISTS qb_sync_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       pay_period_start TEXT NOT NULL,
@@ -300,7 +300,7 @@ async function ensureSchema(db: D1Database) {
     )`,
     // invite_code column on workers (safe to run on existing DBs)
     `ALTER TABLE workers ADD COLUMN invite_code TEXT`,
-    // ── Worker profile columns (migration 0004) ───────────────────────────────
+    // \u2500\u2500 Worker profile columns (migration 0004) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `ALTER TABLE workers ADD COLUMN email TEXT`,
     `ALTER TABLE workers ADD COLUMN home_address TEXT`,
     `ALTER TABLE workers ADD COLUMN job_title TEXT`,
@@ -312,7 +312,7 @@ async function ensureSchema(db: D1Database) {
     `ALTER TABLE workers ADD COLUMN license_back_b64 TEXT`,
     `ALTER TABLE workers ADD COLUMN emergency_contact TEXT`,
     `ALTER TABLE workers ADD COLUMN worker_notes TEXT`,
-    // ── Feature: worker employment status ────────────────────────────────────
+    // \u2500\u2500 Feature: worker employment status \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `ALTER TABLE workers ADD COLUMN worker_status TEXT DEFAULT 'active'`,
     `CREATE TABLE IF NOT EXISTS worker_status_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -325,7 +325,7 @@ async function ensureSchema(db: D1Database) {
       changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (worker_id) REFERENCES workers(id)
     )`,
-    // ── Feature: session edit audit log ───────────────────────────────────────
+    // \u2500\u2500 Feature: session edit audit log \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `CREATE TABLE IF NOT EXISTS session_edits (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id INTEGER NOT NULL,
@@ -337,7 +337,7 @@ async function ensureSchema(db: D1Database) {
       edited_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (session_id) REFERENCES sessions(id)
     )`,
-    // ── Feature: saved job sites ──────────────────────────────────────────────
+    // \u2500\u2500 Feature: saved job sites \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `CREATE TABLE IF NOT EXISTS job_sites (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -347,7 +347,7 @@ async function ensureSchema(db: D1Database) {
       active INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`,
-    // ── Feature: worker issue reports ─────────────────────────────────────────
+    // \u2500\u2500 Feature: worker issue reports \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `CREATE TABLE IF NOT EXISTS session_disputes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id INTEGER NOT NULL,
@@ -363,15 +363,15 @@ async function ensureSchema(db: D1Database) {
     )`,
     `ALTER TABLE sessions ADD COLUMN edited INTEGER DEFAULT 0`,
     `ALTER TABLE sessions ADD COLUMN edit_reason TEXT`,
-    // ── session_type: 'regular' | 'material_pickup' | 'emergency_job' ──────────
+    // \u2500\u2500 session_type: 'regular' | 'material_pickup' | 'emergency_job' \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     // Lets workers flag they are legitimately off-site (pickup, emergency call-out).
     // Geofence check is skipped for these types; admin sees a colored badge.
     `ALTER TABLE sessions ADD COLUMN session_type TEXT DEFAULT 'regular'`,
-    // ── Material pickup destination + ETA fields ───────────────────────────────
+    // \u2500\u2500 Material pickup destination + ETA fields \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `ALTER TABLE sessions ADD COLUMN pickup_destination TEXT`,
     `ALTER TABLE sessions ADD COLUMN pickup_eta_minutes INTEGER`,
-    // ── Multi-tenant migrations ───────────────────────────────────────────────
-    // Add tenant_id to all tables. Safe to run repeatedly — errors caught below.
+    // \u2500\u2500 Multi-tenant migrations \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    // Add tenant_id to all tables. Safe to run repeatedly \u2014 errors caught below.
     `ALTER TABLE workers ADD COLUMN tenant_id INTEGER DEFAULT 1`,
     `ALTER TABLE sessions ADD COLUMN tenant_id INTEGER DEFAULT 1`,
     `ALTER TABLE location_pings ADD COLUMN tenant_id INTEGER DEFAULT 1`,
@@ -395,7 +395,7 @@ async function ensureSchema(db: D1Database) {
     `CREATE INDEX IF NOT EXISTS idx_workers_tenant ON workers(tenant_id)`,
     `CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON sessions(tenant_id)`,
     `CREATE INDEX IF NOT EXISTS idx_job_sites_tenant ON job_sites(tenant_id)`,
-    // ── Signup Leads — captured at Step 1 before full account creation ────────
+    // \u2500\u2500 Signup Leads \u2014 captured at Step 1 before full account creation \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `CREATE TABLE IF NOT EXISTS signup_leads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT NOT NULL,
@@ -415,7 +415,7 @@ async function ensureSchema(db: D1Database) {
       converted_at DATETIME
     )`,
     `CREATE INDEX IF NOT EXISTS idx_leads_email ON signup_leads(email)`,
-    // ── Support Ticket System ────────────────────────────────────────────────
+    // \u2500\u2500 Support Ticket System \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `CREATE TABLE IF NOT EXISTS support_tickets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       tenant_id INTEGER NOT NULL,
@@ -447,13 +447,13 @@ async function ensureSchema(db: D1Database) {
     `CREATE INDEX IF NOT EXISTS idx_tickets_status ON support_tickets(status)`,
     `CREATE INDEX IF NOT EXISTS idx_ticket_msgs ON ticket_messages(ticket_id)`,
 
-    // ── Device enforcement (privacy-compliant) ──────────────────────────────
+    // \u2500\u2500 Device enforcement (privacy-compliant) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     // device_id is a random browser-generated token stored in localStorage.
     // It is NOT biometric data. It identifies the browser/device session only.
     // Workers give explicit informed consent before it is saved (PIPEDA / CCPA).
     `ALTER TABLE workers ADD COLUMN device_consent_given INTEGER DEFAULT 0`,
     `ALTER TABLE workers ADD COLUMN device_consent_at DATETIME`,
-    // ── Feature: temp PIN flow ────────────────────────────────────────────────
+    // \u2500\u2500 Feature: temp PIN flow \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     // is_temp_pin = 1 means the PIN was set by admin and worker must change it on first login
     `ALTER TABLE workers ADD COLUMN is_temp_pin INTEGER DEFAULT 1`,
     `CREATE TABLE IF NOT EXISTS device_reset_requests (
@@ -473,7 +473,7 @@ async function ensureSchema(db: D1Database) {
     `CREATE INDEX IF NOT EXISTS idx_dev_reset_worker ON device_reset_requests(worker_id)`,
     `CREATE INDEX IF NOT EXISTS idx_dev_reset_status ON device_reset_requests(status)`,
 
-    // ── Encircle Integration ──────────────────────────────────────────────────
+    // \u2500\u2500 Encircle Integration \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `ALTER TABLE job_sites ADD COLUMN encircle_job_id TEXT`,
     `ALTER TABLE job_sites ADD COLUMN encircle_synced_at DATETIME`,
     `ALTER TABLE job_sites ADD COLUMN encircle_status TEXT`,
@@ -499,7 +499,7 @@ async function ensureSchema(db: D1Database) {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_job_sites_encircle ON job_sites(encircle_job_id)`,
 
-    // ── Tax Compliance Module ─────────────────────────────────────────────────
+    // \u2500\u2500 Tax Compliance Module \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `CREATE TABLE IF NOT EXISTS tax_transactions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       stripe_charge_id TEXT UNIQUE,
@@ -545,7 +545,7 @@ async function ensureSchema(db: D1Database) {
     `CREATE INDEX IF NOT EXISTS idx_tax_tx_status ON tax_transactions(status)`,
     `CREATE INDEX IF NOT EXISTS idx_tax_rates_date ON tax_exchange_rates(rate_date)`,
 
-    // ── Encircle full claim data (contact info, notes, etc.) ─────────────────
+    // \u2500\u2500 Encircle full claim data (contact info, notes, etc.) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `CREATE TABLE IF NOT EXISTS encircle_jobs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       encircle_claim_id TEXT UNIQUE NOT NULL,
@@ -574,9 +574,9 @@ async function ensureSchema(db: D1Database) {
     `CREATE INDEX IF NOT EXISTS idx_encircle_jobs_claim ON encircle_jobs(encircle_claim_id)`,
     `CREATE INDEX IF NOT EXISTS idx_encircle_jobs_tenant ON encircle_jobs(tenant_id)`,
 
-    // ── Job Dispatch ──────────────────────────────────────────────────────────
+    // \u2500\u2500 Job Dispatch \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     // Tracks every job dispatched to a worker via SMS.
-    // status flow: sent → replied → arrived → cancelled
+    // status flow: sent \u2192 replied \u2192 arrived \u2192 cancelled
     `CREATE TABLE IF NOT EXISTS job_dispatches (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       job_site_id INTEGER,
@@ -601,10 +601,10 @@ async function ensureSchema(db: D1Database) {
     `CREATE INDEX IF NOT EXISTS idx_dispatches_worker  ON job_dispatches(worker_id)`,
     `CREATE INDEX IF NOT EXISTS idx_dispatches_status  ON job_dispatches(status)`,
     `CREATE INDEX IF NOT EXISTS idx_dispatches_created ON job_dispatches(created_at)`,
-    // ── Tenant profile extras ──────────────────────────────────────────────────
+    // \u2500\u2500 Tenant profile extras \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `ALTER TABLE tenants ADD COLUMN company_phone TEXT`,
     `ALTER TABLE tenants ADD COLUMN company_website TEXT`,
-    // ── Archived tenant guardrail (90-day purge) ───────────────────────────────
+    // \u2500\u2500 Archived tenant guardrail (90-day purge) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `ALTER TABLE tenants ADD COLUMN archived_at DATETIME`,
   ]
   for (const sql of statements) {
@@ -620,10 +620,10 @@ async function ensureSchema(db: D1Database) {
   }
 }
 
-// ─── WORKERS API ──────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 WORKERS API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 // Register or get worker by phone
-// Privacy note: device_id is a random browser localStorage token — NOT biometric.
+// Privacy note: device_id is a random browser localStorage token \u2014 NOT biometric.
 // We only record it after the worker gives explicit informed consent on-screen.
 app.post('/api/workers/register', async (c) => {
   const db = c.env.DB
@@ -641,7 +641,7 @@ app.post('/api/workers/register', async (c) => {
     return c.json({ error: 'consent_required', message: 'Device consent is required to register.' }, 400)
   }
 
-  // Check if worker already exists — try digits-only match against stored phone
+  // Check if worker already exists \u2014 try digits-only match against stored phone
   const digitsOnly = phone.replace(/\D/g, '')
   let existing = await db.prepare(
     "SELECT * FROM workers WHERE REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ','') = ?"
@@ -659,7 +659,7 @@ app.post('/api/workers/register', async (c) => {
   }
 
   if (existing) {
-    // ── Admin path: no device_id sent → admin is trying to create a duplicate ──
+    // \u2500\u2500 Admin path: no device_id sent \u2192 admin is trying to create a duplicate \u2500\u2500
     // Block it explicitly so the admin UI can show a clear error.
     if (!device_id) {
       return c.json({
@@ -668,7 +668,7 @@ app.post('/api/workers/register', async (c) => {
       }, 409)
     }
 
-    // ── Worker self-registration path: device_id is present ──
+    // \u2500\u2500 Worker self-registration path: device_id is present \u2500\u2500
     // Worker exists: if they have no device locked yet, lock this one now (consent already given)
     if (!existing.device_id) {
       await db.prepare(
@@ -677,18 +677,18 @@ app.post('/api/workers/register', async (c) => {
       const updated = await db.prepare('SELECT * FROM workers WHERE id = ?').bind(existing.id).first()
       return c.json({ worker: updated, isNew: false })
     }
-    // Device is already locked — verify it matches
+    // Device is already locked \u2014 verify it matches
     if (existing.device_id !== device_id) {
       return c.json({
         error: 'device_mismatch',
         message: 'This phone number is registered to a different device. If you have a new phone, please contact your manager to reset your device.'
       }, 403)
     }
-    // Same device returning — all good
+    // Same device returning \u2014 all good
     return c.json({ worker: existing, isNew: false })
   }
 
-  // New worker — create with locked device + consent recorded
+  // New worker \u2014 create with locked device + consent recorded
   const defaultRate = await db.prepare(
     "SELECT value FROM settings WHERE key = 'default_hourly_rate'"
   ).first<{ value: string }>()
@@ -751,7 +751,7 @@ app.get('/api/workers/lookup/:phone', async (c) => {
 
   if (!worker) return c.json({ error: 'Worker not found' }, 404)
 
-  // ── Device lock enforcement ──────────────────────────────────────────────
+  // \u2500\u2500 Device lock enforcement \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   // Only enforce if worker has a locked device_id on file AND gave consent.
   // Grace: if no device is locked yet, allow login and lock this device now.
   if (worker.device_id && worker.device_consent_given) {
@@ -762,17 +762,17 @@ app.get('/api/workers/lookup/:phone', async (c) => {
       }, 403)
     }
   } else if (!worker.device_id && deviceId) {
-    // No device locked yet — lock it now (worker already gave consent during registration)
+    // No device locked yet \u2014 lock it now (worker already gave consent during registration)
     await db.prepare(
       `UPDATE workers SET device_id = ?, device_consent_given = 1, device_consent_at = CURRENT_TIMESTAMP WHERE id = ?`
     ).bind(deviceId, worker.id).run()
   }
 
-  // ── PIN verification ────────────────────────────────────────────────────────
+  // \u2500\u2500 PIN verification \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   // PIN is required on login. Skip only if worker has never set one (legacy '0000' + no is_temp_pin col).
   const pin = c.req.query('pin') || null
   if (pin !== null) {
-    // PIN was provided — verify it
+    // PIN was provided \u2014 verify it
     if (worker.pin && worker.pin !== pin) {
       return c.json({ error: 'wrong_pin', message: 'Incorrect PIN. Please try again.' }, 401)
     }
@@ -786,7 +786,7 @@ app.get('/api/workers/lookup/:phone', async (c) => {
   }})
 })
 
-// POST /api/workers/:id/change-pin — worker changes their own PIN
+// POST /api/workers/:id/change-pin \u2014 worker changes their own PIN
 app.post('/api/workers/:id/change-pin', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -794,7 +794,7 @@ app.post('/api/workers/:id/change-pin', async (c) => {
   const { current_pin, new_pin } = await c.req.json()
 
   if (!new_pin || new_pin.length < 4 || new_pin.length > 8 || !/^\d+$/.test(new_pin)) {
-    return c.json({ error: 'invalid_pin', message: 'New PIN must be 4–8 numeric digits.' }, 400)
+    return c.json({ error: 'invalid_pin', message: 'New PIN must be 4\u20138 numeric digits.' }, 400)
   }
 
   const worker = await db.prepare('SELECT * FROM workers WHERE id = ? AND active = 1').bind(workerId).first<any>()
@@ -815,8 +815,8 @@ app.post('/api/workers/:id/change-pin', async (c) => {
   return c.json({ success: true, message: 'PIN updated successfully.' })
 })
 
-// POST /api/workers/forgot-pin — fully automated PIN reset via email (no admin needed)
-// Worker enters phone → system generates temp PIN → emails it → worker logs in and sets new PIN
+// POST /api/workers/forgot-pin \u2014 fully automated PIN reset via email (no admin needed)
+// Worker enters phone \u2192 system generates temp PIN \u2192 emails it \u2192 worker logs in and sets new PIN
 app.post('/api/workers/forgot-pin', async (c) => {
   const db  = c.env.DB
   const env = c.env
@@ -840,7 +840,7 @@ app.post('/api/workers/forgot-pin', async (c) => {
 
   // Worker must have an email on file
   if (!worker.email) {
-    // No email — still return safe message but log it
+    // No email \u2014 still return safe message but log it
     return c.json({
       success: false,
       error: 'no_email',
@@ -883,21 +883,21 @@ app.post('/api/workers/forgot-pin', async (c) => {
     <div style="padding:32px">
       <p style="font-size:15px;color:#374151;margin:0 0 16px">Hi <strong>\${worker.name}</strong>,</p>
       <p style="font-size:14px;color:#6b7280;margin:0 0 24px;line-height:1.6">
-        We received a request to reset your clock-in PIN. Use the temporary PIN below to log in — you will be asked to create a new personal PIN immediately after.
+        We received a request to reset your clock-in PIN. Use the temporary PIN below to log in \u2014 you will be asked to create a new personal PIN immediately after.
       </p>
       <div style="background:#f8fafc;border:2px dashed #6366f1;border-radius:14px;padding:24px;text-align:center;margin-bottom:24px">
         <p style="font-size:12px;color:#6b7280;margin:0 0 8px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600">Your Temporary PIN</p>
         <p style="font-size:48px;font-weight:800;color:#4f46e5;letter-spacing:14px;margin:0;font-family:monospace">\${tempPin}</p>
       </div>
       <a href="\${joinLink}" style="display:block;background:#4f46e5;color:#fff;text-decoration:none;text-align:center;padding:14px;border-radius:10px;font-size:15px;font-weight:700;margin-bottom:20px">
-        Open Clock-In App →
+        Open Clock-In App \u2192
       </a>
       <div style="background:#fefce8;border:1px solid #fde68a;border-radius:10px;padding:14px;font-size:12px;color:#92400e;line-height:1.5">
-        <strong>⚠️ Security notice:</strong> This PIN expires once you set a new one. If you did not request this reset, please contact your manager immediately.
+        <strong>\u26A0\uFE0F Security notice:</strong> This PIN expires once you set a new one. If you did not request this reset, please contact your manager immediately.
       </div>
     </div>
     <div style="padding:16px 32px;border-top:1px solid #f3f4f6;text-align:center">
-      <p style="font-size:11px;color:#9ca3af;margin:0">\${appName} · Automated security email · Do not reply</p>
+      <p style="font-size:11px;color:#9ca3af;margin:0">\${appName} \u00B7 Automated security email \u00B7 Do not reply</p>
     </div>
   </div>
 </body>
@@ -910,7 +910,7 @@ app.post('/api/workers/forgot-pin', async (c) => {
       body: JSON.stringify({
         from: `\${appName} <alerts@clockinproof.com>`,
         to: [worker.email],
-        subject: `\${appName} — Your Temporary PIN`,
+        subject: `\${appName} \u2014 Your Temporary PIN`,
         html: emailHtml
       })
     })
@@ -1010,7 +1010,7 @@ app.delete('/api/workers/:id', async (c) => {
   const db  = c.env.DB
   const id  = parseInt(c.req.param('id'))
 
-  // Check for active sessions — block delete if worker is currently clocked in
+  // Check for active sessions \u2014 block delete if worker is currently clocked in
   const activeSession = await db.prepare(
     "SELECT id FROM sessions WHERE worker_id = ? AND status = 'active'"
   ).bind(id).first<any>()
@@ -1031,9 +1031,9 @@ app.delete('/api/workers/:id', async (c) => {
   return c.json({ success: true })
 })
 
-// ─── WORKER STATUS & AUDIT TRAIL API ─────────────────────────────────────────
+// \u2500\u2500\u2500 WORKER STATUS & AUDIT TRAIL API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-// GET /api/workers/:id/status — get current status + full audit trail
+// GET /api/workers/:id/status \u2014 get current status + full audit trail
 app.get('/api/workers/:id/status', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -1054,7 +1054,7 @@ app.get('/api/workers/:id/status', async (c) => {
   return c.json({ worker_id: id, current_status: currentStatus, log: logRaw.results || [] })
 })
 
-// POST /api/workers/:id/status — change worker employment status
+// POST /api/workers/:id/status \u2014 change worker employment status
 app.post('/api/workers/:id/status', async (c) => {
   const db  = c.env.DB
   const env = c.env as any
@@ -1080,7 +1080,7 @@ app.post('/api/workers/:id/status', async (c) => {
 
   const oldStatus = worker.worker_status || (worker.active ? 'active' : 'terminated')
 
-  // Update workers table — sync active flag
+  // Update workers table \u2014 sync active flag
   const isActive = newStatus === 'active' || newStatus === 'on_holiday' || newStatus === 'sick_leave' ? 1 : 0
   await db.prepare(
     'UPDATE workers SET worker_status = ?, active = ? WHERE id = ?'
@@ -1092,7 +1092,7 @@ app.post('/api/workers/:id/status', async (c) => {
      VALUES (?, ?, ?, ?, ?, ?)`
   ).bind(id, changedBy, oldStatus, newStatus, reason, returnDate || null).run()
 
-  // If suspended or terminated — force clock out any active session
+  // If suspended or terminated \u2014 force clock out any active session
   if (newStatus === 'suspended' || newStatus === 'terminated') {
     const activeSession = await db.prepare(
       "SELECT s.*, w.hourly_rate, w.name as worker_name, w.phone as worker_phone FROM sessions s JOIN workers w ON s.worker_id=w.id WHERE s.worker_id=? AND s.status='active'"
@@ -1104,7 +1104,7 @@ app.post('/api/workers/:id/status', async (c) => {
       const hoursWorked = (now.getTime() - clockInMs) / (1000 * 60 * 60)
       const earnings    = hoursWorked * (activeSession.hourly_rate || 0)
       const autoReason  = newStatus === 'terminated'
-        ? `Worker terminated — auto clocked out by admin`
+        ? `Worker terminated \u2014 auto clocked out by admin`
         : `Worker suspended: ${reason}`
 
       await db.prepare(`
@@ -1120,8 +1120,8 @@ app.post('/api/workers/:id/status', async (c) => {
       const appName = settings.app_name || 'ClockInProof'
 
       const smsMap: Record<string, string> = {
-        suspended: `⚠️ ${appName}: Your account has been suspended.\nReason: ${reason}\nContact your manager for details.`,
-        terminated: `🔴 ${appName}: Your employment has been recorded as terminated.\nReason: ${reason}\nContact your manager for details.`
+        suspended: `\u26A0\uFE0F ${appName}: Your account has been suspended.\nReason: ${reason}\nContact your manager for details.`,
+        terminated: `\uD83D\uDD34 ${appName}: Your employment has been recorded as terminated.\nReason: ${reason}\nContact your manager for details.`
       }
       if (activeSession.worker_phone && smsMap[newStatus]) {
         await sendWorkerSms(env, activeSession.worker_phone, smsMap[newStatus])
@@ -1136,11 +1136,11 @@ app.post('/api/workers/:id/status', async (c) => {
   return c.json({ success: true, worker_id: id, old_status: oldStatus, new_status: newStatus, log: logRaw.results || [] })
 })
 
-// ─── SESSIONS API (Clock In / Out) ────────────────────────────────────────────
+// \u2500\u2500\u2500 SESSIONS API (Clock In / Out) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-// ─── WORKER JOIN LINK API (no codes needed) ───────────────────────────────────
+// \u2500\u2500\u2500 WORKER JOIN LINK API (no codes needed) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-// GET /api/workers/:id/invite  — return worker's join link info
+// GET /api/workers/:id/invite  \u2014 return worker's join link info
 app.get('/api/workers/:id/invite', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -1152,7 +1152,7 @@ app.get('/api/workers/:id/invite', async (c) => {
   return c.json({ worker_id: worker.id, worker_name: worker.name, worker_phone: worker.phone, join_link: joinLink, is_active: true })
 })
 
-// POST /api/workers/:id/invite  — kept for compatibility, just returns the join link
+// POST /api/workers/:id/invite  \u2014 kept for compatibility, just returns the join link
 app.post('/api/workers/:id/invite', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -1164,12 +1164,12 @@ app.post('/api/workers/:id/invite', async (c) => {
   return c.json({ invite_code: String(worker.id), worker_name: worker.name, worker_phone: worker.phone, invite_link: joinLink, join_link: joinLink })
 })
 
-// DELETE /api/workers/:id/invite  — no-op kept for compatibility
+// DELETE /api/workers/:id/invite  \u2014 no-op kept for compatibility
 app.delete('/api/workers/:id/invite', async (c) => {
   return c.json({ success: true, message: 'Links cannot be revoked (use Terminate worker status instead)' })
 })
 
-// GET /api/workers/join/:id  — returns worker data by numeric ID (used by /join page)
+// GET /api/workers/join/:id  \u2014 returns worker data by numeric ID (used by /join page)
 app.get('/api/workers/join/:id', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -1187,7 +1187,7 @@ app.get('/api/workers/join/:id', async (c) => {
   return c.json({ worker })
 })
 
-// POST /api/workers/:id/invite/send-sms  — send join link via Twilio
+// POST /api/workers/:id/invite/send-sms  \u2014 send join link via Twilio
 app.post('/api/workers/:id/invite/send-sms', async (c) => {
   const db  = c.env.DB
   const env = c.env
@@ -1213,7 +1213,7 @@ app.post('/api/workers/:id/invite/send-sms', async (c) => {
   const from   = twilioFrom   || cfg.twilio_from_number       || ''
 
   if (!sid || !token || (!msgSvc && !from)) {
-    return c.json({ error: 'Twilio not configured — add credentials in Settings', twilio_missing: true }, 400)
+    return c.json({ error: 'Twilio not configured \u2014 add credentials in Settings', twilio_missing: true }, 400)
   }
 
   const appHost  = cfg.app_host ? cfg.app_host.replace(/\/$/, '') : 'https://app.clockinproof.com'
@@ -1225,7 +1225,7 @@ app.post('/api/workers/:id/invite/send-sms', async (c) => {
     : ''
 
   const smsBody =
-    `Hi ${worker.name}! 👋\n` +
+    `Hi ${worker.name}! \uD83D\uDC4B\n` +
     `Your ClockInProof clock-in app is ready.\n` +
     `Tap this link to get started:\n` +
     `${joinLink}` +
@@ -1260,12 +1260,12 @@ app.post('/api/workers/:id/invite/send-sms', async (c) => {
   }
 })
 
-// GET /api/workers/by-invite/:code  — legacy redirect (kept so old links don't 404)
+// GET /api/workers/by-invite/:code  \u2014 legacy redirect (kept so old links don't 404)
 app.get('/api/workers/by-invite/:code', async (c) => {
   return c.json({ error: 'This is an old-format link. Please ask your manager to resend your invite.' }, 410)
 })
 
-// GET /invite/:code  — legacy redirect to /join flow
+// GET /invite/:code  \u2014 legacy redirect to /join flow
 app.get('/invite/:code', async (c) => {
   // Old invite links: try to find worker by invite_code and redirect to /join/:id
   const db   = c.env.DB
@@ -1276,18 +1276,18 @@ app.get('/invite/:code', async (c) => {
   if (worker) {
     return c.redirect(`/join/${worker.id}`, 301)
   }
-  // Code not found — show helpful error page
+  // Code not found \u2014 show helpful error page
   return c.html(`<!DOCTYPE html><html><head><meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>ClockInProof</title>
     <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#1e40af;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}.card{background:#fff;border-radius:24px;padding:40px 32px;text-align:center;max-width:360px;width:100%}.icon{font-size:48px;margin-bottom:16px}h1{font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:8px}p{color:#6b7280;font-size:15px;line-height:1.5}</style>
-    </head><body><div class="card"><div class="icon">🔗</div>
+    </head><body><div class="card"><div class="icon">\uD83D\uDD17</div>
     <h1>Link Expired</h1>
     <p>This link is no longer valid.<br>Please ask your manager to send you a new link.</p>
     </div></body></html>`)
 })
 
-// GET /join/:workerId  — NEW clean join page (no codes, no API call needed for display)
+// GET /join/:workerId  \u2014 NEW clean join page (no codes, no API call needed for display)
 app.get('/join/:workerId', async (c) => {
   const workerIdRaw = c.req.param('workerId')
   const workerId    = parseInt(workerIdRaw)
@@ -1301,7 +1301,7 @@ app.get('/join/:workerId', async (c) => {
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="ClockInProof"/>
-  <title>ClockInProof — Opening App...</title>
+  <title>ClockInProof \u2014 Opening App...</title>
   <link rel="manifest" href="/static/manifest-worker.json"/>
   <link rel="apple-touch-icon" href="/static/icon-192.png"/>
   <style>
@@ -1330,7 +1330,7 @@ app.get('/join/:workerId', async (c) => {
 </head>
 <body>
 <div class="card" id="card">
-  <div class="icon">⏱</div>
+  <div class="icon">\u23F1</div>
   <h1>ClockInProof</h1>
   <p style="color:#6b7280;font-size:15px;margin-bottom:8px">Opening your app&hellip;</p>
   <div class="spinner" id="spinner"></div>
@@ -1345,7 +1345,7 @@ app.get('/join/:workerId', async (c) => {
   if (!workerId) {
     spinner.style.display = 'none'
     msg.style.display = 'block'
-    msg.innerHTML = '<div class="error-box"><strong>❌ Invalid link.</strong><br>Please ask your manager to send you a new link.</div>'
+    msg.innerHTML = '<div class="error-box"><strong>\u274C Invalid link.</strong><br>Please ask your manager to send you a new link.</div>'
     return
   }
 
@@ -1357,14 +1357,14 @@ app.get('/join/:workerId', async (c) => {
       spinner.style.display = 'none'
       msg.style.display = 'block'
       const errText = data.error || 'Link not working. Please contact your manager.'
-      msg.innerHTML = '<div class="error-box"><strong>❌ ' + errText + '</strong></div>'
+      msg.innerHTML = '<div class="error-box"><strong>\u274C ' + errText + '</strong></div>'
       return
     }
 
     const w = data.worker
-    // ── DO NOT auto-login here ──
+    // \u2500\u2500 DO NOT auto-login here \u2500\u2500
     // Just store the worker ID as a hint for the app, then send them to /app
-    // The app will handle: consent → register/login → temp PIN change
+    // The app will handle: consent \u2192 register/login \u2192 temp PIN change
     // This prevents bypassing the PIN and consent flows
     localStorage.setItem('wt_join_worker_id', String(w.id))
     localStorage.setItem('wt_join_phone', w.phone || '')
@@ -1375,13 +1375,13 @@ app.get('/join/:workerId', async (c) => {
     spinner.style.display = 'none'
     msg.style.display = 'block'
     msg.innerHTML = \`
-      <p class="name">👋 Hi, \${w.name}!</p>
+      <p class="name">\uD83D\uDC4B Hi, \${w.name}!</p>
       <p class="sub">Tap below to open your clock-in app and get started.</p>
-      <a href="/app" class="btn">📲 Open ClockInProof</a>
+      <a href="/app" class="btn">\uD83D\uDCF2 Open ClockInProof</a>
       <div class="install-box" id="install-hint">
-        <strong>📌 Save to your Home Screen</strong><br>
-        Tap your browser's <strong>Share → Add to Home Screen</strong> button.<br>
-        After that, just tap the ClockInProof icon — no link needed!
+        <strong>\uD83D\uDCCC Save to your Home Screen</strong><br>
+        Tap your browser's <strong>Share \u2192 Add to Home Screen</strong> button.<br>
+        After that, just tap the ClockInProof icon \u2014 no link needed!
       </div>
     \`
     // Auto-redirect in 2s
@@ -1392,7 +1392,7 @@ app.get('/join/:workerId', async (c) => {
     msg.style.display = 'block'
     msg.innerHTML = \`
       <div class="error-box">
-        <strong>⚠️ Could not connect.</strong><br>
+        <strong>\u26A0\uFE0F Could not connect.</strong><br>
         Check your internet and <a href="javascript:location.reload()" style="color:#1e40af;font-weight:600;">tap here to try again</a>.
       </div>
     \`
@@ -1418,22 +1418,22 @@ window.showPwaInstall = function() {
   const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
   if (isStandalone) { hint.style.display = 'none'; return; }
   if (deferredInstallPrompt) {
-    hint.innerHTML = \`<strong>📲 Install App on Your Phone</strong><br>
+    hint.innerHTML = \`<strong>\uD83D\uDCF2 Install App on Your Phone</strong><br>
       <button id="pwa-do-install" style="margin-top:10px;background:#1d4ed8;color:white;border:none;padding:12px 24px;border-radius:10px;font-size:15px;font-weight:700;width:100%;cursor:pointer;">
-        ➕ Add ClockInProof to Home Screen</button>
-      <p style="margin-top:8px;font-size:11px;color:#64748b;">Tap once — no App Store needed</p>\`;
+        \u2795 Add ClockInProof to Home Screen</button>
+      <p style="margin-top:8px;font-size:11px;color:#64748b;">Tap once \u2014 no App Store needed</p>\`;
     document.getElementById('pwa-do-install').onclick = async () => {
       deferredInstallPrompt.prompt();
       const { outcome } = await deferredInstallPrompt.userChoice;
       deferredInstallPrompt = null;
-      if (outcome === 'accepted') hint.innerHTML = '<strong>✅ App installed!</strong>';
+      if (outcome === 'accepted') hint.innerHTML = '<strong>\u2705 App installed!</strong>';
     };
   } else if (isIOS) {
-    hint.innerHTML = \`<strong>📲 Add to Home Screen (iPhone/iPad)</strong><br>
+    hint.innerHTML = \`<strong>\uD83D\uDCF2 Add to Home Screen (iPhone/iPad)</strong><br>
       <ol style="text-align:left;margin:10px 0 0;padding-left:18px;line-height:2;">
-        <li>Tap the <strong>Share</strong> button ⬆️ in Safari</li>
+        <li>Tap the <strong>Share</strong> button \u2B06\uFE0F in Safari</li>
         <li>Tap <strong>"Add to Home Screen"</strong></li>
-        <li>Tap <strong>"Add"</strong> — done!</li>
+        <li>Tap <strong>"Add"</strong> \u2014 done!</li>
       </ol>\`;
   }
 }
@@ -1453,7 +1453,7 @@ function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number)
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
 }
 
-// Geocode a free-text address → { lat, lng } using Nominatim (free, no key)
+// Geocode a free-text address \u2192 { lat, lng } using Nominatim (free, no key)
 async function geocodeAddress(address: string): Promise<{ lat: number; lng: number; display: string } | null> {
   try {
     const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1&addressdetails=1`
@@ -1465,7 +1465,7 @@ async function geocodeAddress(address: string): Promise<{ lat: number; lng: numb
   } catch { return null }
 }
 
-// ─── OVERRIDE NOTIFICATION HELPER ────────────────────────────────────────────
+// \u2500\u2500\u2500 OVERRIDE NOTIFICATION HELPER \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // Sends email (Resend) and/or SMS (Twilio) to admin when a worker is blocked.
 // Both channels are optional and configured in Settings.
 // The notification contains a deep-link directly to /admin#overrides so the
@@ -1496,7 +1496,7 @@ async function sendOverrideNotification(
   const distM   = Math.round(req.distance_meters || 0)
   const distTxt = distM >= 1000 ? (distM / 1000).toFixed(1) + ' km' : distM + ' m'
 
-  // Deep-link URL → opens admin dashboard at the Overrides tab
+  // Deep-link URL \u2192 opens admin dashboard at the Overrides tab
   // Uses admin_host setting (admin.clockinproof.com) if configured, else app_host, else relative
   const adminHost = (await env.DB.prepare(`SELECT value FROM settings WHERE key='admin_host'`).first<{value:string}>())?.value || ''
   const appHost   = adminHost || env.APP_HOST || ''   // fallback chain
@@ -1507,7 +1507,7 @@ async function sendOverrideNotification(
     ? `https://www.google.com/maps?q=${req.worker_lat},${req.worker_lng}`
     : null
 
-  // ── EMAIL via Resend ────────────────────────────────────────────────────────
+  // \u2500\u2500 EMAIL via Resend \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   // Credentials: Cloudflare env secret first, DB fallback for local dev
   const resendKey  = (env.RESEND_API_KEY || settings.resend_api_key || '').trim()
   const resendFrom = (env.RESEND_FROM    || settings.resend_from    || `${appName} Alerts <alerts@clockinproof.com>`).trim()
@@ -1521,9 +1521,9 @@ async function sendOverrideNotification(
 
     <!-- Header -->
     <div style="background:#dc2626;border-radius:16px 16px 0 0;padding:24px;text-align:center;">
-      <div style="font-size:36px;margin-bottom:8px;">🛡️</div>
+      <div style="font-size:36px;margin-bottom:8px;">\uD83D\uDEE1\uFE0F</div>
       <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700;">Clock-In Blocked</h1>
-      <p style="color:#fca5a5;margin:6px 0 0;font-size:14px;">Admin approval required — GPS mismatch detected</p>
+      <p style="color:#fca5a5;margin:6px 0 0;font-size:14px;">Admin approval required \u2014 GPS mismatch detected</p>
     </div>
 
     <!-- Body -->
@@ -1549,28 +1549,28 @@ async function sendOverrideNotification(
       <div style="background:#f9fafb;border-radius:12px;padding:16px;margin-bottom:20px;">
         <p style="margin:0 0 12px;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;letter-spacing:.5px;">Location Comparison</p>
         <div style="margin-bottom:12px;">
-          <p style="margin:0;font-size:12px;color:#6b7280;">📍 <strong>Worker's actual GPS location</strong></p>
+          <p style="margin:0;font-size:12px;color:#6b7280;">\uD83D\uDCCD <strong>Worker's actual GPS location</strong></p>
           <p style="margin:4px 0 0;font-size:13px;color:#111827;">${req.worker_address || 'Unknown address'}</p>
-          ${workerMapLink ? `<a href="${workerMapLink}" style="font-size:12px;color:#3b82f6;">View on Google Maps →</a>` : ''}
+          ${workerMapLink ? `<a href="${workerMapLink}" style="font-size:12px;color:#3b82f6;">View on Google Maps \u2192</a>` : ''}
         </div>
         <div style="border-top:1px solid #e5e7eb;padding-top:12px;">
-          <p style="margin:0;font-size:12px;color:#6b7280;">🏗️ <strong>Job site entered by worker</strong></p>
+          <p style="margin:0;font-size:12px;color:#6b7280;">\uD83C\uDFD7\uFE0F <strong>Job site entered by worker</strong></p>
           <p style="margin:4px 0 0;font-size:13px;color:#111827;">${req.job_location}</p>
         </div>
       </div>
 
       <!-- Task -->
       <div style="background:#eff6ff;border-left:4px solid #3b82f6;border-radius:0 8px 8px 0;padding:12px;margin-bottom:24px;">
-        <p style="margin:0;font-size:12px;color:#6b7280;">📋 <strong>Task description</strong></p>
+        <p style="margin:0;font-size:12px;color:#6b7280;">\uD83D\uDCCB <strong>Task description</strong></p>
         <p style="margin:4px 0 0;font-size:13px;color:#1e40af;">${req.job_description || 'Not specified'}</p>
       </div>
 
       <!-- CTA Button -->
       <div style="text-align:center;margin-bottom:20px;">
         <a href="${deepLink}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:16px;padding:16px 40px;border-radius:12px;letter-spacing:.3px;">
-          👉 Review &amp; Approve / Deny
+          \uD83D\uDC49 Review &amp; Approve / Deny
         </a>
-        <p style="margin:12px 0 0;font-size:12px;color:#9ca3af;">Tap the button — opens the Overrides tab directly on any device</p>
+        <p style="margin:12px 0 0;font-size:12px;color:#9ca3af;">Tap the button \u2014 opens the Overrides tab directly on any device</p>
       </div>
 
       <!-- Info note -->
@@ -1581,7 +1581,7 @@ async function sendOverrideNotification(
 
     <!-- Footer -->
     <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:0 0 16px 16px;padding:16px;text-align:center;">
-      <p style="margin:0;font-size:12px;color:#9ca3af;">${appName} · Override Request #${req.id} · ${new Date().toLocaleString()}</p>
+      <p style="margin:0;font-size:12px;color:#9ca3af;">${appName} \u00B7 Override Request #${req.id} \u00B7 ${new Date().toLocaleString()}</p>
       <p style="margin:6px 0 0;font-size:11px;color:#d1d5db;">Sent to ${adminEmail}</p>
     </div>
   </div>
@@ -1595,7 +1595,7 @@ async function sendOverrideNotification(
         body: JSON.stringify({
           from: resendFrom,
           to: [adminEmail],
-          subject: `🚨 [${appName}] Clock-In Blocked: ${req.worker_name} is ${distTxt} from "${req.job_location}"`,
+          subject: `\uD83D\uDEA8 [${appName}] Clock-In Blocked: ${req.worker_name} is ${distTxt} from "${req.job_location}"`,
           html: emailHtml
         })
       })
@@ -1610,7 +1610,7 @@ async function sendOverrideNotification(
     }
   }
 
-  // ── SMS via Twilio ──────────────────────────────────────────────────────────
+  // \u2500\u2500 SMS via Twilio \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   // Credentials: prefer Cloudflare env secrets, fall back to DB settings (local dev)
   const twilioSid    = (env.TWILIO_ACCOUNT_SID      || settings.twilio_account_sid       || '').trim()
   const twilioToken  = (env.TWILIO_AUTH_TOKEN        || settings.twilio_auth_token        || '').trim()
@@ -1619,7 +1619,7 @@ async function sendOverrideNotification(
 
   if (notifySms && adminPhone && twilioSid && twilioToken && (twilioMsgSvc || twilioFrom)) {
     const smsBody =
-      `🚨 ${appName} ALERT\n` +
+      `\uD83D\uDEA8 ${appName} ALERT\n` +
       `Worker ${req.worker_name} tried to clock in but is ${distTxt} from "${req.job_location}".\n` +
       `Task: ${(req.job_description || '').substring(0, 60)}\n` +
       `Tap to approve/deny: ${approveLink}`
@@ -1654,7 +1654,7 @@ async function sendOverrideNotification(
   return result
 }
 
-// Clock In — with GPS fraud detection
+// Clock In \u2014 with GPS fraud detection
 app.post('/api/sessions/clock-in', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -1664,15 +1664,15 @@ app.post('/api/sessions/clock-in', async (c) => {
   if (!job_location || !job_location.trim()) return c.json({ error: 'Job location is required' }, 400)
   if (!job_description || !job_description.trim()) return c.json({ error: 'Job description is required' }, 400)
 
-  // Normalize session type early — needed for device lock bypass logic below
+  // Normalize session type early \u2014 needed for device lock bypass logic below
   const validTypes = ['regular', 'material_pickup', 'emergency_job']
   const clockType = validTypes.includes(session_type) ? session_type : 'regular'
 
-  // ── Device lock enforcement on clock-in ──────────────────────────────────
+  // \u2500\u2500 Device lock enforcement on clock-in \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   // Prevents buddy punching: verifies the clock-in is coming from the
-  // device registered by this worker. Not biometric — random browser token.
+  // device registered by this worker. Not biometric \u2014 random browser token.
   // EXCEPTION: material_pickup and emergency_job are legitimately done from
-  // a PC or different device (supply store, office, emergency call) — allow
+  // a PC or different device (supply store, office, emergency call) \u2014 allow
   // those session types to bypass the device lock.
   const workerRow = await db.prepare('SELECT * FROM workers WHERE id = ? AND active = 1').bind(parseInt(worker_id)).first<any>()
   if (!workerRow) return c.json({ error: 'Worker not found or inactive', message: 'Your worker account was not found. Please sign out and sign in again at your company subdomain (e.g. yourcompany.clockinproof.com).' }, 404)
@@ -1699,13 +1699,13 @@ app.post('/api/sessions/clock-in', async (c) => {
   const fraudCheckEnabled = settings.gps_fraud_check !== '0'
   const geofenceRadius    = parseFloat(settings.geofence_radius_meters || '300')
 
-  // ── GPS FRAUD CHECK ──────────────────────────────────────────────────────────
-  // Skip geofence check for Material Pickup and Emergency Job — worker is
+  // \u2500\u2500 GPS FRAUD CHECK \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // Skip geofence check for Material Pickup and Emergency Job \u2014 worker is
   // legitimately off-site. Admin is notified via the session type badge instead.
   const skipGeofence = clockType === 'material_pickup' || clockType === 'emergency_job'
 
   if (fraudCheckEnabled && latitude && longitude && !skipGeofence) {
-    // ── GPS FRAUD CHECK v2: Compare worker GPS against admin-configured job sites ──
+    // \u2500\u2500 GPS FRAUD CHECK v2: Compare worker GPS against admin-configured job sites \u2500\u2500
     // This is CHEAT-PROOF: workers cannot bypass it by typing a fake address.
     // The check uses coordinates stored by the admin in the job_sites table.
     // If no job sites are configured, fall back to geocoding the typed address.
@@ -1732,9 +1732,9 @@ app.post('/api/sessions/clock-in', async (c) => {
     }
 
     // Determine which coords to compare against:
-    // Priority 1 — job site selected by worker (passed as job_site_id in request)
-    // Priority 2 — closest configured job site
-    // Priority 3 — geocode the typed address (fallback only, less reliable)
+    // Priority 1 \u2014 job site selected by worker (passed as job_site_id in request)
+    // Priority 2 \u2014 closest configured job site
+    // Priority 3 \u2014 geocode the typed address (fallback only, less reliable)
     let checkSite = closestSite
     if (job_site_id) {
       const selected = jobSites.find((s: any) => s.id === parseInt(job_site_id))
@@ -1748,7 +1748,7 @@ app.post('/api/sessions/clock-in', async (c) => {
       jobCoords = { lat: parseFloat(checkSite.lat), lng: parseFloat(checkSite.lng), display: checkSite.address || checkSite.name }
       usingJobSite = true
     } else {
-      // No job sites configured — fall back to geocoding the typed address
+      // No job sites configured \u2014 fall back to geocoding the typed address
       jobCoords = await geocodeAddress(job_location.trim())
     }
 
@@ -1757,7 +1757,7 @@ app.post('/api/sessions/clock-in', async (c) => {
       const distanceKm = (distanceM / 1000).toFixed(2)
 
       if (distanceM > geofenceRadius) {
-        // ── FRAUD DETECTED ────────────────────────────────────────────────────
+        // \u2500\u2500 FRAUD DETECTED \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
         const worker = await db.prepare('SELECT * FROM workers WHERE id = ?').bind(worker_id).first<any>()
 
         const reqResult = await db.prepare(`
@@ -1770,7 +1770,7 @@ app.post('/api/sessions/clock-in', async (c) => {
           worker_id,
           worker?.name || '',
           worker?.phone || '',
-          usingJobSite ? (checkSite.name + ' — ' + (checkSite.address || '')) : job_location.trim(),
+          usingJobSite ? (checkSite.name + ' \u2014 ' + (checkSite.address || '')) : job_location.trim(),
           job_description.trim(),
           latitude, longitude, address || null,
           jobCoords.lat, jobCoords.lng,
@@ -1783,7 +1783,7 @@ app.post('/api/sessions/clock-in', async (c) => {
           id: requestId as number,
           worker_name: worker?.name || '',
           worker_phone: worker?.phone || '',
-          job_location: usingJobSite ? (checkSite.name + ' — ' + (checkSite.address || '')) : job_location.trim(),
+          job_location: usingJobSite ? (checkSite.name + ' \u2014 ' + (checkSite.address || '')) : job_location.trim(),
           job_description: job_description.trim(),
           distance_meters: Math.round(distanceM),
           worker_address: address || null,
@@ -1809,12 +1809,12 @@ app.post('/api/sessions/clock-in', async (c) => {
           override_message: 'An override request has been sent to your manager. You may only clock in after approval.'
         }, 403)
       }
-      // Worker is within geofence — proceed
+      // Worker is within geofence \u2014 proceed
     }
-    // If no coords available — allow clock-in (fail open, log warning)
+    // If no coords available \u2014 allow clock-in (fail open, log warning)
   }
 
-  // ── NORMAL CLOCK IN ──────────────────────────────────────────────────────────
+  // \u2500\u2500 NORMAL CLOCK IN \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   const now = new Date().toISOString()
   const result = await db.prepare(
     `INSERT INTO sessions
@@ -1829,7 +1829,7 @@ app.post('/api/sessions/clock-in', async (c) => {
 
   const session = await db.prepare('SELECT * FROM sessions WHERE id = ?').bind(result.meta.last_row_id).first()
 
-  // ── Mark any open dispatch for this worker as "arrived" ──────────────────
+  // \u2500\u2500 Mark any open dispatch for this worker as "arrived" \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   try {
     await db.prepare(`
       UPDATE job_dispatches
@@ -1889,7 +1889,7 @@ app.post('/api/sessions/clock-out', async (c) => {
   return c.json({ session: updated, total_hours: totalHours, earnings, message: 'Clocked out successfully' })
 })
 
-// ─── CLOCK-IN OVERRIDE REQUESTS ──────────────────────────────────────────────
+// \u2500\u2500\u2500 CLOCK-IN OVERRIDE REQUESTS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 // Worker polls this to check if their override request was approved/denied
 app.get('/api/override/status/:request_id', async (c) => {
@@ -1933,7 +1933,7 @@ app.get('/api/override/all', async (c) => {
   return c.json({ requests: requests.results })
 })
 
-// Admin: approve override → actually clock the worker in
+// Admin: approve override \u2192 actually clock the worker in
 app.post('/api/override/:id/approve', async (c) => {
   const db = c.env.DB
   const id = c.req.param('id')
@@ -1965,7 +1965,7 @@ app.post('/api/override/:id/approve', async (c) => {
     req.worker_id, now,
     req.worker_lat, req.worker_lng, req.worker_address,
     req.job_location, req.job_description,
-    `ADMIN OVERRIDE — Worker was ${Math.round(req.distance_meters)}m from job site. ${admin_note || ''}`
+    `ADMIN OVERRIDE \u2014 Worker was ${Math.round(req.distance_meters)}m from job site. ${admin_note || ''}`
   ).run()
 
   const session = await db.prepare('SELECT * FROM sessions WHERE id = ?').bind(sessionResult.meta.last_row_id).first()
@@ -1975,7 +1975,7 @@ app.post('/api/override/:id/approve', async (c) => {
     "UPDATE clock_in_requests SET status='approved', override_by='admin', override_note=?, resolved_at=CURRENT_TIMESTAMP WHERE id=?"
   ).bind(admin_note || 'Approved by admin', id).run()
 
-  return c.json({ success: true, session, message: 'Override approved — worker clocked in' })
+  return c.json({ success: true, session, message: 'Override approved \u2014 worker clocked in' })
 })
 
 // Admin: deny override
@@ -2029,8 +2029,8 @@ app.post('/api/override/:id/notify', async (c) => {
   })
 })
 
-// ── HELPER: Send SMS via platform Twilio ─────────────────────────────────────
-// Credentials priority: Cloudflare env secrets → DB settings (local dev fallback)
+// \u2500\u2500 HELPER: Send SMS via platform Twilio \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Credentials priority: Cloudflare env secrets \u2192 DB settings (local dev fallback)
 async function sendWorkerSms(
   env: any,
   workerPhone: string,
@@ -2056,7 +2056,7 @@ async function sendWorkerSms(
     }
 
     if (!sid || !token || (!msgSvc && !from)) {
-      return { sent: false, error: 'Twilio not configured — add credentials in Super Admin → Platform Settings' }
+      return { sent: false, error: 'Twilio not configured \u2014 add credentials in Super Admin \u2192 Platform Settings' }
     }
 
     const rawPhone = workerPhone.replace(/[\s\-\(\)\.]/g, '')
@@ -2083,7 +2083,7 @@ async function sendWorkerSms(
   }
 }
 
-// ── SEND ADMIN SMS ────────────────────────────────────────────────────────────
+// \u2500\u2500 SEND ADMIN SMS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // Sends an SMS to the admin phone number configured in settings
 async function sendAdminSms(
   settings: Record<string, string>,
@@ -2095,7 +2095,7 @@ async function sendAdminSms(
   return sendWorkerSms(env, adminPhone, message)
 }
 
-// ── ADMIN FORCE CLOCK-OUT: stop any single active session ────────────────────
+// \u2500\u2500 ADMIN FORCE CLOCK-OUT: stop any single active session \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.post('/api/sessions/:id/admin-clockout', async (c) => {
   const db      = c.env.DB
   const env     = c.env as any
@@ -2115,7 +2115,7 @@ app.post('/api/sessions/:id/admin-clockout', async (c) => {
   const clockInMs  = new Date(session.clock_in_time).getTime()
   const hoursWorked = (now.getTime() - clockInMs) / (1000 * 60 * 60)
   const earnings    = hoursWorked * (session.hourly_rate || 0)
-  // Store clean note only — no prefix, no duplication into notes field
+  // Store clean note only \u2014 no prefix, no duplication into notes field
   const reason = adminNote
 
   await db.prepare(`
@@ -2139,11 +2139,11 @@ app.post('/api/sessions/:id/admin-clockout', async (c) => {
   const appHost   = settings.app_host || 'https://app.clockinproof.com'
   const hrsFormatted = `${Math.floor(hoursWorked)}h ${Math.round((hoursWorked % 1) * 60)}m`
 
-  // ── Notify worker via SMS ──────────────────────────────────────────────────
+  // \u2500\u2500 Notify worker via SMS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   let workerSmsResult = { sent: false, error: 'No phone' }
   if (session.worker_phone) {
     const smsMsg =
-      `⏹ ${appName}: You have been clocked out by your manager.\n` +
+      `\u23F9 ${appName}: You have been clocked out by your manager.\n` +
       `Reason: ${adminNote}\n` +
       `Hours worked: ${hrsFormatted}\n` +
       `If you have questions, contact your manager.`
@@ -2162,12 +2162,12 @@ app.post('/api/sessions/:id/admin-clockout', async (c) => {
   })
 })
 
-// ── ADMIN BULK CLOCK-OUT: stop all sessions where worker left geofence ────────
+// \u2500\u2500 ADMIN BULK CLOCK-OUT: stop all sessions where worker left geofence \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.post('/api/sessions/clockout-drifted', async (c) => {
   const db  = c.env.DB
   const env = c.env as any
   const body = await c.req.json().catch(() => ({})) as any
-  const adminNote = body.note?.trim() || 'Worker left job site — stopped by admin'
+  const adminNote = body.note?.trim() || 'Worker left job site \u2014 stopped by admin'
 
   await ensureSchema(db)
 
@@ -2208,7 +2208,7 @@ app.post('/api/sessions/clockout-drifted', async (c) => {
       const hrsF = `${Math.floor(hoursWorked)}h ${Math.round((hoursWorked % 1) * 60)}m`
       const distKm = ((s as any).drift_distance_meters / 1000).toFixed(1)
       const smsMsg =
-        `⚠️ ClockInProof: You have been automatically clocked out.\n` +
+        `\u26A0\uFE0F ClockInProof: You have been automatically clocked out.\n` +
         `Reason: You were detected ${distKm}km outside the job site geofence.\n` +
         `Hours recorded: ${hrsF}\n` +
         `If this is an error, contact your manager.`
@@ -2305,7 +2305,7 @@ app.get('/api/sessions', async (c) => {
   return c.json({ sessions: sessions.results })
 })
 
-// GET /api/sessions/last/:worker_id — fetch most recent completed session (for clockout reason)
+// GET /api/sessions/last/:worker_id \u2014 fetch most recent completed session (for clockout reason)
 app.get('/api/sessions/last/:worker_id', async (c) => {
   const db = c.env.DB
   const worker_id = c.req.param('worker_id')
@@ -2318,7 +2318,7 @@ app.get('/api/sessions/last/:worker_id', async (c) => {
   return c.json(session)
 })
 
-// ─── LOCATION PINGS API ───────────────────────────────────────────────────────
+// \u2500\u2500\u2500 LOCATION PINGS API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 app.post('/api/location/ping', async (c) => {
   const db  = c.env.DB
@@ -2335,8 +2335,8 @@ app.post('/api/location/ping', async (c) => {
      VALUES (?, ?, ?, ?, ?)`
   ).bind(session_id, worker_id, latitude, longitude, accuracy || null).run()
 
-  // ── DRIFT CHECK ──────────────────────────────────────────────────────────────
-  // Compare current GPS against the job site — flag if worker has left
+  // \u2500\u2500 DRIFT CHECK \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // Compare current GPS against the job site \u2014 flag if worker has left
   const settingsRaw = await db.prepare('SELECT * FROM settings').all()
   const settings: Record<string, string> = {}
   ;(settingsRaw.results as any[]).forEach((s: any) => { settings[s.key] = s.value })
@@ -2383,7 +2383,7 @@ app.post('/api/location/ping', async (c) => {
             worker_name: worker?.name || 'Worker',
             worker_phone: worker?.phone || '',
             job_location: session.job_location,
-            job_description: `⚠️ LOCATION DRIFT: Worker has left the job site during their shift. Currently ${Math.round(driftDistanceM)}m away from "${session.job_location}". Original task: ${session.job_description || 'N/A'}`,
+            job_description: `\u26A0\uFE0F LOCATION DRIFT: Worker has left the job site during their shift. Currently ${Math.round(driftDistanceM)}m away from "${session.job_location}". Original task: ${session.job_description || 'N/A'}`,
             distance_meters: Math.round(driftDistanceM),
             worker_address: null,
             worker_lat: latitude,
@@ -2394,7 +2394,7 @@ app.post('/api/location/ping', async (c) => {
             const exitMin = parseFloat(settings.geofence_exit_clockout_min || '0')
             const autoMsg = exitMin > 0 ? ` Will auto clock-out in ${exitMin} min if still away.` : ' Go to admin dashboard to clock out.'
             sendAdminSms(settings, env,
-              `⚠️ ClockInProof: ${worker?.name || 'Worker'} LEFT the job site.\n` +
+              `\u26A0\uFE0F ClockInProof: ${worker?.name || 'Worker'} LEFT the job site.\n` +
               `Distance: ${distStr} from "${session.job_location}".\n` +
               `${autoMsg}\n` +
               `View live: ${settings.admin_host || 'https://admin.clockinproof.com'}/#live`
@@ -2412,7 +2412,7 @@ app.post('/api/location/ping', async (c) => {
   })
 })
 
-// ── WATCHDOG: check all active sessions for away + auto-clockout ───────────────
+// \u2500\u2500 WATCHDOG: check all active sessions for away + auto-clockout \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // Called by worker app every minute AND can be triggered server-side
 app.get('/api/sessions/watchdog', async (c) => {
   const db  = c.env.DB
@@ -2443,7 +2443,7 @@ app.get('/api/sessions/watchdog', async (c) => {
     const hoursWorked = (nowMs - clockInMs) / (1000 * 60 * 60)
     const item: any   = { session_id: s.id, worker_name: s.worker_name, worker_phone: s.worker_phone }
 
-    // ── 1. MAX SHIFT AUTO-CLOCKOUT ───────────────────────────────────────────
+    // \u2500\u2500 1. MAX SHIFT AUTO-CLOCKOUT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     if (autoClockoutOn && hoursWorked >= maxShiftHours && !s.auto_clockout) {
       const reason = `Auto clocked out after ${maxShiftHours}h max shift limit`
       const earnings = hoursWorked * (s.hourly_rate || 0)
@@ -2461,7 +2461,7 @@ app.get('/api/sessions/watchdog', async (c) => {
       if (s.worker_phone) {
         const hrsF = `${Math.floor(hoursWorked)}h ${Math.round((hoursWorked % 1) * 60)}m`
         await sendWorkerSms(env, s.worker_phone,
-          `⏹ ClockInProof: You have been automatically clocked out.\nReason: You reached the ${maxShiftHours}h maximum shift limit.\nHours recorded: ${hrsF}\nIf this is an error, contact your manager.`
+          `\u23F9 ClockInProof: You have been automatically clocked out.\nReason: You reached the ${maxShiftHours}h maximum shift limit.\nHours recorded: ${hrsF}\nIf this is an error, contact your manager.`
         ).catch(() => {})
       }
 
@@ -2471,7 +2471,7 @@ app.get('/api/sessions/watchdog', async (c) => {
         worker_name: s.worker_name,
         worker_phone: s.worker_phone,
         job_location: s.job_location || 'Unknown',
-        job_description: `🕐 AUTO CLOCK-OUT: Worker exceeded ${maxShiftHours}h max shift. Session automatically closed at ${now.toLocaleTimeString()}. Hours recorded: ${item.hours}h. Original task: ${s.job_description || 'N/A'}`,
+        job_description: `\uD83D\uDD50 AUTO CLOCK-OUT: Worker exceeded ${maxShiftHours}h max shift. Session automatically closed at ${now.toLocaleTimeString()}. Hours recorded: ${item.hours}h. Original task: ${s.job_description || 'N/A'}`,
         distance_meters: 0,
         worker_address: null,
         worker_lat: null,
@@ -2479,7 +2479,7 @@ app.get('/api/sessions/watchdog', async (c) => {
       }).catch(() => {})
       if (settings.notify_sms === '1') {
         sendAdminSms(settings, env,
-          `⏹ ClockInProof AUTO CLOCK-OUT\n${s.worker_name} was clocked out — reached ${maxShiftHours}h max shift.\nHours: ${item.hours}h\nSite: ${s.job_location || 'Unknown'}\nView: ${settings.admin_host || 'https://admin.clockinproof.com'}/#sessions`
+          `\u23F9 ClockInProof AUTO CLOCK-OUT\n${s.worker_name} was clocked out \u2014 reached ${maxShiftHours}h max shift.\nHours: ${item.hours}h\nSite: ${s.job_location || 'Unknown'}\nView: ${settings.admin_host || 'https://admin.clockinproof.com'}/#sessions`
         ).catch(() => {})
       }
 
@@ -2487,7 +2487,7 @@ app.get('/api/sessions/watchdog', async (c) => {
       continue
     }
 
-    // ── 2. END-OF-DAY AUTO-CLOCKOUT ──────────────────────────────────────────
+    // \u2500\u2500 2. END-OF-DAY AUTO-CLOCKOUT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     // If still clocked in 30 min after work_end, auto clock out at work_end time
     if (autoClockoutOn && !s.auto_clockout) {
       const [endH, endM] = workEnd.split(':').map(Number)
@@ -2498,7 +2498,7 @@ app.get('/api/sessions/watchdog', async (c) => {
         // Clock out AT work_end, not now (to be fair to the worker)
         const workHours = (todayEnd.getTime() - clockInMs) / (1000 * 60 * 60)
         const earnings  = workHours * (s.hourly_rate || 0)
-        const reason    = `Auto clocked out at end of day (${workEnd}) — no clock-out recorded`
+        const reason    = `Auto clocked out at end of day (${workEnd}) \u2014 no clock-out recorded`
         await db.prepare(`
           UPDATE sessions SET
             clock_out_time=?, total_hours=?, earnings=?,
@@ -2513,7 +2513,7 @@ app.get('/api/sessions/watchdog', async (c) => {
         if (s.worker_phone) {
           const hrsF = `${Math.floor(workHours)}h ${Math.round((workHours % 1) * 60)}m`
           await sendWorkerSms(env, s.worker_phone,
-            `🌙 ClockInProof: You forgot to clock out.\nYou have been automatically clocked out at end of day (${workEnd}).\nHours recorded: ${hrsF}\nIf this is an error, contact your manager.`
+            `\uD83C\uDF19 ClockInProof: You forgot to clock out.\nYou have been automatically clocked out at end of day (${workEnd}).\nHours recorded: ${hrsF}\nIf this is an error, contact your manager.`
           ).catch(() => {})
         }
 
@@ -2522,7 +2522,7 @@ app.get('/api/sessions/watchdog', async (c) => {
           worker_name: s.worker_name,
           worker_phone: s.worker_phone,
           job_location: s.job_location || 'Unknown',
-          job_description: `🌙 END-OF-DAY AUTO CLOCK-OUT: Worker forgot to clock out. Session closed at ${workEnd}. Hours recorded: ${item.hours}h. Task: ${s.job_description || 'N/A'}`,
+          job_description: `\uD83C\uDF19 END-OF-DAY AUTO CLOCK-OUT: Worker forgot to clock out. Session closed at ${workEnd}. Hours recorded: ${item.hours}h. Task: ${s.job_description || 'N/A'}`,
           distance_meters: 0,
           worker_address: null,
           worker_lat: null,
@@ -2530,7 +2530,7 @@ app.get('/api/sessions/watchdog', async (c) => {
         }).catch(() => {})
         if (settings.notify_sms === '1') {
           sendAdminSms(settings, env,
-            `🌙 ClockInProof AUTO CLOCK-OUT\n${s.worker_name} forgot to clock out. Clocked out at end of day (${workEnd}).\nHours: ${item.hours}h\nSite: ${s.job_location || 'Unknown'}\nView: ${settings.admin_host || 'https://admin.clockinproof.com'}/#sessions`
+            `\uD83C\uDF19 ClockInProof AUTO CLOCK-OUT\n${s.worker_name} forgot to clock out. Clocked out at end of day (${workEnd}).\nHours: ${item.hours}h\nSite: ${s.job_location || 'Unknown'}\nView: ${settings.admin_host || 'https://admin.clockinproof.com'}/#sessions`
           ).catch(() => {})
         }
 
@@ -2539,11 +2539,11 @@ app.get('/api/sessions/watchdog', async (c) => {
       }
     }
 
-    // ── 3. GEOFENCE EXIT AUTO-CLOCKOUT ────────────────────────────────────────
+    // \u2500\u2500 3. GEOFENCE EXIT AUTO-CLOCKOUT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     // If worker has been outside the geofence for geofence_exit_clockout_min minutes,
     // automatically clock them out (0 = disabled).
     // Clock-out time is set to drift_detected_at + exitClockoutMin so the worker
-    // is charged exactly the grace period — not any extra time they wandered.
+    // is charged exactly the grace period \u2014 not any extra time they wandered.
     const exitClockoutMin = parseFloat(settings.geofence_exit_clockout_min || '0')
     if (exitClockoutMin > 0 && s.drift_flag && !s.auto_clockout && s.drift_detected_at) {
       const driftDetectedAt = new Date(s.drift_detected_at)
@@ -2560,7 +2560,7 @@ app.get('/api/sessions/watchdog', async (c) => {
         // Reason includes the full timeline for the record
         const exitTimeStr      = driftDetectedAt.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: true })
         const clockOutTimeStr  = clockOutAt.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: true })
-        const reason = `Auto clocked out — left geofence at ${exitTimeStr} (${dist} from site), ${exitClockoutMin}min grace period, clocked out at ${clockOutTimeStr}. Hours paid: ${Math.max(0,Math.round(paidHours*100)/100)}h`
+        const reason = `Auto clocked out \u2014 left geofence at ${exitTimeStr} (${dist} from site), ${exitClockoutMin}min grace period, clocked out at ${clockOutTimeStr}. Hours paid: ${Math.max(0,Math.round(paidHours*100)/100)}h`
         await db.prepare(`
           UPDATE sessions SET
             clock_out_time=?, total_hours=?, earnings=?,
@@ -2587,7 +2587,7 @@ app.get('/api/sessions/watchdog', async (c) => {
         if (s.worker_phone) {
           const hrsF = `${Math.floor(Math.max(0,paidHours))}h ${Math.round(((Math.max(0,paidHours)) % 1) * 60)}m`
           await sendWorkerSms(env, s.worker_phone,
-            `📍 ClockInProof: You were automatically clocked out.\n` +
+            `\uD83D\uDCCD ClockInProof: You were automatically clocked out.\n` +
             `You left the job site at ${exitTimeStr} (${dist} from "${s.job_location || 'site'}").\n` +
             `After ${exitClockoutMin}min grace period, your clock-out was recorded at ${clockOutTimeStr}.\n` +
             `Hours paid: ${hrsF}\n` +
@@ -2600,7 +2600,7 @@ app.get('/api/sessions/watchdog', async (c) => {
           worker_name: s.worker_name,
           worker_phone: s.worker_phone,
           job_location: s.job_location || 'Unknown',
-          job_description: `📍 GEOFENCE AUTO CLOCK-OUT: ${s.worker_name} left the site at ${exitTimeStr} (${dist} away). After ${exitClockoutMin}min grace, clocked out at ${clockOutTimeStr}. Hours paid: ${item.hours}h. Task: ${s.job_description || 'N/A'}`,
+          job_description: `\uD83D\uDCCD GEOFENCE AUTO CLOCK-OUT: ${s.worker_name} left the site at ${exitTimeStr} (${dist} away). After ${exitClockoutMin}min grace, clocked out at ${clockOutTimeStr}. Hours paid: ${item.hours}h. Task: ${s.job_description || 'N/A'}`,
           distance_meters: s.drift_distance_meters || 0,
           worker_address: null,
           worker_lat: null,
@@ -2608,9 +2608,9 @@ app.get('/api/sessions/watchdog', async (c) => {
         }).catch(() => {})
         if (settings.notify_sms === '1') {
           sendAdminSms(settings, env,
-            `📍 AUTO CLOCK-OUT — ${s.worker_name}\n` +
+            `\uD83D\uDCCD AUTO CLOCK-OUT \u2014 ${s.worker_name}\n` +
             `Left site at ${exitTimeStr} (${dist} from "${s.job_location || 'site'}").\n` +
-            `Grace: ${exitClockoutMin}min → clocked out at ${clockOutTimeStr}.\n` +
+            `Grace: ${exitClockoutMin}min \u2192 clocked out at ${clockOutTimeStr}.\n` +
             `Hours paid: ${item.hours}h\n` +
             `View: ${settings.admin_host || 'https://admin.clockinproof.com'}/#sessions`
           ).catch(() => {})
@@ -2621,8 +2621,8 @@ app.get('/api/sessions/watchdog', async (c) => {
       }
     }
 
-    // ── 4. AWAY/IDLE FLAG ────────────────────────────────────────────────────
-    // Check when last ping was received — if too long ago, flag as away.
+    // \u2500\u2500 4. AWAY/IDLE FLAG \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    // Check when last ping was received \u2014 if too long ago, flag as away.
     // GRACE PERIOD: Never flag away within the first (awayWarningMin + 5) minutes
     // of clock-in. The ping interval is 5 min, so the worker needs time to send
     // the first ping before we start counting. Without this grace period, a worker
@@ -2635,9 +2635,9 @@ app.get('/api/sessions/watchdog', async (c) => {
       'SELECT timestamp FROM location_pings WHERE session_id=? ORDER BY timestamp DESC LIMIT 1'
     ).bind(s.id).first<any>()
 
-    // If no pings yet AND still within grace window → not away
+    // If no pings yet AND still within grace window \u2192 not away
     if (!lastPing && minssinceClockIn < awayGraceMin) {
-      // Still in the initial grace period — skip away check entirely
+      // Still in the initial grace period \u2014 skip away check entirely
       item.hours_worked    = Math.round(hoursWorked * 10) / 10
       item.max_shift_hours = maxShiftHours
       item.away_flag       = 0
@@ -2661,7 +2661,7 @@ app.get('/api/sessions/watchdog', async (c) => {
       item.mins_away = Math.round(minsSincePing)
       results.push(item)
     } else if (minsSincePing < awayWarningMin && s.away_flag) {
-      // Worker came back — clear the flag
+      // Worker came back \u2014 clear the flag
       await db.prepare(
         `UPDATE sessions SET away_flag=0, away_since=NULL WHERE id=?`
       ).bind(s.id).run()
@@ -2681,9 +2681,9 @@ app.get('/api/sessions/watchdog', async (c) => {
   return c.json({ checked: activeSessions.results.length, results })
 })
 
-// ─── FEATURE 1: SESSION TIME EDITOR ──────────────────────────────────────────
+// \u2500\u2500\u2500 FEATURE 1: SESSION TIME EDITOR \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-// PUT /api/sessions/:id/edit  — admin adjusts clock_in_time / clock_out_time
+// PUT /api/sessions/:id/edit  \u2014 admin adjusts clock_in_time / clock_out_time
 app.put('/api/sessions/:id/edit', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -2745,7 +2745,7 @@ app.put('/api/sessions/:id/edit', async (c) => {
   return c.json({ success: true, session: updated, new_hours: newHours, new_earnings: newEarnings })
 })
 
-// GET /api/sessions/:id/edits  — audit trail for a session
+// GET /api/sessions/:id/edits  \u2014 audit trail for a session
 app.get('/api/sessions/:id/edits', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -2756,7 +2756,7 @@ app.get('/api/sessions/:id/edits', async (c) => {
   return c.json({ edits: edits.results })
 })
 
-// ─── FEATURE 2: JOB SITES MANAGER ────────────────────────────────────────────
+// \u2500\u2500\u2500 FEATURE 2: JOB SITES MANAGER \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 app.get('/api/job-sites', async (c) => {
   const db = c.env.DB
@@ -2831,9 +2831,9 @@ app.delete('/api/job-sites/:id', async (c) => {
   return c.json({ success: true })
 })
 
-// ─── JOB DISPATCH API ────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 JOB DISPATCH API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-// POST /api/dispatch  — send a job to a worker via SMS
+// POST /api/dispatch  \u2014 send a job to a worker via SMS
 app.post('/api/dispatch', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -2862,7 +2862,7 @@ app.post('/api/dispatch', async (c) => {
 
   // Compose the SMS message
   const notesLine = notes ? `\nNote: ${notes}` : ''
-  const smsText = `🏠 New Job Assignment\n${job_name}\n📍 ${job_address}\n\n👆 Tap for directions:\n${mapsUrl}${notesLine}\n\nReply "On my way" or any message when you're heading out. Clock in when you arrive.`
+  const smsText = `\uD83C\uDFE0 New Job Assignment\n${job_name}\n\uD83D\uDCCD ${job_address}\n\n\uD83D\uDC46 Tap for directions:\n${mapsUrl}${notesLine}\n\nReply "On my way" or any message when you're heading out. Clock in when you arrive.`
 
   // Send via Twilio
   const smsResult = await sendWorkerSms(c.env, worker.phone, smsText)
@@ -2906,7 +2906,7 @@ app.post('/api/dispatch', async (c) => {
   })
 })
 
-// GET /api/dispatch  — list recent dispatches
+// GET /api/dispatch  \u2014 list recent dispatches
 app.get('/api/dispatch', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -2925,7 +2925,7 @@ app.get('/api/dispatch', async (c) => {
   return c.json({ dispatches: rows.results })
 })
 
-// GET /api/dispatch/stats  — summary counts by status
+// GET /api/dispatch/stats  \u2014 summary counts by status
 app.get('/api/dispatch/stats', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -2944,7 +2944,7 @@ app.get('/api/dispatch/stats', async (c) => {
   return c.json(row || {})
 })
 
-// DELETE /api/dispatch/:id  — cancel a dispatch
+// DELETE /api/dispatch/:id  \u2014 cancel a dispatch
 app.delete('/api/dispatch/:id', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -2952,7 +2952,7 @@ app.delete('/api/dispatch/:id', async (c) => {
   return c.json({ success: true })
 })
 
-// GET /api/dispatch/pending/:worker_id  — return the most recent active dispatch for a worker
+// GET /api/dispatch/pending/:worker_id  \u2014 return the most recent active dispatch for a worker
 // Used by the worker app to pre-fill the job modal and show a dispatch banner
 app.get('/api/dispatch/pending/:worker_id', async (c) => {
   const db = c.env.DB
@@ -2976,7 +2976,7 @@ app.get('/api/dispatch/pending/:worker_id', async (c) => {
   return c.json({ dispatch: row })
 })
 
-// GET /api/dispatch/worker/:worker_id — all dispatches for a worker (pending + last 30 days)
+// GET /api/dispatch/worker/:worker_id \u2014 all dispatches for a worker (pending + last 30 days)
 // Used by the worker app Dispatches tab
 app.get('/api/dispatch/worker/:worker_id', async (c) => {
   const db = c.env.DB
@@ -2993,7 +2993,7 @@ app.get('/api/dispatch/worker/:worker_id', async (c) => {
   return c.json({ dispatches: rows.results || [] })
 })
 
-// POST /api/dispatch/:id/respond — worker responds to a dispatch (accept / decline / arrived)
+// POST /api/dispatch/:id/respond \u2014 worker responds to a dispatch (accept / decline / arrived)
 app.post('/api/dispatch/:id/respond', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -3013,17 +3013,17 @@ app.post('/api/dispatch/:id/respond', async (c) => {
   return c.json({ success: true, status: newStatus })
 })
 
-// POST /api/test/sms  — Super admin test endpoint to verify Twilio is working
+// POST /api/test/sms  \u2014 Super admin test endpoint to verify Twilio is working
 app.post('/api/test/sms', async (c) => {
   const db  = c.env.DB
   const env = c.env as any
   const { to, message } = await c.req.json() as any
   if (!to) return c.json({ error: 'to required' }, 400)
-  const result = await sendWorkerSms(env, to, message || '✅ ClockInProof SMS test — platform messaging is working!')
+  const result = await sendWorkerSms(env, to, message || '\u2705 ClockInProof SMS test \u2014 platform messaging is working!')
   return c.json(result.sent ? { success: true } : { success: false, error: result.error })
 })
 
-// POST /api/test/email  — Super admin test endpoint to verify Resend is working
+// POST /api/test/email  \u2014 Super admin test endpoint to verify Resend is working
 app.post('/api/test/email', async (c) => {
   const env = c.env as any
   const { to } = await c.req.json() as any
@@ -3038,8 +3038,8 @@ app.post('/api/test/email', async (c) => {
       body: JSON.stringify({
         from: resendFrom,
         to: [to],
-        subject: '✅ ClockInProof — Platform Email Test',
-        html: '<p style="font-family:sans-serif;padding:24px"><strong>✅ ClockInProof platform email is working!</strong><br><br>This is a test from the Super Admin platform settings.</p>'
+        subject: '\u2705 ClockInProof \u2014 Platform Email Test',
+        html: '<p style="font-family:sans-serif;padding:24px"><strong>\u2705 ClockInProof platform email is working!</strong><br><br>This is a test from the Super Admin platform settings.</p>'
       })
     })
     if (res.ok) return c.json({ success: true })
@@ -3050,9 +3050,9 @@ app.post('/api/test/email', async (c) => {
   }
 })
 
-// ─── STRIPE CHECKOUT + BILLING ────────────────────────────────────────────────
+// \u2500\u2500\u2500 STRIPE CHECKOUT + BILLING \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-// POST /api/stripe/checkout — create a Stripe Checkout Session and return the URL
+// POST /api/stripe/checkout \u2014 create a Stripe Checkout Session and return the URL
 app.post('/api/stripe/checkout', async (c) => {
   const db  = c.env.DB
   const env = c.env
@@ -3097,7 +3097,7 @@ app.post('/api/stripe/checkout', async (c) => {
   }
 })
 
-// ── Stripe webhook signature verification (Web Crypto — no npm needed) ────────
+// \u2500\u2500 Stripe webhook signature verification (Web Crypto \u2014 no npm needed) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 async function verifyStripeSignature(payload: string, sigHeader: string, secret: string): Promise<boolean> {
   try {
     const parts: Record<string, string> = {}
@@ -3124,8 +3124,8 @@ async function verifyStripeSignature(payload: string, sigHeader: string, secret:
   }
 }
 
-// POST /api/stripe/webhook — Stripe sends events here on subscription changes
-// Configure in Stripe Dashboard: Developers → Webhooks → Add endpoint
+// POST /api/stripe/webhook \u2014 Stripe sends events here on subscription changes
+// Configure in Stripe Dashboard: Developers \u2192 Webhooks \u2192 Add endpoint
 // URL: https://admin.clockinproof.com/api/stripe/webhook
 // Events: checkout.session.completed, customer.subscription.updated, customer.subscription.deleted
 app.post('/api/stripe/webhook', async (c) => {
@@ -3195,7 +3195,7 @@ app.post('/api/stripe/webhook', async (c) => {
             body: JSON.stringify({ name: subdomain })
           }
         )
-      } catch { /* non-fatal — subdomain can be added manually */ }
+      } catch { /* non-fatal \u2014 subdomain can be added manually */ }
     }
   }
 
@@ -3216,7 +3216,7 @@ app.post('/api/stripe/webhook', async (c) => {
   return c.text('ok', 200)
 })
 
-// GET /api/stripe/portal — create a billing portal session for tenant self-service
+// GET /api/stripe/portal \u2014 create a billing portal session for tenant self-service
 app.get('/api/stripe/portal', async (c) => {
   const db  = c.env.DB
   const env = c.env
@@ -3240,8 +3240,8 @@ app.get('/api/stripe/portal', async (c) => {
   return c.json({ url: session.url })
 })
 
-// POST /api/twilio/webhook  — inbound SMS from workers (Twilio calls this URL)
-// Configure in Twilio Console: Messaging → Phone Number → Incoming messages webhook
+// POST /api/twilio/webhook  \u2014 inbound SMS from workers (Twilio calls this URL)
+// Configure in Twilio Console: Messaging \u2192 Phone Number \u2192 Incoming messages webhook
 // URL: https://admin.clockinproof.com/api/twilio/webhook  Method: POST
 app.post('/api/twilio/webhook', async (c) => {
   const db = c.env.DB
@@ -3285,7 +3285,7 @@ app.post('/api/twilio/webhook', async (c) => {
   })
 })
 
-// ─── ENCIRCLE INTEGRATION API ────────────────────────────────────────────────
+// \u2500\u2500\u2500 ENCIRCLE INTEGRATION API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 // Helper: run full Encircle sync (used by manual trigger and cron)
 async function runEncircleSync(db: D1Database): Promise<{
@@ -3306,7 +3306,7 @@ async function runEncircleSync(db: D1Database): Promise<{
     if (!resp.ok) {
       const errText = await resp.text()
       const msg = resp.status === 401
-        ? 'Encircle connection lost – please reconnect in Settings.'
+        ? 'Encircle connection lost \u2013 please reconnect in Settings.'
         : `Encircle API error ${resp.status}: ${errText}`
       await db.prepare(`INSERT INTO encircle_sync_log (jobs_added,jobs_updated,jobs_closed,status,error_message) VALUES (0,0,0,'error',?)`).bind(msg).run()
       return { jobs_added: 0, jobs_updated: 0, jobs_closed: 0, status: 'error', error_message: msg }
@@ -3314,7 +3314,7 @@ async function runEncircleSync(db: D1Database): Promise<{
     const data = await resp.json() as any
     const allClaims = data.list || []
 
-    // ── Filter out closed/archived/leave jobs — only import truly active claims ──
+    // \u2500\u2500 Filter out closed/archived/leave jobs \u2014 only import truly active claims \u2500\u2500
     const CLOSED_STATUSES = [
       'closed', 'archived', 'cancelled', 'canceled',
       'complete', 'completed', 'done', 'finished',
@@ -3333,7 +3333,7 @@ async function runEncircleSync(db: D1Database): Promise<{
     })
     const skippedClosed = allClaims.length - claims.length
 
-    // ── Immediately deactivate any jobs that came back as closed/leave_job ──
+    // \u2500\u2500 Immediately deactivate any jobs that came back as closed/leave_job \u2500\u2500
     const closedClaims = allClaims.filter((c: any) => {
       const statusFields = [c.status, c.claim_status, c.project_status, c.job_status, c.state, c.stage, c.phase]
       return statusFields.some((s: any) => s && CLOSED_STATUSES.includes(String(s).toLowerCase().trim()))
@@ -3351,16 +3351,16 @@ async function runEncircleSync(db: D1Database): Promise<{
       const encId = String(claim.id)
       encircleIds.push(encId)
 
-      // ── Derive display name: prefer policyholder name, fall back to insurer ref ──
+      // \u2500\u2500 Derive display name: prefer policyholder name, fall back to insurer ref \u2500\u2500
       const policyholderName = claim.policyholder_name || ''
       const displayName = `[Encircle] ${policyholderName || claim.insurer_identifier || encId}`
       const address = claim.full_address || ''
 
-      // ── Format type of loss for display ──────────────────────────────────────
+      // \u2500\u2500 Format type of loss for display \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
       const rawType = claim.type_of_loss || ''
       const typeDisplay = rawType.replace('type_of_loss_', '').replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())
 
-      // ── Geocode address via Nominatim if no lat/lng from API ──────────────────
+      // \u2500\u2500 Geocode address via Nominatim if no lat/lng from API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
       let lat: number | null = null
       let lng: number | null = null
       try {
@@ -3368,15 +3368,15 @@ async function runEncircleSync(db: D1Database): Promise<{
         if (geo) { lat = geo.lat; lng = geo.lng }
       } catch (_) {}
 
-      // ── 1. Upsert into encircle_jobs ─────────────────────────────────────────
-      // CIP IS THE SOURCE OF TRUTH — never overwrite manually_closed or status
+      // \u2500\u2500 1. Upsert into encircle_jobs \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+      // CIP IS THE SOURCE OF TRUTH \u2014 never overwrite manually_closed or status
       // if the admin has explicitly closed this job in CIP
       const existingJob = await db.prepare(
         `SELECT manually_closed, status FROM encircle_jobs WHERE encircle_claim_id=?`
       ).bind(encId).first() as any
 
       // GUARDRAIL: skip this job entirely if manually closed in CIP
-      // Even if Encircle keeps sending it — CIP decision wins
+      // Even if Encircle keeps sending it \u2014 CIP decision wins
       if (existingJob?.manually_closed) {
         encircleIds.push(encId) // still track ID so deactivation doesn't flip it
         continue
@@ -3434,12 +3434,12 @@ async function runEncircleSync(db: D1Database): Promise<{
         claim.permalink_url || null
       ).run()
 
-      // ── 2. Upsert into job_sites (for GPS geofencing) ─────────────────────────
+      // \u2500\u2500 2. Upsert into job_sites (for GPS geofencing) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
       const existing = await db.prepare(
         `SELECT id, name, lat, lng, manually_closed FROM job_sites WHERE encircle_job_id = ?`
       ).bind(encId).first() as any
 
-      // GUARDRAIL: CIP decision wins — never re-activate a manually closed job site
+      // GUARDRAIL: CIP decision wins \u2014 never re-activate a manually closed job site
       if (existing?.manually_closed) continue
 
       if (!existing) {
@@ -3459,8 +3459,8 @@ async function runEncircleSync(db: D1Database): Promise<{
       }
     }
 
-    // ── Deactivate jobs no longer returned by Encircle at all ─────────────────
-    // GUARDRAIL: never touch manually_closed jobs — CIP owns their state
+    // \u2500\u2500 Deactivate jobs no longer returned by Encircle at all \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    // GUARDRAIL: never touch manually_closed jobs \u2014 CIP owns their state
     if (encircleIds.length > 0) {
       const ph = encircleIds.map(() => '?').join(',')
       const deactivateResult = await db.prepare(
@@ -3489,7 +3489,7 @@ async function runEncircleSync(db: D1Database): Promise<{
   }
 }
 
-// POST /api/encircle/settings — save bearer token
+// POST /api/encircle/settings \u2014 save bearer token
 app.post('/api/encircle/settings', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -3499,7 +3499,7 @@ app.post('/api/encircle/settings', async (c) => {
   const testResp = await fetch('https://api.encircleapp.com/v1/organizations', {
     headers: { 'Authorization': `Bearer ${bearer_token.trim()}`, 'Content-Type': 'application/json' }
   })
-  if (!testResp.ok) return c.json({ error: 'Invalid token — Encircle returned ' + testResp.status }, 400)
+  if (!testResp.ok) return c.json({ error: 'Invalid token \u2014 Encircle returned ' + testResp.status }, 400)
   await db.prepare(
     `INSERT INTO encircle_settings (id, bearer_token, sync_enabled) VALUES (1, ?, ?)
      ON CONFLICT(id) DO UPDATE SET bearer_token=excluded.bearer_token, sync_enabled=excluded.sync_enabled`
@@ -3507,7 +3507,7 @@ app.post('/api/encircle/settings', async (c) => {
   return c.json({ success: true, message: 'Encircle connected successfully' })
 })
 
-// GET /api/encircle/test — ping Encircle, return connection status
+// GET /api/encircle/test \u2014 ping Encircle, return connection status
 app.get('/api/encircle/test', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -3526,7 +3526,7 @@ app.get('/api/encircle/test', async (c) => {
   }
 })
 
-// POST /api/encircle/sync — manual sync trigger
+// POST /api/encircle/sync \u2014 manual sync trigger
 app.post('/api/encircle/sync', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -3534,7 +3534,7 @@ app.post('/api/encircle/sync', async (c) => {
   return c.json(result, result.status === 'error' ? 500 : 200)
 })
 
-// GET /api/encircle/status — latest sync info + full job contact data
+// GET /api/encircle/status \u2014 latest sync info + full job contact data
 app.get('/api/encircle/status', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -3546,7 +3546,7 @@ app.get('/api/encircle/status', async (c) => {
   const lastLog = await db.prepare('SELECT * FROM encircle_sync_log ORDER BY synced_at DESC LIMIT 1').first() as any
   const syncLogs = await db.prepare('SELECT * FROM encircle_sync_log ORDER BY synced_at DESC LIMIT 20').all()
 
-  // Rich job data — join encircle_jobs with job_sites for GPS status
+  // Rich job data \u2014 join encircle_jobs with job_sites for GPS status
   const syncedJobs = await db.prepare(`
     SELECT
       ej.*,
@@ -3572,7 +3572,7 @@ app.get('/api/encircle/status', async (c) => {
   })
 })
 
-// DELETE /api/encircle/settings — disconnect
+// DELETE /api/encircle/settings \u2014 disconnect
 app.delete('/api/encircle/settings', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -3582,7 +3582,7 @@ app.delete('/api/encircle/settings', async (c) => {
   return c.json({ success: true, message: 'Encircle disconnected. Synced job sites have been deactivated.' })
 })
 
-// POST /api/encircle/jobs/:claimId/close — CIP manually closes job (survives all future syncs)
+// POST /api/encircle/jobs/:claimId/close \u2014 CIP manually closes job (survives all future syncs)
 app.post('/api/encircle/jobs/:claimId/close', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -3602,7 +3602,7 @@ app.post('/api/encircle/jobs/:claimId/close', async (c) => {
   return c.json({ success: true })
 })
 
-// POST /api/encircle/jobs/:claimId/reopen — CIP admin reopens a manually closed job
+// POST /api/encircle/jobs/:claimId/reopen \u2014 CIP admin reopens a manually closed job
 // This is the intentional override \u2014 admin explicitly re-activates
 app.post('/api/encircle/jobs/:claimId/reopen', async (c) => {
   const db = c.env.DB
@@ -3621,7 +3621,7 @@ app.post('/api/encircle/jobs/:claimId/reopen', async (c) => {
   return c.json({ success: true })
 })
 
-// ─── FEATURE 3: WORKER DISPUTE / ISSUE REPORTS ───────────────────────────────
+// \u2500\u2500\u2500 FEATURE 3: WORKER DISPUTE / ISSUE REPORTS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 app.post('/api/disputes', async (c) => {
   const db = c.env.DB
@@ -3630,7 +3630,7 @@ app.post('/api/disputes', async (c) => {
   if (!session_id || !message?.trim()) {
     return c.json({ error: 'session_id and message are required' }, 400)
   }
-  // Always derive worker identity from the session — never trust client-sent worker_id
+  // Always derive worker identity from the session \u2014 never trust client-sent worker_id
   const session = await db.prepare(
     `SELECT s.worker_id, w.name AS worker_name
      FROM sessions s
@@ -3681,7 +3681,7 @@ app.get('/api/location/session/:session_id', async (c) => {
   return c.json({ pings: pings.results })
 })
 
-// ─── STATS API ────────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 STATS API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 app.get('/api/stats/summary', async (c) => {
   const db = c.env.DB
@@ -3824,7 +3824,7 @@ app.get('/api/stats/worker/:worker_id', async (c) => {
   })
 })
 
-// GET /api/sessions/worker/:worker_id/period — sessions in the current pay period for a worker
+// GET /api/sessions/worker/:worker_id/period \u2014 sessions in the current pay period for a worker
 // Used by the worker app Pay History tab
 app.get('/api/sessions/worker/:worker_id/period', async (c) => {
   const db = c.env.DB
@@ -3874,7 +3874,7 @@ app.get('/api/sessions/worker/:worker_id/period', async (c) => {
   })
 })
 
-// ─── SETTINGS API ─────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 SETTINGS API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 app.get('/api/settings', async (c) => {
   const db = c.env.DB
@@ -3903,8 +3903,8 @@ app.put('/api/settings', async (c) => {
   return c.json({ success: true })
 })
 
-// ─── ADMIN AUTH API ───────────────────────────────────────────────────────────
-// POST /api/admin/login — works from any domain (admin.clockinproof.com for ALL tenants)
+// \u2500\u2500\u2500 ADMIN AUTH API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// POST /api/admin/login \u2014 works from any domain (admin.clockinproof.com for ALL tenants)
 // Body: { email: string, pin: string }
 // Returns: { success, tenant_id, slug, company_name, logo_url }
 app.post('/api/admin/login', async (c) => {
@@ -3920,7 +3920,7 @@ app.post('/api/admin/login', async (c) => {
   `).bind(email.trim(), pin.trim()).first() as any
 
   if (!tenant) return c.json({ error: 'Invalid email or PIN' }, 401)
-  if (tenant.status === 'suspended') return c.json({ error: 'Account suspended — contact support@clockinproof.com' }, 403)
+  if (tenant.status === 'suspended') return c.json({ error: 'Account suspended \u2014 contact support@clockinproof.com' }, 403)
 
   return c.json({
     success: true,
@@ -3940,10 +3940,10 @@ app.post('/api/admin/login', async (c) => {
   })
 })
 
-// ─── TENANT API ───────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 TENANT API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // These endpoints power the signup flow + future super admin panel
 
-// GET /api/tenant/current — returns tenant info based on Host header
+// GET /api/tenant/current \u2014 returns tenant info based on Host header
 app.get('/api/tenant/current', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -3957,7 +3957,7 @@ app.get('/api/tenant/current', async (c) => {
   return c.json({ tenant, is_platform_url: false })
 })
 
-// POST /api/tenant/logo — upload logo as base64 data URL, stored directly in tenants.logo_url
+// POST /api/tenant/logo \u2014 upload logo as base64 data URL, stored directly in tenants.logo_url
 // Max size enforced at ~500KB (base64 ~680KB string). Supports PNG, JPG, SVG, WebP.
 app.post('/api/tenant/logo', async (c) => {
   const db = c.env.DB
@@ -3968,13 +3968,13 @@ app.post('/api/tenant/logo', async (c) => {
   // Basic validation
   if (!data_url.startsWith('data:image/')) return c.json({ error: 'Invalid image format' }, 400)
   // Enforce ~500KB limit (base64 strings are ~1.37x raw size)
-  if (data_url.length > 700000) return c.json({ error: 'Image too large — please use an image under 500KB' }, 400)
+  if (data_url.length > 700000) return c.json({ error: 'Image too large \u2014 please use an image under 500KB' }, 400)
   const id = tenant_id || 1
   await db.prepare(`UPDATE tenants SET logo_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(data_url, id).run()
   return c.json({ success: true, logo_url: data_url })
 })
 
-// GET /api/plans — public pricing plans (used by landing + signup pages)
+// GET /api/plans \u2014 public pricing plans (used by landing + signup pages)
 app.get('/api/plans', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -3982,7 +3982,7 @@ app.get('/api/plans', async (c) => {
   return c.json({ plans: plans.results })
 })
 
-// GET /api/super/plans — all plans including inactive (super admin only)
+// GET /api/super/plans \u2014 all plans including inactive (super admin only)
 app.get('/api/super/plans', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4001,7 +4001,7 @@ app.get('/api/super/plans', async (c) => {
   return c.json({ plans: enriched })
 })
 
-// PUT /api/super/plans/:id — update a plan (name, price, features, worker limit, stripe_price_id)
+// PUT /api/super/plans/:id \u2014 update a plan (name, price, features, worker limit, stripe_price_id)
 app.put('/api/super/plans/:id', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4041,7 +4041,7 @@ app.put('/api/super/plans/:id', async (c) => {
   return c.json({ success: true, plan: updated })
 })
 
-// GET /api/tenants — list all tenants (for future super admin)
+// GET /api/tenants \u2014 list all tenants (for future super admin)
 app.get('/api/tenants/check-slug', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -4065,7 +4065,7 @@ app.get('/api/tenants', async (c) => {
   return c.json({ tenants: tenants.results })
 })
 
-// POST /api/tenants — create new tenant (called by Stripe webhook or manual signup)
+// POST /api/tenants \u2014 create new tenant (called by Stripe webhook or manual signup)
 app.post('/api/tenants', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -4120,7 +4120,7 @@ app.post('/api/tenants', async (c) => {
   })
 })
 
-// PUT /api/tenants/:id — update tenant (branding, plan, status)
+// PUT /api/tenants/:id \u2014 update tenant (branding, plan, status)
 app.put('/api/tenants/:id', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -4137,7 +4137,7 @@ app.put('/api/tenants/:id', async (c) => {
   return c.json({ success: true })
 })
 
-// GET /api/tenants/:id/stats — usage stats for one tenant
+// GET /api/tenants/:id/stats \u2014 usage stats for one tenant
 app.get('/api/tenants/:id/stats', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -4150,8 +4150,8 @@ app.get('/api/tenants/:id/stats', async (c) => {
   return c.json({ tenant, worker_count: (workers as any)?.count || 0, session_count: (sessions as any)?.count || 0 })
 })
 
-// ─── SUPER ADMIN API ROUTES ───────────────────────────────────────────────────
-// POST /api/super/login — authenticate with SUPER_ADMIN_PIN
+// \u2500\u2500\u2500 SUPER ADMIN API ROUTES \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// POST /api/super/login \u2014 authenticate with SUPER_ADMIN_PIN
 app.post('/api/super/login', async (c) => {
   const body = await c.req.json()
   const pin = (body.pin || '').toString().trim()
@@ -4164,7 +4164,7 @@ app.post('/api/super/login', async (c) => {
   return c.json({ success: true, token })
 })
 
-// Middleware helper — verify super admin token
+// Middleware helper \u2014 verify super admin token
 function verifySuperToken(c: any): boolean {
   const auth = c.req.header('X-Super-Token') || ''
   const superPin = (c.env.SUPER_ADMIN_PIN || 'superadmin1965').toString().trim()
@@ -4175,7 +4175,7 @@ function verifySuperToken(c: any): boolean {
   } catch { return false }
 }
 
-// GET /api/super/dashboard — overview stats
+// GET /api/super/dashboard \u2014 overview stats
 app.get('/api/super/dashboard', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4202,7 +4202,7 @@ app.get('/api/super/dashboard', async (c) => {
   }
 })
 
-// GET /api/super/tenants — full tenant list with stats
+// GET /api/super/tenants \u2014 full tenant list with stats
 app.get('/api/super/tenants', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4223,7 +4223,7 @@ app.get('/api/super/tenants', async (c) => {
   }
 })
 
-// POST /api/super/tenants — create new tenant manually
+// POST /api/super/tenants \u2014 create new tenant manually
 app.post('/api/super/tenants', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4271,9 +4271,9 @@ app.post('/api/super/tenants', async (c) => {
       body: JSON.stringify({
         from: 'ClockInProof <alerts@clockinproof.com>',
         to: [resolvedEmail],
-        subject: `Welcome to ClockInProof — Your account is ready`,
+        subject: `Welcome to ClockInProof \u2014 Your account is ready`,
         html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto">
-          <h2 style="color:#4F46E5">Welcome to ClockInProof! 🎉</h2>
+          <h2 style="color:#4F46E5">Welcome to ClockInProof! \uD83C\uDF89</h2>
           <p>Your company <strong>${company_name}</strong> has been set up successfully.</p>
           <p><strong>Your login details:</strong></p>
           <ul>
@@ -4284,7 +4284,7 @@ app.post('/api/super/tenants', async (c) => {
             <li><strong>Plan:</strong> ${(plan || 'starter').charAt(0).toUpperCase() + (plan || 'starter').slice(1)}</li>
           </ul>
           <p>If you have any questions, reply to this email.</p>
-          <p style="color:#888;font-size:12px">— ClockInProof Team</p>
+          <p style="color:#888;font-size:12px">\u2014 ClockInProof Team</p>
         </div>`
       })
     })
@@ -4292,7 +4292,7 @@ app.post('/api/super/tenants', async (c) => {
   return c.json({ success: true, tenant_id: tenantId, slug: cleanSlug, admin_email: resolvedEmail, url: `https://${cleanSlug}.clockinproof.com` })
 })
 
-// PUT /api/super/tenants/:id — update plan, status, limits
+// PUT /api/super/tenants/:id \u2014 update plan, status, limits
 app.put('/api/super/tenants/:id', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4318,7 +4318,7 @@ app.put('/api/super/tenants/:id', async (c) => {
   return c.json({ success: true })
 })
 
-// DELETE /api/super/tenants/:id — soft delete (set status = deleted)
+// DELETE /api/super/tenants/:id \u2014 soft delete (set status = deleted)
 app.delete('/api/super/tenants/:id', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4338,7 +4338,7 @@ app.delete('/api/super/tenants/:id', async (c) => {
   return c.json({ success: true, message: `"${tenant.company_name}" has been archived. All data preserved for 90 days.` })
 })
 
-// GET /api/super/tenants/archived — list archived tenants with days-until-purge
+// GET /api/super/tenants/archived \u2014 list archived tenants with days-until-purge
 app.get('/api/super/tenants/archived', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4355,7 +4355,7 @@ app.get('/api/super/tenants/archived', async (c) => {
   return c.json({ tenants: tenants.results })
 })
 
-// POST /api/super/tenants/:id/restore — restore an archived tenant back to trial
+// POST /api/super/tenants/:id/restore \u2014 restore an archived tenant back to trial
 app.post('/api/super/tenants/:id/restore', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4372,7 +4372,7 @@ app.post('/api/super/tenants/:id/restore', async (c) => {
   return c.json({ success: true, message: `"${tenant.company_name}" has been restored to active status.` })
 })
 
-// POST /api/super/tenants/:id/impersonate — get admin URL for tenant
+// POST /api/super/tenants/:id/impersonate \u2014 get admin URL for tenant
 app.get('/api/super/tenants/:id/impersonate', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4388,7 +4388,7 @@ app.get('/api/super/tenants/:id/impersonate', async (c) => {
   })
 })
 
-// GET /api/super/tenants/:id/profile — full landlord view of one tenant
+// GET /api/super/tenants/:id/profile \u2014 full landlord view of one tenant
 app.get('/api/super/tenants/:id/profile', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4434,7 +4434,7 @@ app.get('/api/super/tenants/:id/profile', async (c) => {
     WHERE dr.tenant_id = ? AND dr.status = 'pending'
   `).bind(id).all().catch(() => ({ results: [] }))
 
-  // Session stats — clocked in = no clock_out_time yet
+  // Session stats \u2014 clocked in = no clock_out_time yet
   const sessionStats = await db.prepare(`
     SELECT
       COUNT(CASE WHEN clock_out_time IS NULL THEN 1 END) as currently_in,
@@ -4443,7 +4443,7 @@ app.get('/api/super/tenants/:id/profile', async (c) => {
     FROM sessions WHERE tenant_id = ?
   `).bind(id).first() as any
 
-  // Worker stats — production uses 'worker_status' column (not 'status')
+  // Worker stats \u2014 production uses 'worker_status' column (not 'status')
   const workerStatsByStatus = await db.prepare(`
     SELECT
       COUNT(CASE WHEN worker_status='active'     THEN 1 END) as active_workers,
@@ -4476,7 +4476,7 @@ app.get('/api/super/tenants/:id/profile', async (c) => {
   }
 })
 
-// GET /api/super/live — currently clocked-in workers across all tenants
+// GET /api/super/live \u2014 currently clocked-in workers across all tenants
 app.get('/api/super/live', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4497,7 +4497,7 @@ app.get('/api/super/live', async (c) => {
   }
 })
 
-// GET /api/super/sessions — all sessions across all tenants with pagination
+// GET /api/super/sessions \u2014 all sessions across all tenants with pagination
 app.get('/api/super/sessions', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4526,7 +4526,7 @@ app.get('/api/super/sessions', async (c) => {
   }
 })
 
-// GET /api/super/revenue — revenue summary per tenant
+// GET /api/super/revenue \u2014 revenue summary per tenant
 app.get('/api/super/revenue', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4556,7 +4556,7 @@ app.get('/api/super/revenue', async (c) => {
   }
 })
 
-// POST /api/super/test-email — send a test email via Resend
+// POST /api/super/test-email \u2014 send a test email via Resend
 app.post('/api/super/test-email', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const { to } = await c.req.json()
@@ -4570,8 +4570,8 @@ app.post('/api/super/test-email', async (c) => {
       body: JSON.stringify({
         from: 'ClockInProof <alerts@clockinproof.com>',
         to: [to],
-        subject: '✅ ClockInProof — Super Admin Test Email',
-        html: '<div style="font-family:sans-serif;padding:24px;max-width:480px"><h2 style="color:#4F46E5">Super Admin Test</h2><p>This test email was sent from the ClockInProof Super Admin portal.</p><p style="color:#888;font-size:12px">— ClockInProof Platform</p></div>'
+        subject: '\u2705 ClockInProof \u2014 Super Admin Test Email',
+        html: '<div style="font-family:sans-serif;padding:24px;max-width:480px"><h2 style="color:#4F46E5">Super Admin Test</h2><p>This test email was sent from the ClockInProof Super Admin portal.</p><p style="color:#888;font-size:12px">\u2014 ClockInProof Platform</p></div>'
       })
     })
     const d: any = await r.json()
@@ -4582,11 +4582,11 @@ app.post('/api/super/test-email', async (c) => {
   }
 })
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ─── TAX COMPLIANCE MODULE (Super Admin only) ────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════════════
+// \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+// \u2500\u2500\u2500 TAX COMPLIANCE MODULE (Super Admin only) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 
-// GET /api/super/tax/summary — YTD stats + threshold alerts
+// GET /api/super/tax/summary \u2014 YTD stats + threshold alerts
 app.get('/api/super/tax/summary', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4663,7 +4663,7 @@ app.get('/api/super/tax/summary', async (c) => {
   })
 })
 
-// GET /api/super/tax/transactions — paginated ledger
+// GET /api/super/tax/transactions \u2014 paginated ledger
 app.get('/api/super/tax/transactions', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4689,7 +4689,7 @@ app.get('/api/super/tax/transactions', async (c) => {
   return c.json({ transactions: rows?.results || [], total: (totalRow as any)?.cnt || 0, page, limit })
 })
 
-// POST /api/super/tax/transactions — manual entry
+// POST /api/super/tax/transactions \u2014 manual entry
 app.post('/api/super/tax/transactions', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4727,7 +4727,7 @@ app.delete('/api/super/tax/transactions/:id', async (c) => {
   return c.json({ success: true })
 })
 
-// POST /api/super/tax/reconcile/:id — mark transaction as reconciled
+// POST /api/super/tax/reconcile/:id \u2014 mark transaction as reconciled
 app.post('/api/super/tax/reconcile/:id', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4739,7 +4739,7 @@ app.post('/api/super/tax/reconcile/:id', async (c) => {
   return c.json({ success: true })
 })
 
-// GET /api/super/tax/rates — exchange rate history
+// GET /api/super/tax/rates \u2014 exchange rate history
 app.get('/api/super/tax/rates', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4750,7 +4750,7 @@ app.get('/api/super/tax/rates', async (c) => {
   return c.json({ rates: rows?.results || [] })
 })
 
-// POST /api/super/tax/rates — manual rate entry or override
+// POST /api/super/tax/rates \u2014 manual rate entry or override
 app.post('/api/super/tax/rates', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4765,7 +4765,7 @@ app.post('/api/super/tax/rates', async (c) => {
   return c.json({ success: true })
 })
 
-// POST /api/super/tax/fetch-rate — pull live rate from Bank of Canada
+// POST /api/super/tax/fetch-rate \u2014 pull live rate from Bank of Canada
 app.post('/api/super/tax/fetch-rate', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4776,7 +4776,7 @@ app.post('/api/super/tax/fetch-rate', async (c) => {
     const data: any = await res.json()
     const obs = data?.observations?.[0]
     const rate = obs?.FXUSDCAD?.v ? parseFloat(obs.FXUSDCAD.v) : null
-    if (!rate) return c.json({ error: 'Rate not available yet for today — try after 8 AM ET' }, 404)
+    if (!rate) return c.json({ error: 'Rate not available yet for today \u2014 try after 8 AM ET' }, 404)
     await db.prepare(
       `INSERT INTO tax_exchange_rates (rate_date, usd_cad, source) VALUES (?,?,'bankofcanada')
        ON CONFLICT(rate_date) DO UPDATE SET usd_cad=excluded.usd_cad, source='bankofcanada'`
@@ -4791,7 +4791,7 @@ app.post('/api/super/tax/fetch-rate', async (c) => {
   }
 })
 
-// POST /api/super/tax/sync-stripe — import last 90 days of Stripe charges
+// POST /api/super/tax/sync-stripe \u2014 import last 90 days of Stripe charges
 app.post('/api/super/tax/sync-stripe', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4860,7 +4860,7 @@ app.post('/api/super/tax/sync-stripe', async (c) => {
   }
 })
 
-// PUT /api/super/tax/deadlines/:id — mark filed / update status
+// PUT /api/super/tax/deadlines/:id \u2014 mark filed / update status
 app.put('/api/super/tax/deadlines/:id', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4875,7 +4875,7 @@ app.put('/api/super/tax/deadlines/:id', async (c) => {
   return c.json({ success: true })
 })
 
-// GET /api/super/tax/export — CSV export
+// GET /api/super/tax/export \u2014 CSV export
 app.get('/api/super/tax/export', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -4944,12 +4944,12 @@ async function sendTicketEmail(env: any, opts: {
   }).catch(() => {})
 }
 
-// ─── DEVICE RESET REQUESTS ────────────────────────────────────────────────────
+// \u2500\u2500\u2500 DEVICE RESET REQUESTS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // Workers request a device reset when they get a new phone.
-// Admin approves from the dashboard — new device_id is written on next login.
+// Admin approves from the dashboard \u2014 new device_id is written on next login.
 // Privacy: no biometric data, just a random browser token replacement.
 
-// POST /api/device-reset-request — worker submits a new-phone request
+// POST /api/device-reset-request \u2014 worker submits a new-phone request
 // Accepts phone number (worker doesn't know their ID at this point)
 app.post('/api/device-reset-request', async (c) => {
   const db = c.env.DB
@@ -4957,9 +4957,9 @@ app.post('/api/device-reset-request', async (c) => {
   const { phone, worker_id, reason } = await c.req.json()
   if (!phone && !worker_id) return c.json({ error: 'phone or worker_id required' }, 400)
 
-  // ── Resolve tenant ────────────────────────────────────────────────────────
+  // \u2500\u2500 Resolve tenant \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   // When called from a tenant subdomain, (c as any).tenant is set by middleware.
-  // When called from app.clockinproof.com (reserved subdomain), tenant is null —
+  // When called from app.clockinproof.com (reserved subdomain), tenant is null \u2014
   // so we derive the tenant from the worker's own record in the DB.
   let tenant = (c as any).tenant as any
 
@@ -5003,9 +5003,9 @@ app.post('/api/device-reset-request', async (c) => {
     VALUES (?, ?, ?, ?, 'pending')
   `).bind(tenant.id, worker.id, worker.name, reason || 'New phone').run()
 
-  // ── Notify admin — email + SMS ─────────────────────────────────────────────
+  // \u2500\u2500 Notify admin \u2014 email + SMS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   // Admin contact info + API keys are stored in the global `settings` table
-  // (the admin saves them via the admin panel Settings screen → PUT /api/settings)
+  // (the admin saves them via the admin panel Settings screen \u2192 PUT /api/settings)
   // We also fall back to tenant.admin_email from the tenants table.
   const settingsRaw = await db.prepare('SELECT * FROM settings').all()
   const settings: Record<string, string> = {}
@@ -5034,13 +5034,13 @@ app.post('/api/device-reset-request', async (c) => {
         body: JSON.stringify({
           from: 'ClockInProof Alerts <alerts@clockinproof.com>',
           to: adminEmail,
-          subject: `📱 Device Reset Request — ${worker.name}`,
+          subject: `\uD83D\uDCF1 Device Reset Request \u2014 ${worker.name}`,
           html: `<div style="font-family:sans-serif;max-width:480px">
-            <h2 style="color:#4F46E5">📱 Device Reset Request</h2>
+            <h2 style="color:#4F46E5">\uD83D\uDCF1 Device Reset Request</h2>
             <p><strong>${worker.name}</strong> (${worker.phone}) is requesting a device reset.</p>
             <p><strong>Reason:</strong> ${reason || 'New phone'}</p>
-            <p>Log into your admin dashboard → Workers tab → find ${worker.name} → tap <strong>Approve Reset</strong>.</p>
-            <p><a href="${adminDashboardUrl}/#workers" style="background:#4F46E5;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;display:inline-block;margin-top:8px">Open Admin Dashboard → Workers Tab</a></p>
+            <p>Log into your admin dashboard \u2192 Workers tab \u2192 find ${worker.name} \u2192 tap <strong>Approve Reset</strong>.</p>
+            <p><a href="${adminDashboardUrl}/#workers" style="background:#4F46E5;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;display:inline-block;margin-top:8px">Open Admin Dashboard \u2192 Workers Tab</a></p>
             <p style="color:#dc2626;font-size:12px;margin-top:16px"><strong>Security:</strong> Only approve this if you have personally confirmed the request with the worker.</p>
           </div>`
         })
@@ -5059,7 +5059,7 @@ app.post('/api/device-reset-request', async (c) => {
   if (adminPhone && twilioSid && twilioToken && (twilioMsgSvc || twilioFrom)) {
     try {
       const toPhone = adminPhone.startsWith('+') ? adminPhone : `+1${adminPhone.replace(/\D/g,'')}`
-      const smsBody = `ClockInProof: ${worker.name} is requesting a device reset (${reason || 'New phone'}). Log into your admin dashboard → Workers tab to approve.`
+      const smsBody = `ClockInProof: ${worker.name} is requesting a device reset (${reason || 'New phone'}). Log into your admin dashboard \u2192 Workers tab to approve.`
       const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`
       const twilioAuth = btoa(`${twilioSid}:${twilioToken}`)
       const params = new URLSearchParams({
@@ -5092,7 +5092,7 @@ app.post('/api/device-reset-request', async (c) => {
 })
 
 
-// GET /api/device-reset-requests — admin views pending requests for their tenant
+// GET /api/device-reset-requests \u2014 admin views pending requests for their tenant
 app.get('/api/device-reset-requests', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -5113,7 +5113,7 @@ app.get('/api/device-reset-requests', async (c) => {
   return c.json({ requests: requests.results })
 })
 
-// POST /api/device-reset-requests/:id/approve — admin approves and clears the device lock
+// POST /api/device-reset-requests/:id/approve \u2014 admin approves and clears the device lock
 app.post('/api/device-reset-requests/:id/approve', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -5141,7 +5141,7 @@ app.post('/api/device-reset-requests/:id/approve', async (c) => {
   return c.json({ success: true, message: 'Device reset approved. Worker can now register their new phone.' })
 })
 
-// POST /api/device-reset-requests/:id/deny — admin denies request
+// POST /api/device-reset-requests/:id/deny \u2014 admin denies request
 app.post('/api/device-reset-requests/:id/deny', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -5162,7 +5162,7 @@ app.post('/api/device-reset-requests/:id/deny', async (c) => {
   return c.json({ success: true })
 })
 
-// Admin: directly reset a worker's device (Workers tab — no request needed)
+// Admin: directly reset a worker's device (Workers tab \u2014 no request needed)
 app.post('/api/workers/:id/reset-device', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -5183,8 +5183,8 @@ app.post('/api/workers/:id/reset-device', async (c) => {
   return c.json({ success: true, message: 'Device lock cleared. Worker can register their new phone.' })
 })
 
-// ─── SUPPORT TICKETS ──────────────────────────────────────────────────────────
-// POST /api/tickets — tenant submits a new support ticket
+// \u2500\u2500\u2500 SUPPORT TICKETS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// POST /api/tickets \u2014 tenant submits a new support ticket
 app.post('/api/tickets', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -5215,10 +5215,10 @@ app.post('/api/tickets', async (c) => {
   if (tenantEmail) {
     await sendTicketEmail(c.env, {
       to: tenantEmail,
-      subject: `[${ticketNumber}] Support Ticket Received — ${subject}`,
+      subject: `[${ticketNumber}] Support Ticket Received \u2014 ${subject}`,
       html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px">
         <div style="background:#4F46E5;padding:20px;border-radius:12px 12px 0 0;text-align:center">
-          <h2 style="color:#fff;margin:0;font-size:18px">🎫 Support Ticket Created</h2>
+          <h2 style="color:#fff;margin:0;font-size:18px">\uD83C\uDFAB Support Ticket Created</h2>
         </div>
         <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:0 0 12px 12px;padding:24px">
           <p style="color:#374151">Hi <strong>${submitter_name || tenant.company_name}</strong>,</p>
@@ -5230,7 +5230,7 @@ app.post('/api/tickets', async (c) => {
             <p style="margin:0"><strong style="color:#6366f1">Status:</strong> <span style="color:#059669;font-weight:700">OPEN</span></p>
           </div>
           <p style="color:#374151">We typically respond within <strong>24 hours</strong>. You will receive email updates as we work on your ticket.</p>
-          <p style="color:#6b7280;font-size:12px;margin-top:24px">— ClockInProof Support Team<br>Reply to this email if you have additional information.</p>
+          <p style="color:#6b7280;font-size:12px;margin-top:24px">\u2014 ClockInProof Support Team<br>Reply to this email if you have additional information.</p>
         </div>
       </div>`
     })
@@ -5238,7 +5238,7 @@ app.post('/api/tickets', async (c) => {
   // Alert super admin
   await sendTicketEmail(c.env, {
     to: 'admin@clockinproof.com',
-    subject: `🎫 New Support Ticket [${ticketNumber}] from ${tenant.company_name}`,
+    subject: `\uD83C\uDFAB New Support Ticket [${ticketNumber}] from ${tenant.company_name}`,
     html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px">
       <h2 style="color:#4F46E5">New Support Ticket</h2>
       <p><strong>Tenant:</strong> ${tenant.company_name} (${tenant.slug})</p>
@@ -5256,7 +5256,7 @@ app.post('/api/tickets', async (c) => {
   return c.json({ success: true, ticket_id: ticketId, ticket_number: ticketNumber })
 })
 
-// GET /api/tickets — tenant views their own tickets
+// GET /api/tickets \u2014 tenant views their own tickets
 app.get('/api/tickets', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -5273,7 +5273,7 @@ app.get('/api/tickets', async (c) => {
   return c.json({ tickets: tickets.results })
 })
 
-// GET /api/tickets/:id — tenant views a specific ticket thread
+// GET /api/tickets/:id \u2014 tenant views a specific ticket thread
 app.get('/api/tickets/:id', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -5290,7 +5290,7 @@ app.get('/api/tickets/:id', async (c) => {
   return c.json({ ticket, messages: messages.results })
 })
 
-// POST /api/tickets/:id/reply — tenant adds a reply to ticket
+// POST /api/tickets/:id/reply \u2014 tenant adds a reply to ticket
 app.post('/api/tickets/:id/reply', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -5313,10 +5313,10 @@ app.post('/api/tickets/:id/reply', async (c) => {
   // Alert super admin of tenant reply
   await sendTicketEmail(c.env, {
     to: 'admin@clockinproof.com',
-    subject: `💬 Reply on [${ticket.ticket_number}] — ${ticket.subject}`,
+    subject: `\uD83D\uDCAC Reply on [${ticket.ticket_number}] \u2014 ${ticket.subject}`,
     html: `<div style="font-family:sans-serif;max-width:560px;padding:24px">
       <h2 style="color:#4F46E5">Tenant Replied to Ticket</h2>
-      <p><strong>Ticket:</strong> ${ticket.ticket_number} — ${ticket.subject}</p>
+      <p><strong>Ticket:</strong> ${ticket.ticket_number} \u2014 ${ticket.subject}</p>
       <p><strong>From:</strong> ${tenant.company_name}</p>
       <p style="background:#f8fafc;padding:12px;border-radius:8px;border-left:4px solid #4F46E5">${message}</p>
       <p><a href="https://app.clockinproof.com/super" style="background:#4F46E5;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none">Reply in Super Admin</a></p>
@@ -5325,9 +5325,9 @@ app.post('/api/tickets/:id/reply', async (c) => {
   return c.json({ success: true })
 })
 
-// ── Super Admin ticket routes ────────────────────────────────────────────────
+// \u2500\u2500 Super Admin ticket routes \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-// GET /api/super/tickets — all tickets across all tenants
+// GET /api/super/tickets \u2014 all tickets across all tenants
 app.get('/api/super/tickets', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -5363,7 +5363,7 @@ app.get('/api/super/tickets', async (c) => {
   }
 })
 
-// GET /api/super/tickets/:id — full ticket thread
+// GET /api/super/tickets/:id \u2014 full ticket thread
 app.get('/api/super/tickets/:id', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -5382,7 +5382,7 @@ app.get('/api/super/tickets/:id', async (c) => {
   return c.json({ ticket, messages: messages.results })
 })
 
-// POST /api/super/tickets/:id/reply — super admin replies
+// POST /api/super/tickets/:id/reply \u2014 super admin replies
 app.post('/api/super/tickets/:id/reply', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -5408,10 +5408,10 @@ app.post('/api/super/tickets/:id/reply', async (c) => {
   if (!isInternal && ticket.tenant_email) {
     await sendTicketEmail(c.env, {
       to: ticket.tenant_email,
-      subject: `[${ticket.ticket_number}] Update on your support ticket — ${ticket.subject}`,
+      subject: `[${ticket.ticket_number}] Update on your support ticket \u2014 ${ticket.subject}`,
       html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px">
         <div style="background:#4F46E5;padding:20px;border-radius:12px 12px 0 0;text-align:center">
-          <h2 style="color:#fff;margin:0;font-size:18px">💬 Update on Your Ticket</h2>
+          <h2 style="color:#fff;margin:0;font-size:18px">\uD83D\uDCAC Update on Your Ticket</h2>
         </div>
         <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:0 0 12px 12px;padding:24px">
           <p style="color:#374151">Hi <strong>${ticket.company_name}</strong>,</p>
@@ -5421,7 +5421,7 @@ app.post('/api/super/tickets/:id/reply', async (c) => {
           </div>
           <p style="color:#374151"><strong>Ticket:</strong> ${ticket.subject}</p>
           <p style="color:#374151"><strong>Status:</strong> <span style="color:#d97706;font-weight:700">IN PROGRESS</span></p>
-          <p style="color:#6b7280;font-size:12px;margin-top:24px">Reply to this email to add more information to your ticket.<br>— ClockInProof Support Team</p>
+          <p style="color:#6b7280;font-size:12px;margin-top:24px">Reply to this email to add more information to your ticket.<br>\u2014 ClockInProof Support Team</p>
         </div>
       </div>`
     })
@@ -5429,7 +5429,7 @@ app.post('/api/super/tickets/:id/reply', async (c) => {
   return c.json({ success: true })
 })
 
-// PUT /api/super/tickets/:id/status — change ticket status (resolve/close/reopen)
+// PUT /api/super/tickets/:id/status \u2014 change ticket status (resolve/close/reopen)
 app.put('/api/super/tickets/:id/status', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -5449,10 +5449,10 @@ app.put('/api/super/tickets/:id/status', async (c) => {
   ).bind(status, id).run()
   // Add system message to thread
   const statusLabels: Record<string, string> = {
-    open: '🔓 Ticket re-opened',
-    in_progress: '🔄 Ticket marked In Progress',
-    resolved: '✅ Ticket marked Resolved',
-    closed: '🔒 Ticket Closed'
+    open: '\uD83D\uDD13 Ticket re-opened',
+    in_progress: '\uD83D\uDD04 Ticket marked In Progress',
+    resolved: '\u2705 Ticket marked Resolved',
+    closed: '\uD83D\uDD12 Ticket Closed'
   }
   const sysMsg = statusLabels[status] + (resolution_note ? `: ${resolution_note}` : '')
   await db.prepare(
@@ -5463,10 +5463,10 @@ app.put('/api/super/tickets/:id/status', async (c) => {
     const isClosed = status === 'closed'
     await sendTicketEmail(c.env, {
       to: ticket.tenant_email,
-      subject: `[${ticket.ticket_number}] ${isClosed ? 'Ticket Closed' : 'Issue Resolved'} — ${ticket.subject}`,
+      subject: `[${ticket.ticket_number}] ${isClosed ? 'Ticket Closed' : 'Issue Resolved'} \u2014 ${ticket.subject}`,
       html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px">
         <div style="background:${isClosed ? '#059669' : '#0891b2'};padding:20px;border-radius:12px 12px 0 0;text-align:center">
-          <h2 style="color:#fff;margin:0;font-size:18px">${isClosed ? '🔒 Ticket Closed' : '✅ Issue Resolved'}</h2>
+          <h2 style="color:#fff;margin:0;font-size:18px">${isClosed ? '\uD83D\uDD12 Ticket Closed' : '\u2705 Issue Resolved'}</h2>
         </div>
         <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:0 0 12px 12px;padding:24px">
           <p style="color:#374151">Hi <strong>${ticket.company_name}</strong>,</p>
@@ -5480,7 +5480,7 @@ app.put('/api/super/tickets/:id/status', async (c) => {
             ? `<p style="color:#374151">If this issue returns or you have a new question, please submit a new support ticket from your admin dashboard.</p>`
             : `<p style="color:#374151">If the issue persists or you have further questions, reply to this email and we will continue to assist you.</p>`
           }
-          <p style="color:#6b7280;font-size:12px;margin-top:24px">Thank you for using ClockInProof.<br>— ClockInProof Support Team</p>
+          <p style="color:#6b7280;font-size:12px;margin-top:24px">Thank you for using ClockInProof.<br>\u2014 ClockInProof Support Team</p>
         </div>
       </div>`
     })
@@ -5489,18 +5489,18 @@ app.put('/api/super/tickets/:id/status', async (c) => {
   if (status === 'open' && ticket.tenant_email) {
     await sendTicketEmail(c.env, {
       to: ticket.tenant_email,
-      subject: `[${ticket.ticket_number}] Ticket Re-opened — ${ticket.subject}`,
+      subject: `[${ticket.ticket_number}] Ticket Re-opened \u2014 ${ticket.subject}`,
       html: `<div style="font-family:sans-serif;max-width:560px;padding:24px">
         <h2 style="color:#4F46E5">Ticket Re-opened</h2>
         <p>Your ticket <strong>${ticket.ticket_number}</strong> has been re-opened and is back in our queue.</p>
-        <p>— ClockInProof Support Team</p>
+        <p>\u2014 ClockInProof Support Team</p>
       </div>`
     })
   }
   return c.json({ success: true })
 })
 
-// PUT /api/super/tickets/:id/priority — update priority
+// PUT /api/super/tickets/:id/priority \u2014 update priority
 app.put('/api/super/tickets/:id/priority', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -5514,7 +5514,7 @@ app.put('/api/super/tickets/:id/priority', async (c) => {
   return c.json({ success: true })
 })
 
-// ─── STAT PAY RULES (province/state minimums) ─────────────────────────────────
+// \u2500\u2500\u2500 STAT PAY RULES (province/state minimums) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 const STAT_PAY_RULES: Record<string, { multiplier: number; name: string }> = {
   // Canadian Provinces
   'CA-ON': { multiplier: 1.5, name: 'Ontario' },
@@ -5541,7 +5541,7 @@ const STAT_PAY_RULES: Record<string, { multiplier: number; name: string }> = {
   'US-IL': { multiplier: 1.5, name: 'Illinois' },
 }
 
-// ─── HOLIDAYS API ─────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 HOLIDAYS API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 // Fetch public holidays from Nager.Date API (free, no key needed)
 app.get('/api/holidays/:year', async (c) => {
@@ -5654,7 +5654,7 @@ app.get('/api/calendar/:year/:month', async (c) => {
   })
 })
 
-// ─── PAYROLL REPORT API ───────────────────────────────────────────────────────
+// \u2500\u2500\u2500 PAYROLL REPORT API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.get('/api/payroll/:year/:month', async (c) => {
   const db = c.env.DB
   const tenantId = await resolveTenantId(c, db)
@@ -5692,13 +5692,13 @@ app.get('/api/payroll/:year/:month', async (c) => {
   return c.json({ payroll: Object.values(byWorker), period: `${year}-${String(month).padStart(2,'0')}`, start: startDate, end: endDate })
 })
 
-// ─── WEEKLY EXPORT API ────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 WEEKLY EXPORT API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-// Helper: get Mon–Fri week boundaries for a given date
+// Helper: get Mon\u2013Fri week boundaries for a given date
 function getWeekBounds(refDate?: Date): { start: string; end: string; label: string } {
   const d = refDate ? new Date(refDate) : new Date()
   // Find most-recent Monday
-  const day = d.getUTCDay()                      // 0=Sun … 6=Sat
+  const day = d.getUTCDay()                      // 0=Sun \u2026 6=Sat
   const diffToMon = day === 0 ? -6 : 1 - day    // days back to Monday
   const mon = new Date(d)
   mon.setUTCDate(d.getUTCDate() + diffToMon)
@@ -5791,7 +5791,7 @@ app.get('/api/export/weekly', async (c) => {
 })
 
 // GET /api/export/period?start=YYYY-MM-DD&end=YYYY-MM-DD
-// Returns JSON for any arbitrary date range — used by QB preview and email
+// Returns JSON for any arbitrary date range \u2014 used by QB preview and email
 app.get('/api/export/period', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -5825,7 +5825,7 @@ app.get('/api/export/period', async (c) => {
   const fmtLabel = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' })
   return c.json({
     start, end,
-    label: `${fmtLabel(start)} – ${fmtLabel(end)}`,
+    label: `${fmtLabel(start)} \u2013 ${fmtLabel(end)}`,
     generated_at: new Date().toISOString(),
     workers: Object.values(byWorker)
   })
@@ -5916,10 +5916,10 @@ app.post('/api/export/email', async (c) => {
   const adminEmail = settings.admin_email || ''
   const replyTo    = settings.reply_to_email || adminEmail
   if (!adminEmail) {
-    return c.json({ error: 'No admin email configured. Go to Settings → General and add your email.' }, 400)
+    return c.json({ error: 'No admin email configured. Go to Settings \u2192 General and add your email.' }, 400)
   }
 
-  // Build sessions data — optionally filtered by worker
+  // Build sessions data \u2014 optionally filtered by worker
   const workerFilter  = workerId ? 'AND s.worker_id = ?' : ''
   const sessionBinds  = workerId ? [bounds.start, bounds.end, workerId] : [bounds.start, bounds.end]
 
@@ -5966,8 +5966,8 @@ app.post('/api/export/email', async (c) => {
   const htmlBody = buildWeeklyReportHTML(bounds, settings, Object.values(byWorker))
   const appName  = settings.app_name || 'ClockInProof'
   const subject  = workerId
-    ? `${appName} — Timesheet for ${workerLabel}: ${bounds.label}`
-    : `${appName} — Weekly Report: ${bounds.label}`
+    ? `${appName} \u2014 Timesheet for ${workerLabel}: ${bounds.label}`
+    : `${appName} \u2014 Weekly Report: ${bounds.label}`
 
   // Try Resend API (set RESEND_API_KEY in Cloudflare secrets)
   const resendKey = env.RESEND_API_KEY || ''
@@ -6002,7 +6002,7 @@ app.post('/api/export/email', async (c) => {
     }
   }
 
-  // No email key — return preview URL instead
+  // No email key \u2014 return preview URL instead
   return c.json({
     success: false,
     message: 'Email not configured. Add RESEND_API_KEY secret and admin_email in Settings.',
@@ -6105,17 +6105,17 @@ app.get('/api/export/csv', async (c) => {
   })
 })
 
-// ─── QUICKBOOKS EXPORT ENDPOINTS ─────────────────────────────────────────────
+// \u2500\u2500\u2500 QUICKBOOKS EXPORT ENDPOINTS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 //
 // Supports three formats:
-//  1. QB Desktop IIF  → GET /api/export/qb-iif?start=YYYY-MM-DD&end=YYYY-MM-DD
-//  2. QB Online CSV   → GET /api/export/qb-csv?start=YYYY-MM-DD&end=YYYY-MM-DD
-//  3. Generic payroll → GET /api/export/payroll-period?start=&end=
+//  1. QB Desktop IIF  \u2192 GET /api/export/qb-iif?start=YYYY-MM-DD&end=YYYY-MM-DD
+//  2. QB Online CSV   \u2192 GET /api/export/qb-csv?start=YYYY-MM-DD&end=YYYY-MM-DD
+//  3. Generic payroll \u2192 GET /api/export/payroll-period?start=&end=
 //
 // All three accept optional ?worker_id=N for a single worker.
 // The pay-period bounds can be derived from the /api/pay-periods helper below.
 
-// ── Helper: compute pay period list ──────────────────────────────────────────
+// \u2500\u2500 Helper: compute pay period list \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 function getPayPeriods(freq: string, anchor: string, count = 13): { start: string; end: string; label: string; payday: string }[] {
   const msDay = 86400000
   const anchorDate = new Date(anchor + 'T00:00:00')
@@ -6138,13 +6138,13 @@ function getPayPeriods(freq: string, anchor: string, count = 13): { start: strin
       start:  fmt(pStart),
       end:    fmt(pEnd),
       payday: fmt(payday),
-      label:  `${fmtLabel(pStart)} – ${fmtLabel(pEnd)}`
+      label:  `${fmtLabel(pStart)} \u2013 ${fmtLabel(pEnd)}`
     })
   }
   return periods
 }
 
-// GET /api/pay-periods — returns list of pay periods for the selector UI
+// GET /api/pay-periods \u2014 returns list of pay periods for the selector UI
 app.get('/api/pay-periods', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -6156,8 +6156,8 @@ app.get('/api/pay-periods', async (c) => {
   return c.json({ periods: getPayPeriods(freq, anchor, 13), freq, anchor })
 })
 
-// ── QB Desktop IIF export ─────────────────────────────────────────────────────
-// IIF (Intuit Interchange Format) — tab-separated, imports via File→Utilities→Import→IIF
+// \u2500\u2500 QB Desktop IIF export \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// IIF (Intuit Interchange Format) \u2014 tab-separated, imports via File\u2192Utilities\u2192Import\u2192IIF
 app.get('/api/export/qb-iif', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -6182,7 +6182,7 @@ app.get('/api/export/qb-iif', async (c) => {
     ORDER BY w.name, s.clock_in_time ASC
   `).bind(...binds).all()
 
-  // Build IIF — QuickBooks Desktop timesheet format
+  // Build IIF \u2014 QuickBooks Desktop timesheet format
   // TIMERHDR section defines the company & version
   const TAB = '\t'
   const lines: string[] = []
@@ -6191,7 +6191,7 @@ app.get('/api/export/qb-iif', async (c) => {
   lines.push('TIMERHDR'  + TAB + '8'   + TAB + 'R6'  + TAB + companyName   + TAB + new Date().toISOString() + TAB + '')
   lines.push('')
 
-  // TIMEACT — one row per work session
+  // TIMEACT \u2014 one row per work session
   lines.push('!TIMEACT' + TAB + 'DATE' + TAB + 'EMP' + TAB + 'JOB' + TAB + 'ITEM' + TAB + 'PITEM' + TAB + 'DURATION' + TAB + 'PRATE' + TAB + 'DESC' + TAB + 'BILLABLE')
 
   ;(sessions.results as any[]).forEach((s: any) => {
@@ -6201,14 +6201,14 @@ app.get('/api/export/qb-iif', async (c) => {
     const hh = Math.floor(totalMins / 60)
     const mm = totalMins % 60
     const duration = `${hh}:${String(mm).padStart(2, '0')}`
-    const desc = s.job_location ? `${s.job_location}${s.job_description ? ' — ' + s.job_description : ''}` : (s.job_description || 'Work')
+    const desc = s.job_location ? `${s.job_location}${s.job_description ? ' \u2014 ' + s.job_description : ''}` : (s.job_description || 'Work')
 
     lines.push([
       'TIMEACT',
       dateStr,
-      s.worker_name,          // EMP  — must match QB employee name exactly
-      '',                      // JOB  — optional customer:job
-      'Regular Pay',           // ITEM — payroll item (must exist in QB)
+      s.worker_name,          // EMP  \u2014 must match QB employee name exactly
+      '',                      // JOB  \u2014 optional customer:job
+      'Regular Pay',           // ITEM \u2014 payroll item (must exist in QB)
       '',                      // PITEM
       duration,                // DURATION
       (s.hourly_rate || 0).toFixed(2),  // PRATE
@@ -6231,7 +6231,7 @@ app.get('/api/export/qb-iif', async (c) => {
   })
 })
 
-// ── QB Online / Generic Payroll CSV ──────────────────────────────────────────
+// \u2500\u2500 QB Online / Generic Payroll CSV \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // QB Online imports a simple CSV with employee, date, regular hours, pay rate
 app.get('/api/export/qb-csv', async (c) => {
   const db = c.env.DB
@@ -6348,7 +6348,7 @@ app.get('/api/export/qb-csv', async (c) => {
   })
 })
 
-// ── Email QB payroll files to accountant ─────────────────────────────────────
+// \u2500\u2500 Email QB payroll files to accountant \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // POST /api/export/email-accountant
 // Body: { start, end, format: 'iif'|'csv'|'both', to: email }
 app.post('/api/export/email-accountant', async (c) => {
@@ -6364,7 +6364,7 @@ app.post('/api/export/email-accountant', async (c) => {
 
   const resendKey = (env.RESEND_API_KEY || '').trim()
   if (!resendKey) {
-    return c.json({ error: 'Email not configured — add RESEND_API_KEY as a Cloudflare secret' }, 400)
+    return c.json({ error: 'Email not configured \u2014 add RESEND_API_KEY as a Cloudflare secret' }, 400)
   }
 
   const settingsRaw2 = await db.prepare('SELECT key,value FROM settings').all()
@@ -6437,7 +6437,7 @@ app.post('/api/export/email-accountant', async (c) => {
     const hh = Math.floor(totalMins / 60)
     const mm = totalMins % 60
     const duration = `${hh}:${String(mm).padStart(2,'0')}`
-    const desc = s.job_location ? `${s.job_location}${s.job_description ? ' — '+s.job_description : ''}` : (s.job_description||'Work')
+    const desc = s.job_location ? `${s.job_location}${s.job_description ? ' \u2014 '+s.job_description : ''}` : (s.job_description||'Work')
     iifLines.push(['TIMEACT', dateStr, s.worker_name, '', 'Regular Pay', '', duration, (s.hourly_rate||0).toFixed(2), desc, 'N'].join(TAB))
   })
   iifLines.push('', '!ENDOFFILE')
@@ -6469,7 +6469,7 @@ app.post('/api/export/email-accountant', async (c) => {
     <tr>
       <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;">${w.name}</td>
       <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;text-align:center;">${(w.regular+w.overtime).toFixed(2)}h</td>
-      <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;text-align:center;">${w.overtime > 0 ? w.overtime.toFixed(2)+'h OT' : '—'}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;text-align:center;">${w.overtime > 0 ? w.overtime.toFixed(2)+'h OT' : '\u2014'}</td>
       <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;text-align:right;font-weight:700;color:#166534;">$${w.gross.toFixed(2)}</td>
     </tr>
   `).join('')
@@ -6479,8 +6479,8 @@ app.post('/api/export/email-accountant', async (c) => {
 <body style="font-family:Arial,sans-serif;background:#f8f9fa;margin:0;padding:20px;">
 <div style="max-width:600px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08);">
   <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:28px 32px;">
-    <h1 style="color:white;margin:0;font-size:22px;">💼 Payroll Report — ${companyName}</h1>
-    <p style="color:rgba(255,255,255,.85);margin:6px 0 0;font-size:14px;">Pay Period: ${fmtDate(start)} → ${fmtDate(end)}</p>
+    <h1 style="color:white;margin:0;font-size:22px;">\uD83D\uDCBC Payroll Report \u2014 ${companyName}</h1>
+    <p style="color:rgba(255,255,255,.85);margin:6px 0 0;font-size:14px;">Pay Period: ${fmtDate(start)} \u2192 ${fmtDate(end)}</p>
   </div>
   <div style="padding:28px 32px;">
     <div style="display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap;">
@@ -6518,14 +6518,14 @@ app.post('/api/export/email-accountant', async (c) => {
       </tfoot>
     </table>
     <div style="margin-top:24px;padding:16px;background:#fefce8;border:1px solid #fde047;border-radius:10px;font-size:13px;color:#713f12;">
-      <strong>📎 Attached Files:</strong><br>
-      ${fmt === 'both' || fmt === 'csv' ? `• <strong>payroll-${start}-to-${end}-qb-import.csv</strong> — QuickBooks Online / import-ready CSV<br>` : ''}
-      ${fmt === 'both' || fmt === 'iif' ? `• <strong>payroll-${start}-to-${end}-qb-desktop.iif</strong> — QuickBooks Desktop IIF (File → Utilities → Import → IIF)<br>` : ''}
+      <strong>\uD83D\uDCCE Attached Files:</strong><br>
+      ${fmt === 'both' || fmt === 'csv' ? `\u2022 <strong>payroll-${start}-to-${end}-qb-import.csv</strong> \u2014 QuickBooks Online / import-ready CSV<br>` : ''}
+      ${fmt === 'both' || fmt === 'iif' ? `\u2022 <strong>payroll-${start}-to-${end}-qb-desktop.iif</strong> \u2014 QuickBooks Desktop IIF (File \u2192 Utilities \u2192 Import \u2192 IIF)<br>` : ''}
       <br>Employee names in these files must match QuickBooks exactly.
     </div>
   </div>
   <div style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb;font-size:12px;color:#9ca3af;text-align:center;">
-    Generated by ${companyName} · ClockInProof · ${new Date().toLocaleDateString()}
+    Generated by ${companyName} \u00B7 ClockInProof \u00B7 ${new Date().toLocaleDateString()}
   </div>
 </div>
 </body></html>`
@@ -6544,7 +6544,7 @@ app.post('/api/export/email-accountant', async (c) => {
         from: `${companyName} Payroll <payroll@clockinproof.com>`,
         reply_to: replyTo2 || undefined,
         to:   toList,
-        subject: `Payroll Report: ${start} to ${end} — ${companyName}`,
+        subject: `Payroll Report: ${start} to ${end} \u2014 ${companyName}`,
         html: emailHtml,
         attachments
       })
@@ -6568,21 +6568,21 @@ app.post('/api/export/email-accountant', async (c) => {
   }
 })
 
-// ─── QUICKBOOKS OAUTH 2.0 INTEGRATION ────────────────────────────────────────
+// \u2500\u2500\u2500 QUICKBOOKS OAUTH 2.0 INTEGRATION \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 //
 // Flow:
-//  1. Admin enters Client ID + Secret in Settings → saved to DB
-//  2. Admin clicks "Connect to QuickBooks" → GET /api/qb/connect → redirects to Intuit
-//  3. Intuit redirects to GET /api/qb/callback?code=…&realmId=… → exchanges for tokens
+//  1. Admin enters Client ID + Secret in Settings \u2192 saved to DB
+//  2. Admin clicks "Connect to QuickBooks" \u2192 GET /api/qb/connect \u2192 redirects to Intuit
+//  3. Intuit redirects to GET /api/qb/callback?code=\u2026&realmId=\u2026 \u2192 exchanges for tokens
 //  4. Tokens saved in settings; qb_connected = '1'
-//  5. Admin maps workers → QB employees via GET /api/qb/employees + POST /api/qb/map
-//  6. On any pay period: POST /api/qb/sync → pushes TimeActivity for each session
+//  5. Admin maps workers \u2192 QB employees via GET /api/qb/employees + POST /api/qb/map
+//  6. On any pay period: POST /api/qb/sync \u2192 pushes TimeActivity for each session
 //
 // Intuit OAuth 2.0 endpoints:
 //  Auth:    https://appcenter.intuit.com/connect/oauth2
 //  Token:   https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer
 //  Revoke:  https://developer.api.intuit.com/v2/oauth2/tokens/revoke
-// ─────────────────────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 const QB_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2'
 const QB_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer'
@@ -6642,7 +6642,7 @@ async function getQbAccessToken(db: D1Database, qb: Record<string, string>): Pro
   return qb.qb_access_token
 }
 
-// ── GET /api/qb/status ─────────────────────────────────────────────────────
+// \u2500\u2500 GET /api/qb/status \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.get('/api/qb/status', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -6661,7 +6661,7 @@ app.get('/api/qb/status', async (c) => {
   })
 })
 
-// ── GET /api/qb/connect — redirect to Intuit OAuth ────────────────────────
+// \u2500\u2500 GET /api/qb/connect \u2014 redirect to Intuit OAuth \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.get('/api/qb/connect', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -6685,7 +6685,7 @@ app.get('/api/qb/connect', async (c) => {
   return c.redirect(`${QB_AUTH_URL}?${params.toString()}`)
 })
 
-// ── GET /api/qb/callback — Intuit redirects here after approval ────────────
+// \u2500\u2500 GET /api/qb/callback \u2014 Intuit redirects here after approval \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.get('/api/qb/callback', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -6697,7 +6697,7 @@ app.get('/api/qb/callback', async (c) => {
       setTimeout(()=>window.close(),2000);
     </script>
     <p style="font-family:sans-serif;text-align:center;padding:40px;font-size:18px;">
-      ${success ? '✅' : '❌'} ${msg}
+      ${success ? '\u2705' : '\u274C'} ${msg}
     </p>
   </body></html>`
 
@@ -6751,7 +6751,7 @@ app.get('/api/qb/callback', async (c) => {
   }
 })
 
-// ── POST /api/qb/disconnect ────────────────────────────────────────────────
+// \u2500\u2500 POST /api/qb/disconnect \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.post('/api/qb/disconnect', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -6772,14 +6772,14 @@ app.post('/api/qb/disconnect', async (c) => {
   return c.json({ success: true, message: 'Disconnected from QuickBooks' })
 })
 
-// ── GET /api/qb/employees — list QB employees for mapping ─────────────────
+// \u2500\u2500 GET /api/qb/employees \u2014 list QB employees for mapping \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.get('/api/qb/employees', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
   const qb = await loadQbSettings(db)
   if (qb.qb_connected !== '1') return c.json({ error: 'Not connected to QuickBooks' }, 400)
   const token = await getQbAccessToken(db, qb)
-  if (!token) return c.json({ error: 'QB token expired — please reconnect' }, 401)
+  if (!token) return c.json({ error: 'QB token expired \u2014 please reconnect' }, 401)
 
   try {
     const qbBase = qbApiBase(qb.qb_environment || 'production')
@@ -6804,7 +6804,7 @@ app.get('/api/qb/employees', async (c) => {
   }
 })
 
-// ── GET /api/qb/workers — our workers with QB mapping status ──────────────
+// \u2500\u2500 GET /api/qb/workers \u2014 our workers with QB mapping status \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.get('/api/qb/workers', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -6818,7 +6818,7 @@ app.get('/api/qb/workers', async (c) => {
   return c.json({ workers: workers.results })
 })
 
-// ── POST /api/qb/map — save worker→QB employee mapping ───────────────────
+// \u2500\u2500 POST /api/qb/map \u2014 save worker\u2192QB employee mapping \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.post('/api/qb/map', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -6831,7 +6831,7 @@ app.post('/api/qb/map', async (c) => {
   return c.json({ success: true })
 })
 
-// ── DELETE /api/qb/map/:worker_id ─────────────────────────────────────────
+// \u2500\u2500 DELETE /api/qb/map/:worker_id \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.delete('/api/qb/map/:worker_id', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -6839,7 +6839,7 @@ app.delete('/api/qb/map/:worker_id', async (c) => {
   return c.json({ success: true })
 })
 
-// ── POST /api/qb/sync — push TimeActivity records to QB ───────────────────
+// \u2500\u2500 POST /api/qb/sync \u2014 push TimeActivity records to QB \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // Body: { start: 'YYYY-MM-DD', end: 'YYYY-MM-DD', dry_run?: boolean }
 app.post('/api/qb/sync', async (c) => {
   try {
@@ -6848,7 +6848,7 @@ app.post('/api/qb/sync', async (c) => {
   const qb = await loadQbSettings(db)
   if (qb.qb_connected !== '1') return c.json({ error: 'Not connected to QuickBooks' }, 400)
   const token = await getQbAccessToken(db, qb)
-  if (!token) return c.json({ error: 'QB token expired — please reconnect' }, 401)
+  if (!token) return c.json({ error: 'QB token expired \u2014 please reconnect' }, 401)
 
   const body = await c.req.json()
   const { start, end, dry_run = false } = body
@@ -6934,14 +6934,14 @@ app.post('/api/qb/sync', async (c) => {
       unmapped.length ? `Unmapped: ${unmapped.join(', ')}` : null).run()
   }
 
-  return c.json({ success: true, dry_run, period: `${start} → ${end}`,
+  return c.json({ success: true, dry_run, period: `${start} \u2192 ${end}`,
     total_sessions: (sessions.results as any[]).length, pushed, errors, unmapped_workers: unmapped, results })
   } catch (e: any) {
     return c.json({ error: e.message || 'Sync failed', details: String(e) }, 500)
   }
 })
 
-// ── GET /api/qb/sync-log ──────────────────────────────────────────────────
+// \u2500\u2500 GET /api/qb/sync-log \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.get('/api/qb/sync-log', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -6949,7 +6949,7 @@ app.get('/api/qb/sync-log', async (c) => {
   return c.json({ logs: logs.results })
 })
 
-// ─── SCHEDULED WEEKLY EMAIL (Cloudflare Cron Trigger) ─────────────────────────
+// \u2500\u2500\u2500 SCHEDULED WEEKLY EMAIL (Cloudflare Cron Trigger) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 async function runWeeklyEmailJob(db: D1Database, env: any) {
   const settingsRaw = await db.prepare('SELECT * FROM settings').all()
   const settings: Record<string, string> = {}
@@ -6994,7 +6994,7 @@ async function runWeeklyEmailJob(db: D1Database, env: any) {
   })
 
   const htmlBody = buildWeeklyReportHTML(bounds, settings, Object.values(byWorker))
-  const subject  = `${appName} — Weekly Report: ${bounds.label}`
+  const subject  = `${appName} \u2014 Weekly Report: ${bounds.label}`
 
   await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -7014,7 +7014,7 @@ async function runWeeklyEmailJob(db: D1Database, env: any) {
   ).bind(new Date().toISOString()).run()
 }
 
-// ─── HTML REPORT BUILDER ──────────────────────────────────────────────────────
+// \u2500\u2500\u2500 HTML REPORT BUILDER \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 function buildWeeklyReportHTML(
   bounds: { start: string; end: string; label: string },
   settings: Record<string, string>,
@@ -7043,12 +7043,12 @@ function buildWeeklyReportHTML(
         allGPSPoints.push({
           time: clockInDate.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}),
           lat: s.clock_in_lat, lng: s.clock_in_lng,
-          label: '🟢 Clock In',
+          label: '\uD83D\uDFE2 Clock In',
           note: s.clock_in_address || ''
         })
       }
 
-      // Pings excluded from export — only Clock In / Clock Out shown
+      // Pings excluded from export \u2014 only Clock In / Clock Out shown
       // Summary: total pings count only
       const pingCount = pings.length
 
@@ -7056,7 +7056,7 @@ function buildWeeklyReportHTML(
         allGPSPoints.push({
           time: clockOutDate.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}),
           lat: s.clock_out_lat, lng: s.clock_out_lng,
-          label: '🔴 Clock Out',
+          label: '\uD83D\uDD34 Clock Out',
           note: s.clock_out_address || ''
         })
       }
@@ -7076,18 +7076,18 @@ function buildWeeklyReportHTML(
                 <tr>
                   <td style="padding:5px 8px;border:1px solid #e2e8f0;font-weight:600;white-space:nowrap;">${pt.time}</td>
                   <td style="padding:5px 8px;border:1px solid #e2e8f0;">${pt.label}</td>
-                  <td style="padding:5px 8px;border:1px solid #e2e8f0;font-family:monospace;">${pt.lat !== null ? `${(pt.lat as number).toFixed(6)}, ${(pt.lng as number).toFixed(6)}` : '—'}</td>
-                  <td style="padding:5px 8px;border:1px solid #e2e8f0;">${pt.lat !== null ? `<a href="https://maps.google.com/?q=${pt.lat},${pt.lng}" style="color:#2563eb;">View Map</a>` : '—'}</td>
+                  <td style="padding:5px 8px;border:1px solid #e2e8f0;font-family:monospace;">${pt.lat !== null ? `${(pt.lat as number).toFixed(6)}, ${(pt.lng as number).toFixed(6)}` : '\u2014'}</td>
+                  <td style="padding:5px 8px;border:1px solid #e2e8f0;">${pt.lat !== null ? `<a href="https://maps.google.com/?q=${pt.lat},${pt.lng}" style="color:#2563eb;">View Map</a>` : '\u2014'}</td>
                 </tr>
               `).join('')}
             </tbody>
           </table>`
-        : `<p style="font-size:11px;color:#94a3b8;margin-top:6px;font-style:italic;">⚠ No GPS data recorded for this shift</p>`
+        : `<p style="font-size:11px;color:#94a3b8;margin-top:6px;font-style:italic;">\u26A0 No GPS data recorded for this shift</p>`
 
       const totalGPSPoints = allGPSPoints.length + pingCount
       const gpsStatus = totalGPSPoints > 0
-        ? `<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 7px;border-radius:999px;font-weight:600;">✓ GPS Verified (${pingCount} ping${pingCount !== 1 ? 's' : ''} logged)</span>`
-        : `<span style="background:#fef9c3;color:#854d0e;font-size:10px;padding:2px 7px;border-radius:999px;font-weight:600;">⚠ No GPS</span>`
+        ? `<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 7px;border-radius:999px;font-weight:600;">\u2713 GPS Verified (${pingCount} ping${pingCount !== 1 ? 's' : ''} logged)</span>`
+        : `<span style="background:#fef9c3;color:#854d0e;font-size:10px;padding:2px 7px;border-radius:999px;font-weight:600;">\u26A0 No GPS</span>`
 
       return `
         <div style="margin-bottom:16px;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
@@ -7097,7 +7097,7 @@ function buildWeeklyReportHTML(
               <span style="font-weight:700;color:#1e293b;">${dayName}, ${dateStr}</span>
               <span style="margin-left:12px;color:#64748b;font-size:12px;">
                 ${clockInDate.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}
-                →
+                \u2192
                 ${clockOutDate ? clockOutDate.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '<span style="color:#16a34a;font-weight:600;">Still Active</span>'}
               </span>
             </div>
@@ -7110,8 +7110,8 @@ function buildWeeklyReportHTML(
           </div>
           <!-- Job info -->
           <div style="padding:10px 14px;border-bottom:1px solid #f1f5f9;">
-            ${s.job_location ? `<p style="margin:0 0 4px;font-size:12px;"><span style="color:#64748b;">📍 Location:</span> <strong>${s.job_location}</strong></p>` : ''}
-            ${s.job_description ? `<p style="margin:0;font-size:12px;color:#475569;"><span style="color:#64748b;">🔧 Tasks:</span> ${s.job_description}</p>` : ''}
+            ${s.job_location ? `<p style="margin:0 0 4px;font-size:12px;"><span style="color:#64748b;">\uD83D\uDCCD Location:</span> <strong>${s.job_location}</strong></p>` : ''}
+            ${s.job_description ? `<p style="margin:0;font-size:12px;color:#475569;"><span style="color:#64748b;">\uD83D\uDD27 Tasks:</span> ${s.job_description}</p>` : ''}
           </div>
           <!-- GPS summary (no per-ping rows) -->
           <div style="padding:10px 14px;">
@@ -7126,7 +7126,7 @@ function buildWeeklyReportHTML(
         <div style="background:#1e40af;color:white;padding:12px 18px;border-radius:12px 12px 0 0;display:flex;justify-content:space-between;align-items:center;">
           <div>
             <p style="margin:0;font-size:16px;font-weight:700;">${w.worker_name}</p>
-            <p style="margin:2px 0 0;font-size:12px;opacity:0.8;">${w.worker_phone} · $${(w.hourly_rate||0).toFixed(2)}/hr</p>
+            <p style="margin:2px 0 0;font-size:12px;opacity:0.8;">${w.worker_phone} \u00B7 $${(w.hourly_rate||0).toFixed(2)}/hr</p>
           </div>
           <div style="text-align:right;">
             <p style="margin:0;font-size:14px;font-weight:700;">${w.total_hours.toFixed(2)} hrs</p>
@@ -7145,7 +7145,7 @@ function buildWeeklyReportHTML(
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <title>${appName} — ${bounds.label}</title>
+  <title>${appName} \u2014 ${bounds.label}</title>
   <style>
     * { box-sizing: border-box; }
     body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; color: #1e293b; background: #f8fafc; margin: 0; padding: 0; }
@@ -7165,7 +7165,7 @@ function buildWeeklyReportHTML(
     <div>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
         <div style="width:40px;height:40px;background:#1e40af;border-radius:10px;display:flex;align-items:center;justify-content:center;">
-          <span style="color:white;font-size:18px;">⏱</span>
+          <span style="color:white;font-size:18px;">\u23F1</span>
         </div>
         <span style="font-size:22px;font-weight:800;color:#1e40af;">${appName}</span>
       </div>
@@ -7200,22 +7200,22 @@ function buildWeeklyReportHTML(
 
   <!-- Print / Download buttons -->
   <div class="no-print" style="margin-bottom:20px;display:flex;gap:10px;">
-    <button onclick="window.print()" style="background:#1e40af;color:white;border:none;padding:10px 20px;border-radius:8px;font-size:13px;cursor:pointer;font-weight:600;">🖨 Print / Save as PDF</button>
-    <a href="/api/export/csv?week=${bounds.start}" style="background:#166534;color:white;text-decoration:none;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;display:inline-block;">📥 Download CSV</a>
+    <button onclick="window.print()" style="background:#1e40af;color:white;border:none;padding:10px 20px;border-radius:8px;font-size:13px;cursor:pointer;font-weight:600;">\uD83D\uDDA8 Print / Save as PDF</button>
+    <a href="/api/export/csv?week=${bounds.start}" style="background:#166534;color:white;text-decoration:none;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;display:inline-block;">\uD83D\uDCE5 Download CSV</a>
   </div>
 
   <!-- GPS Legend -->
   <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 16px;margin-bottom:24px;font-size:11px;color:#64748b;">
     <strong style="color:#374151;">GPS Proof Guide:</strong>
-    &nbsp;🟢 Clock In = GPS when worker started &nbsp;|&nbsp;
-    📍 Ping = Auto GPS recorded every 5 min during shift &nbsp;|&nbsp;
-    🔴 Clock Out = GPS when worker finished &nbsp;|&nbsp;
+    &nbsp;\uD83D\uDFE2 Clock In = GPS when worker started &nbsp;|&nbsp;
+    \uD83D\uDCCD Ping = Auto GPS recorded every 5 min during shift &nbsp;|&nbsp;
+    \uD83D\uDD34 Clock Out = GPS when worker finished &nbsp;|&nbsp;
     Each coordinate links directly to Google Maps
   </div>
 
   ${workers.length === 0
     ? `<div style="text-align:center;padding:48px;color:#94a3b8;">
-        <p style="font-size:48px;margin:0;">📭</p>
+        <p style="font-size:48px;margin:0;">\uD83D\uDCED</p>
         <p style="margin:12px 0 0;font-size:16px;font-weight:600;">No shifts recorded this week</p>
        </div>`
     : workerSections
@@ -7223,7 +7223,7 @@ function buildWeeklyReportHTML(
 
   <!-- Footer -->
   <div style="margin-top:32px;padding-top:16px;border-top:1px solid #e2e8f0;text-align:center;font-size:10px;color:#94a3b8;">
-    <p style="margin:0;">${appName} · Auto-generated weekly report · ${bounds.label}</p>
+    <p style="margin:0;">${appName} \u00B7 Auto-generated weekly report \u00B7 ${bounds.label}</p>
     <p style="margin:4px 0 0;">GPS coordinates are timestamped and verifiable via Google Maps links above.</p>
   </div>
 
@@ -7232,19 +7232,19 @@ function buildWeeklyReportHTML(
 </html>`
 }
 
-// ─── SUBDOMAIN ROUTING ────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 SUBDOMAIN ROUTING \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // Reads the Host header and routes:
-//   app.clockinproof.com   → Worker clock-in app
-//   admin.clockinproof.com → Admin dashboard
-//   clockinproof.com / www → Marketing landing page
-//   localhost / sandbox    → fallback: path-based routing (/admin = admin, / = worker)
+//   app.clockinproof.com   \u2192 Worker clock-in app
+//   admin.clockinproof.com \u2192 Admin dashboard
+//   clockinproof.com / www \u2192 Marketing landing page
+//   localhost / sandbox    \u2192 fallback: path-based routing (/admin = admin, / = worker)
 
 function getSubdomain(c: any): string {
   const host = c.req.header('host') || ''
   const parts = host.split('.')
   // Only treat as subdomain if it's a real domain (ends in .com/.io/.ai etc)
-  // e.g. app.clockinproof.com → ['app','clockinproof','com'] → 'app'
-  // e.g. 3000-xxxxx.sandbox.novita.ai → NOT a real subdomain → return ''
+  // e.g. app.clockinproof.com \u2192 ['app','clockinproof','com'] \u2192 'app'
+  // e.g. 3000-xxxxx.sandbox.novita.ai \u2192 NOT a real subdomain \u2192 return ''
   const knownSubs = ['app', 'admin', 'www', 'superadmin', 'super']
   if (parts.length >= 3 && knownSubs.includes(parts[0].toLowerCase())) {
     return parts[0].toLowerCase()
@@ -7256,11 +7256,11 @@ function getSubdomain(c: any): string {
   return ''
 }
 
-// ─── MAIN PAGES ───────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 MAIN PAGES \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-// Root route — subdomain-aware for production, landing page for sandbox/direct
+// Root route \u2014 subdomain-aware for production, landing page for sandbox/direct
 app.get('/', async (c) => {
-  // Resolve subdomain — check x-forwarded-host first (Cloudflare proxy), then host
+  // Resolve subdomain \u2014 check x-forwarded-host first (Cloudflare proxy), then host
   const rawHost = (c.req.header('x-forwarded-host') || c.req.header('host') || '').split(':')[0].toLowerCase()
   // Extract subdomain directly from host header as bulletproof fallback
   const directSub = rawHost.endsWith('.clockinproof.com')
@@ -7271,7 +7271,7 @@ app.get('/', async (c) => {
   if (sub === 'admin') return c.html(getAdminHTML())
   if (sub === 'app')   return c.html(getWorkerHTML())
   if (sub === 'super' || sub === 'superadmin') return c.html(getSuperAdminHTML())
-  // Tenant subdomain — e.g. acme.clockinproof.com → smart landing: worker OR admin
+  // Tenant subdomain \u2014 e.g. acme.clockinproof.com \u2192 smart landing: worker OR admin
   const reserved = ['admin', 'app', 'www', 'superadmin', 'super', 'api', 'mail', '']
   if (sub && !reserved.includes(sub)) {
     const db = c.env.DB
@@ -7286,7 +7286,7 @@ app.get('/', async (c) => {
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>${tenant.company_name} — ClockInProof</title>
+  <title>${tenant.company_name} \u2014 ClockInProof</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
   <link rel="manifest" href="/manifest.json"/>
@@ -7304,7 +7304,7 @@ app.get('/', async (c) => {
     <a href="/app" class="flex items-center justify-between w-full bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white rounded-2xl px-6 py-5 mb-4 transition group shadow-lg shadow-indigo-900/40">
       <div class="text-left">
         <p class="font-bold text-lg leading-tight">Clock In / Clock Out</p>
-        <p class="text-indigo-200 text-sm mt-0.5">For workers — track your time</p>
+        <p class="text-indigo-200 text-sm mt-0.5">For workers \u2014 track your time</p>
       </div>
       <i class="fas fa-clock text-2xl text-indigo-200 group-hover:scale-110 transition-transform"></i>
     </a>
@@ -7313,12 +7313,12 @@ app.get('/', async (c) => {
     <a href="/admin" class="flex items-center justify-between w-full bg-gray-800 hover:bg-gray-700 active:bg-gray-600 text-white rounded-2xl px-6 py-5 transition group shadow-lg shadow-gray-900/40 border border-gray-700">
       <div class="text-left">
         <p class="font-bold text-lg leading-tight">Admin Panel</p>
-        <p class="text-gray-400 text-sm mt-0.5">For managers — view sessions &amp; workers</p>
+        <p class="text-gray-400 text-sm mt-0.5">For managers \u2014 view sessions &amp; workers</p>
       </div>
       <i class="fas fa-shield-alt text-2xl text-gray-400 group-hover:scale-110 transition-transform"></i>
     </a>
 
-    <p class="text-gray-600 text-xs mt-8">© ${new Date().getFullYear()} ClockInProof</p>
+    <p class="text-gray-600 text-xs mt-8">\u00A9 ${new Date().getFullYear()} ClockInProof</p>
   </div>
 </body>
 </html>`)
@@ -7326,14 +7326,14 @@ app.get('/', async (c) => {
     return c.html(`<html><body style="font-family:sans-serif;text-align:center;padding:60px">
       <h2>Company not found</h2>
       <p>The company <strong>${sub}</strong> does not exist or is inactive.</p>
-      <a href="https://clockinproof.com">← Back to ClockInProof</a>
+      <a href="https://clockinproof.com">\u2190 Back to ClockInProof</a>
     </body></html>`, 404)
   }
-  // www.clockinproof.com or clockinproof.com → marketing/pricing page
+  // www.clockinproof.com or clockinproof.com \u2192 marketing/pricing page
   return c.html(getLandingHTML())
 })
 
-// Worker app — primary path used in sandbox AND sent to workers as invite link
+// Worker app \u2014 primary path used in sandbox AND sent to workers as invite link
 app.get('/app', async (c) => {
   const rawHost = (c.req.header('x-forwarded-host') || c.req.header('host') || '').split(':')[0].toLowerCase()
   const directSub = rawHost.endsWith('.clockinproof.com') ? rawHost.replace('.clockinproof.com', '') : ''
@@ -7348,7 +7348,7 @@ app.get('/app', async (c) => {
   return c.html(getWorkerHTML())
 })
 
-// Admin dashboard — accessible via /admin path OR admin.clockinproof.com subdomain
+// Admin dashboard \u2014 accessible via /admin path OR admin.clockinproof.com subdomain
 app.get('/admin', async (c) => {
   const rawHost = (c.req.header('x-forwarded-host') || c.req.header('host') || '').split(':')[0].toLowerCase()
   const directSub = rawHost.endsWith('.clockinproof.com') ? rawHost.replace('.clockinproof.com', '') : ''
@@ -7363,28 +7363,28 @@ app.get('/admin', async (c) => {
   return c.html(getAdminHTML())
 })
 
-// Super Admin portal — accessible via super.clockinproof.com (subdomain handled above in '/' route)
+// Super Admin portal \u2014 accessible via super.clockinproof.com (subdomain handled above in '/' route)
 // Also accessible via /super path as fallback (e.g. during DNS propagation or direct URL access)
 app.get('/super', (c) => {
   return c.html(getSuperAdminHTML())
 })
 
-// Marketing landing page — accessible via root / OR /landing
+// Marketing landing page \u2014 accessible via root / OR /landing
 app.get('/landing', (c) => {
   return c.html(getLandingHTML())
 })
 
-// ─── FREE 60-DAY TRIAL — 3-STEP VERIFIED ONBOARDING ─────────────────────────
-// Step 1: /free-trial         → email + company + phone → send 6-digit code
-// Step 2: /free-trial/verify  → enter code
-// Step 3: /free-trial/setup   → full form gated behind verified token
+// \u2500\u2500\u2500 FREE 60-DAY TRIAL \u2014 3-STEP VERIFIED ONBOARDING \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Step 1: /free-trial         \u2192 email + company + phone \u2192 send 6-digit code
+// Step 2: /free-trial/verify  \u2192 enter code
+// Step 3: /free-trial/setup   \u2192 full form gated behind verified token
 // All leads captured at Step 1 in signup_leads table
 
 app.get('/free-trial', (c) => { return c.html(getFreeTrialStep1HTML()) })
 app.get('/free-trial/verify', (c) => { return c.html(getFreeTrialStep2HTML()) })
 app.get('/free-trial/setup', (c) => { return c.html(getFreeTrialStep3HTML()) })
 
-// POST /api/free-trial/start — capture lead + send 6-digit auth code
+// POST /api/free-trial/start \u2014 capture lead + send 6-digit auth code
 app.post('/api/free-trial/start', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -7433,7 +7433,7 @@ app.post('/api/free-trial/start', async (c) => {
             <div style="display:inline-block;background:#4F46E5;color:#fff;font-weight:900;font-size:18px;padding:10px 20px;border-radius:10px">ClockIn<span style="color:#a5b4fc">Proof</span></div>
           </div>
           <h2 style="color:#f9fafb;margin:0 0 8px;font-size:22px">Your verification code</h2>
-          <p style="color:#9ca3af;margin:0 0 28px">Hi ${company_name} — enter this code to continue your free trial setup.</p>
+          <p style="color:#9ca3af;margin:0 0 28px">Hi ${company_name} \u2014 enter this code to continue your free trial setup.</p>
           <div style="background:#1e1b4b;border:2px solid #4f46e5;border-radius:16px;padding:28px;text-align:center;margin-bottom:28px">
             <div style="font-size:48px;font-weight:900;letter-spacing:12px;color:#a5b4fc">${code}</div>
             <p style="color:#6b7280;font-size:13px;margin:12px 0 0">Expires in 15 minutes</p>
@@ -7461,7 +7461,7 @@ app.post('/api/free-trial/start', async (c) => {
   return c.json({ success: true, sent_email: !errors.includes('email'), sent_sms: !errors.includes('sms') })
 })
 
-// POST /api/free-trial/verify-code — verify the 6-digit code
+// POST /api/free-trial/verify-code \u2014 verify the 6-digit code
 app.post('/api/free-trial/verify-code', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
@@ -7470,21 +7470,21 @@ app.post('/api/free-trial/verify-code', async (c) => {
   const lead = await db.prepare(`SELECT * FROM signup_leads WHERE email = ? AND converted = 0 ORDER BY created_at DESC LIMIT 1`)
     .bind(email.trim().toLowerCase()).first() as any
   if (!lead) return c.json({ error: 'No pending verification found for this email' }, 404)
-  if (lead.auth_code !== String(code).trim()) return c.json({ error: 'Incorrect code — please try again' }, 400)
-  if (new Date(lead.code_expires_at) < new Date()) return c.json({ error: 'Code expired — go back and request a new one' }, 400)
+  if (lead.auth_code !== String(code).trim()) return c.json({ error: 'Incorrect code \u2014 please try again' }, 400)
+  if (new Date(lead.code_expires_at) < new Date()) return c.json({ error: 'Code expired \u2014 go back and request a new one' }, 400)
   await db.prepare(`UPDATE signup_leads SET code_verified=1, verified_at=CURRENT_TIMESTAMP WHERE id=?`).bind(lead.id).run()
   const token = btoa(`${lead.id}:${email.trim().toLowerCase()}:${Date.now()}`)
   return c.json({ success: true, token, company_name: lead.company_name, email: lead.email, phone: lead.phone })
 })
 
-// POST /api/free-trial — Step 3: create tenant (requires verified token)
+// POST /api/free-trial \u2014 Step 3: create tenant (requires verified token)
 app.post('/api/free-trial', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
   const body = await c.req.json() as any
   const { company_name, slug, admin_email, admin_pin, company_address, phone, verify_token } = body
 
-  if (!verify_token) return c.json({ error: 'Verification required — please complete email/SMS verification first' }, 401)
+  if (!verify_token) return c.json({ error: 'Verification required \u2014 please complete email/SMS verification first' }, 401)
   let leadId: number
   try {
     const decoded = atob(verify_token)
@@ -7493,7 +7493,7 @@ app.post('/api/free-trial', async (c) => {
     const tokenEmail = parts[1]
     const tokenTime = parseInt(parts[2])
     if (tokenEmail !== admin_email?.trim().toLowerCase()) return c.json({ error: 'Email mismatch' }, 401)
-    if (Date.now() - tokenTime > 2 * 60 * 60 * 1000) return c.json({ error: 'Session expired — please start again' }, 401)
+    if (Date.now() - tokenTime > 2 * 60 * 60 * 1000) return c.json({ error: 'Session expired \u2014 please start again' }, 401)
   } catch { return c.json({ error: 'Invalid verification token' }, 401) }
 
   const lead = await db.prepare(`SELECT * FROM signup_leads WHERE id = ? AND code_verified = 1`).bind(leadId).first() as any
@@ -7542,7 +7542,7 @@ app.post('/api/free-trial', async (c) => {
       body: JSON.stringify({
         from: 'ClockInProof <alerts@clockinproof.com>',
         to: [admin_email.trim()],
-        subject: `Your 60-Day Free Trial is Ready — ClockInProof`,
+        subject: `Your 60-Day Free Trial is Ready \u2014 ClockInProof`,
         html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;background:#030712;color:#f9fafb;border-radius:16px">
           <div style="text-align:center;margin-bottom:24px"><div style="display:inline-block;background:#4F46E5;color:#fff;font-weight:900;font-size:18px;padding:10px 20px;border-radius:10px">ClockIn<span style="color:#a5b4fc">Proof</span></div></div>
           <h2 style="color:#f9fafb;margin:0 0 8px">Welcome, ${company_name.trim()}!</h2>
@@ -7566,7 +7566,7 @@ app.post('/api/free-trial', async (c) => {
     admin_url: 'https://admin.clockinproof.com', worker_url: `https://${cleanSlug}.clockinproof.com` })
 })
 
-// GET /api/super/leads — super admin view of all signup leads
+// GET /api/super/leads \u2014 super admin view of all signup leads
 app.get('/api/super/leads', async (c) => {
   if (!verifySuperToken(c)) return c.json({ error: 'Unauthorized' }, 401)
   const db = c.env.DB
@@ -7577,7 +7577,7 @@ app.get('/api/super/leads', async (c) => {
 function getFreeTrialStep1HTML(): string {
   return `<!DOCTYPE html><html lang="en"><head>
   <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>Start Free Trial — ClockInProof</title>
+  <title>Start Free Trial \u2014 ClockInProof</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
   
   <style>
@@ -7609,14 +7609,14 @@ function getFreeTrialStep1HTML(): string {
   <div style="width:100%;max-width:460px">
     <div style="text-align:center;margin-bottom:28px">
       <div style="display:inline-flex;align-items:center;gap:6px;background:#052e16;border:1px solid #166534;color:#4ade80;font-size:13px;font-weight:600;padding:6px 14px;border-radius:20px;margin-bottom:16px">
-        <i class="fas fa-gift"></i> 60 Days Free — No Credit Card
+        <i class="fas fa-gift"></i> 60 Days Free \u2014 No Credit Card
       </div>
       <h1 style="font-size:26px;font-weight:900;margin-bottom:6px">Start your free trial</h1>
       <p style="color:#6b7280;font-size:14px">We'll send a verification code to confirm your identity</p>
     </div>
     <div class="card">
       <div class="step-bar"><div class="step-dot active"></div><div class="step-dot"></div><div class="step-dot"></div></div>
-      <p style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.08em;margin-bottom:20px">Step 1 of 3 — Identity Verification</p>
+      <p style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.08em;margin-bottom:20px">Step 1 of 3 \u2014 Identity Verification</p>
       <div class="err" id="err"></div>
       <form id="form" style="display:flex;flex-direction:column;gap:16px">
         <div>
@@ -7635,7 +7635,7 @@ function getFreeTrialStep1HTML(): string {
           <i class="fas fa-paper-plane"></i> Send Verification Code
         </button>
       </form>
-      <p style="text-align:center;font-size:12px;color:#374151;margin-top:16px"><i class="fas fa-lock" style="margin-right:4px"></i>No credit card · No commitment · Cancel anytime</p>
+      <p style="text-align:center;font-size:12px;color:#374151;margin-top:16px"><i class="fas fa-lock" style="margin-right:4px"></i>No credit card \u00B7 No commitment \u00B7 Cancel anytime</p>
     </div>
   </div>
 </div>
@@ -7673,7 +7673,7 @@ document.getElementById('form').addEventListener('submit', async function(e) {
       btn.innerHTML = '<i class="fas fa-paper-plane"></i> Send Verification Code'
     }
   } catch(ex) {
-    err.textContent = 'Connection error — please try again'
+    err.textContent = 'Connection error \u2014 please try again'
     err.style.display = 'block'
     btn.disabled = false
     btn.innerHTML = '<i class="fas fa-paper-plane"></i> Send Verification Code'
@@ -7685,7 +7685,7 @@ document.getElementById('form').addEventListener('submit', async function(e) {
 function getFreeTrialStep2HTML(): string {
   return `<!DOCTYPE html><html lang="en"><head>
   <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>Verify Code — ClockInProof</title>
+  <title>Verify Code \u2014 ClockInProof</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
   
   <style>
@@ -7728,7 +7728,7 @@ function getFreeTrialStep2HTML(): string {
     </div>
     <div class="card">
       <div class="step-bar"><div class="step-dot done"></div><div class="step-dot active"></div><div class="step-dot"></div></div>
-      <p style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.08em;margin-bottom:24px">Step 2 of 3 — Enter Verification Code</p>
+      <p style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.08em;margin-bottom:24px">Step 2 of 3 \u2014 Enter Verification Code</p>
       <div class="err" id="err"></div>
       <div class="code-inputs">
         <input type="text" inputmode="numeric" maxlength="1" class="ci" id="c0"/>
@@ -7812,7 +7812,7 @@ async function submitCode() {
 function getFreeTrialStep3HTML(): string {
   return `<!DOCTYPE html><html lang="en"><head>
   <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>Set Up Your Account — ClockInProof</title>
+  <title>Set Up Your Account \u2014 ClockInProof</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
   
   <style>
@@ -7863,11 +7863,11 @@ function getFreeTrialStep3HTML(): string {
     <div id="form-wrap">
       <div style="text-align:center;margin-bottom:24px">
         <h1 style="font-size:24px;font-weight:900;margin-bottom:6px">Set up your account</h1>
-        <p style="color:#6b7280;font-size:14px">Almost done — fill in your company details</p>
+        <p style="color:#6b7280;font-size:14px">Almost done \u2014 fill in your company details</p>
       </div>
       <div class="card">
         <div class="step-bar"><div class="step-dot done"></div><div class="step-dot done"></div><div class="step-dot active"></div></div>
-        <p style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.08em;margin-bottom:20px">Step 3 of 3 — Account Setup</p>
+        <p style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.08em;margin-bottom:20px">Step 3 of 3 \u2014 Account Setup</p>
         <div class="err" id="err"></div>
         <form id="form" style="display:flex;flex-direction:column;gap:14px">
 
@@ -7892,7 +7892,7 @@ function getFreeTrialStep3HTML(): string {
               <input id="t-email" class="inp" type="email" required readonly style="opacity:.7"/>
             </div>
             <div>
-              <label>Admin PIN * (4–8 digits)</label>
+              <label>Admin PIN * (4\u20138 digits)</label>
               <input id="t-pin" class="inp" type="text" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" placeholder="e.g. 5821" required/>
             </div>
           </div>
@@ -7923,7 +7923,7 @@ function getFreeTrialStep3HTML(): string {
           <button type="submit" class="btn-primary" id="btn">
             <i class="fas fa-rocket"></i> Create My Account
           </button>
-          <p style="text-align:center;font-size:12px;color:#374151"><i class="fas fa-lock" style="margin-right:4px"></i>No credit card · No commitment · Cancel anytime</p>
+          <p style="text-align:center;font-size:12px;color:#374151"><i class="fas fa-lock" style="margin-right:4px"></i>No credit card \u00B7 No commitment \u00B7 Cancel anytime</p>
         </form>
       </div>
     </div>
@@ -7963,7 +7963,7 @@ function checkSlug() {
       const d = await r.json()
       msg.innerHTML = d.available
         ? '<span style="color:#4ade80"><i class="fas fa-check" style="margin-right:4px"></i>' + slug + '.clockinproof.com is available</span>'
-        : '<span style="color:#f87171"><i class="fas fa-times" style="margin-right:4px"></i>Already taken — try another</span>'
+        : '<span style="color:#f87171"><i class="fas fa-times" style="margin-right:4px"></i>Already taken \u2014 try another</span>'
     } catch { msg.textContent = '' }
   }, 500)
 }
@@ -8011,7 +8011,7 @@ document.getElementById('form').addEventListener('submit', async function(e) {
       btn.innerHTML = '<i class="fas fa-rocket"></i> Create My Account'
     }
   } catch(ex) {
-    err.textContent = 'Connection error — please try again'
+    err.textContent = 'Connection error \u2014 please try again'
     err.style.display = 'block'
     btn.disabled = false
     btn.innerHTML = '<i class="fas fa-rocket"></i> Create My Account'
@@ -8021,17 +8021,17 @@ document.getElementById('form').addEventListener('submit', async function(e) {
 }
 
 
-// ─── HTML Templates ───────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 HTML Templates \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-// ─── SIGNUP PAGE ──────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 SIGNUP PAGE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 function getSignupHTML(plan: string): string {
-  // plan name passed as URL param — page loads plan details dynamically from /api/plans
+  // plan name passed as URL param \u2014 page loads plan details dynamically from /api/plans
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Start Your Free Trial — ClockInProof</title>
+  <title>Start Your Free Trial \u2014 ClockInProof</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
 </head>
@@ -8048,7 +8048,7 @@ function getSignupHTML(plan: string): string {
     <!-- Selected Plan Badge (populated by JS) -->
     <div class="bg-blue-600/20 border border-blue-500/30 rounded-2xl p-4 mb-6 flex items-center justify-between" id="plan-badge">
       <div>
-        <p class="font-bold text-blue-300" id="plan-badge-name">Loading plan…</p>
+        <p class="font-bold text-blue-300" id="plan-badge-name">Loading plan\u2026</p>
         <p class="text-sm text-gray-400" id="plan-badge-workers"></p>
         <ul class="mt-2 space-y-1" id="plan-badge-features"></ul>
       </div>
@@ -8090,7 +8090,7 @@ function getSignupHTML(plan: string): string {
             class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
         </div>
         <div>
-          <label class="block text-sm text-gray-400 mb-1">Admin PIN (4–6 digits) *</label>
+          <label class="block text-sm text-gray-400 mb-1">Admin PIN (4\u20136 digits) *</label>
           <input id="f-pin" type="number" placeholder="1234" required minlength="4" maxlength="6"
             class="w-full px-4 py-3 bg-gray-800 border border-white/10 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
           <p class="text-xs text-gray-600 mt-1">Used to log into your admin panel</p>
@@ -8107,7 +8107,7 @@ function getSignupHTML(plan: string): string {
           <span id="signup-btn-text">Start 14-Day Free Trial</span>
         </button>
         <p class="text-center text-xs text-gray-500 mt-2">
-          <i class="fas fa-lock mr-1"></i>Secured by Stripe · Cancel anytime · No setup fees
+          <i class="fas fa-lock mr-1"></i>Secured by Stripe \u00B7 Cancel anytime \u00B7 No setup fees
         </p>
       </form>
 
@@ -8115,7 +8115,7 @@ function getSignupHTML(plan: string): string {
         By signing up you agree to our
         <a href="/terms" class="text-blue-500 underline">Terms of Service</a> and
         <a href="/privacy" class="text-blue-500 underline">Privacy Policy</a>.
-        <br>Card required to start — 14-day free trial, not charged until trial ends.
+        <br>Card required to start \u2014 14-day free trial, not charged until trial ends.
       </p>
     </div>
 
@@ -8125,7 +8125,7 @@ function getSignupHTML(plan: string): string {
   </div>
 
 <script>
-// ── Dynamic plan loader ───────────────────────────────────────────────────────
+// \u2500\u2500 Dynamic plan loader \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 const PLAN = '${plan}'
 let PRICE_ID = ''
 let planPriceDisplay = 'Free Trial'
@@ -8150,14 +8150,14 @@ let planPriceDisplay = 'Free Trial'
     document.getElementById('plan-badge-workers').textContent = workers
     document.getElementById('plan-badge-price').textContent   = planPriceDisplay
     document.getElementById('plan-badge-features').innerHTML  =
-      features.map(f => '<li class="text-xs text-gray-400"><span class="text-green-400 mr-1">✓</span>' + f.trim() + '</li>').join('')
-    document.getElementById('signup-btn-text').textContent    = 'Start 14-Day Free Trial — ' + planPriceDisplay
+      features.map(f => '<li class="text-xs text-gray-400"><span class="text-green-400 mr-1">\u2713</span>' + f.trim() + '</li>').join('')
+    document.getElementById('signup-btn-text').textContent    = 'Start 14-Day Free Trial \u2014 ' + planPriceDisplay
   } catch(e) {
     document.getElementById('plan-badge-name').textContent = PLAN.charAt(0).toUpperCase() + PLAN.slice(1) + ' Plan'
   }
 })()
 
-// ── Slug checker ──────────────────────────────────────────────────────────────
+// \u2500\u2500 Slug checker \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 document.getElementById('f-company').addEventListener('input', function() {
   const slug = this.value.toLowerCase()
     .replace(/[^a-z0-9\s-]/g, '')
@@ -8194,7 +8194,7 @@ function checkSlug(slug) {
   }, 500)
 }
 
-// ── Form submission ───────────────────────────────────────────────────────────
+// \u2500\u2500 Form submission \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 document.getElementById('signup-form').addEventListener('submit', async function(e) {
   e.preventDefault()
   const btn    = document.getElementById('signup-btn')
@@ -8257,16 +8257,16 @@ document.getElementById('signup-form').addEventListener('submit', async function
 </html>`
 }
 
-// ─── LANDING PAGE ─────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 LANDING PAGE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 function getLandingHTML(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>ClockInProof — Stop Time Piracy. GPS-Verified Time Tracking.</title>
-  <meta name="description" content="Workers faking clock-ins costs you thousands a year. ClockInProof uses GPS geofencing to prove every worker was actually on site — no hardware, no app downloads."/>
-  <meta property="og:title" content="ClockInProof — Stop Time Piracy"/>
+  <title>ClockInProof \u2014 Stop Time Piracy. GPS-Verified Time Tracking.</title>
+  <meta name="description" content="Workers faking clock-ins costs you thousands a year. ClockInProof uses GPS geofencing to prove every worker was actually on site \u2014 no hardware, no app downloads."/>
+  <meta property="og:title" content="ClockInProof \u2014 Stop Time Piracy"/>
   <meta property="og:description" content="GPS-verified clock-ins for trades, restoration, HVAC, construction & field teams. Catch fraud before it happens."/>
   <meta property="og:image" content="/static/icon-512.png"/>
   <link rel="icon" href="/static/icon-180.png"/>
@@ -8299,7 +8299,7 @@ function getLandingHTML(): string {
 </head>
 <body class="bg-gray-950 text-white">
 
-<!-- ── NAV ──────────────────────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 NAV \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <nav class="fixed top-0 left-0 right-0 z-50 nav-blur border-b border-white/10">
   <div class="max-w-6xl mx-auto px-5 py-3.5 flex items-center justify-between">
     <div class="flex items-center gap-2.5">
@@ -8324,7 +8324,7 @@ function getLandingHTML(): string {
   </div>
 </nav>
 
-<!-- ── HERO ──────────────────────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 HERO \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <section class="gradient-hero min-h-screen flex items-center pt-20 relative overflow-hidden">
   <!-- Background grid -->
   <div class="absolute inset-0 opacity-5" style="background-image:linear-gradient(rgba(99,102,241,0.5) 1px,transparent 1px),linear-gradient(90deg,rgba(99,102,241,0.5) 1px,transparent 1px);background-size:60px 60px"></div>
@@ -8343,7 +8343,7 @@ function getLandingHTML(): string {
           <span class="text-blue-400">Piracy.</span>
         </h1>
         <p class="text-xl text-gray-300 mb-4 leading-relaxed">
-          Your workers are clocking in from home, the truck, or the Tim Hortons down the street — and you're paying for every minute.
+          Your workers are clocking in from home, the truck, or the Tim Hortons down the street \u2014 and you're paying for every minute.
         </p>
         <p class="text-lg text-gray-400 mb-8 leading-relaxed">
           ClockInProof GPS-locks every clock-in to the job site. <strong class="text-white">No GPS match = no clock-in.</strong> Simple as that.
@@ -8367,13 +8367,13 @@ function getLandingHTML(): string {
 
         <div class="flex flex-col sm:flex-row gap-3">
           <a href="#pricing" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-8 py-4 rounded-xl text-base transition glow-blue text-center">
-            <i class="fas fa-shield-alt mr-2"></i>Start Free — 14 Days
+            <i class="fas fa-shield-alt mr-2"></i>Start Free \u2014 14 Days
           </a>
           <a href="#how-it-works" class="border border-white/20 hover:border-blue-400/50 text-white font-semibold px-8 py-4 rounded-xl text-base transition text-center">
             <i class="fas fa-play mr-2 text-blue-400"></i>See How It Works
           </a>
         </div>
-        <p class="text-gray-600 text-xs mt-4">No credit card · No app download · Works on any phone</p>
+        <p class="text-gray-600 text-xs mt-4">No credit card \u00B7 No app download \u00B7 Works on any phone</p>
       </div>
 
       <!-- Right: phone mockup -->
@@ -8403,10 +8403,10 @@ function getLandingHTML(): string {
               <div class="bg-green-500/10 border border-green-500/30 rounded-2xl p-4 mb-3">
                 <div class="flex items-center gap-2 mb-2">
                   <div class="w-2.5 h-2.5 rounded-full bg-green-400" style="animation:pulse 1.5s infinite"></div>
-                  <span class="text-green-400 text-xs font-bold tracking-wide">CLOCKED IN — 7:52 AM</span>
+                  <span class="text-green-400 text-xs font-bold tracking-wide">CLOCKED IN \u2014 7:52 AM</span>
                 </div>
                 <p class="text-xs text-gray-300 mb-1"><i class="fas fa-map-marker-alt text-blue-400 mr-1.5 w-3"></i>2310 Easy St, Ottawa ON</p>
-                <p class="text-xs text-gray-300 mb-1"><i class="fas fa-shield-alt text-green-400 mr-1.5 w-3"></i>GPS verified · 22m from site ✓</p>
+                <p class="text-xs text-gray-300 mb-1"><i class="fas fa-shield-alt text-green-400 mr-1.5 w-3"></i>GPS verified \u00B7 22m from site \u2713</p>
                 <p class="text-xs text-gray-400"><i class="fas fa-hard-hat text-yellow-400 mr-1.5 w-3"></i>Water damage restoration</p>
               </div>
               <!-- Timer -->
@@ -8436,7 +8436,7 @@ function getLandingHTML(): string {
   </div>
 </section>
 
-<!-- ── INDUSTRIES ─────────────────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 INDUSTRIES \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <section class="bg-gray-900 border-y border-white/5 py-10">
   <div class="max-w-5xl mx-auto px-5">
     <p class="text-center text-gray-500 text-xs font-bold uppercase tracking-widest mb-6">Built for every field service industry</p>
@@ -8457,7 +8457,7 @@ function getLandingHTML(): string {
   </div>
 </section>
 
-<!-- ── THE PROBLEM ───────────────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 THE PROBLEM \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <section id="problem" class="py-24 bg-gray-950">
   <div class="max-w-5xl mx-auto px-5">
     <div class="text-center mb-14">
@@ -8465,7 +8465,7 @@ function getLandingHTML(): string {
         <i class="fas fa-skull-crossbones"></i> The Time Piracy Problem
       </div>
       <h2 class="text-4xl font-black mb-4">How workers steal time<br/><span class="text-red-400">without you knowing</span></h2>
-      <p class="text-gray-400 text-lg max-w-2xl mx-auto">Field service businesses lose 2–8% of payroll to time theft every year. Here's how it happens:</p>
+      <p class="text-gray-400 text-lg max-w-2xl mx-auto">Field service businesses lose 2\u20138% of payroll to time theft every year. Here's how it happens:</p>
     </div>
     <div class="grid md:grid-cols-3 gap-6">
       <div class="bg-red-950/30 border border-red-900/40 rounded-2xl p-6">
@@ -8491,12 +8491,12 @@ function getLandingHTML(): string {
       </div>
     </div>
     <div class="mt-10 bg-blue-950/30 border border-blue-800/30 rounded-2xl p-6 text-center">
-      <p class="text-blue-300 font-semibold text-lg"><i class="fas fa-shield-alt mr-2 text-blue-400"></i>ClockInProof makes all three impossible. GPS location is required to clock in — and we verify it's real.</p>
+      <p class="text-blue-300 font-semibold text-lg"><i class="fas fa-shield-alt mr-2 text-blue-400"></i>ClockInProof makes all three impossible. GPS location is required to clock in \u2014 and we verify it's real.</p>
     </div>
   </div>
 </section>
 
-<!-- ── FEATURES ──────────────────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 FEATURES \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <section id="features" class="py-24 bg-gray-900">
   <div class="max-w-6xl mx-auto px-5">
     <div class="text-center mb-14">
@@ -8510,7 +8510,7 @@ function getLandingHTML(): string {
           <i class="fas fa-map-pin text-blue-400 text-xl"></i>
         </div>
         <h3 class="font-bold text-lg mb-2">GPS Clock-In Proof</h3>
-        <p class="text-gray-400 text-sm leading-relaxed">Every clock-in is GPS-stamped and mapped. You see exactly where your worker stood when they clocked in — timestamped forever.</p>
+        <p class="text-gray-400 text-sm leading-relaxed">Every clock-in is GPS-stamped and mapped. You see exactly where your worker stood when they clocked in \u2014 timestamped forever.</p>
       </div>
 
       <div class="feature-card bg-gray-950 border border-white/5 rounded-2xl p-6">
@@ -8518,7 +8518,7 @@ function getLandingHTML(): string {
           <i class="fas fa-draw-polygon text-green-400 text-xl"></i>
         </div>
         <h3 class="font-bold text-lg mb-2">Geofence Enforcement</h3>
-        <p class="text-gray-400 text-sm leading-relaxed">Set a radius around each job site. Workers outside the zone are blocked — or you get an instant alert to approve or deny.</p>
+        <p class="text-gray-400 text-sm leading-relaxed">Set a radius around each job site. Workers outside the zone are blocked \u2014 or you get an instant alert to approve or deny.</p>
       </div>
 
       <div class="feature-card bg-gray-950 border border-white/5 rounded-2xl p-6">
@@ -8542,7 +8542,7 @@ function getLandingHTML(): string {
           <i class="fas fa-satellite-dish text-cyan-400 text-xl"></i>
         </div>
         <h3 class="font-bold text-lg mb-2">Live GPS Map</h3>
-        <p class="text-gray-400 text-sm leading-relaxed">See all active workers on a live map right now. Know who's on site, who's drifted, and who's AWOL — updated every 5 minutes.</p>
+        <p class="text-gray-400 text-sm leading-relaxed">See all active workers on a live map right now. Know who's on site, who's drifted, and who's AWOL \u2014 updated every 5 minutes.</p>
       </div>
 
       <div class="feature-card bg-gray-950 border border-white/5 rounded-2xl p-6">
@@ -8566,7 +8566,7 @@ function getLandingHTML(): string {
           <i class="fas fa-link text-indigo-400 text-xl"></i>
         </div>
         <h3 class="font-bold text-lg mb-2">QuickBooks Integration</h3>
-        <p class="text-gray-400 text-sm leading-relaxed">Sync hours directly into QuickBooks Online. Map workers to QB employees and push time data with one click — no manual entry.</p>
+        <p class="text-gray-400 text-sm leading-relaxed">Sync hours directly into QuickBooks Online. Map workers to QB employees and push time data with one click \u2014 no manual entry.</p>
       </div>
 
       <div class="feature-card bg-gray-950 border border-white/5 rounded-2xl p-6">
@@ -8574,14 +8574,14 @@ function getLandingHTML(): string {
           <i class="fas fa-mobile-alt text-pink-400 text-xl"></i>
         </div>
         <h3 class="font-bold text-lg mb-2">No App Download Required</h3>
-        <p class="text-gray-400 text-sm leading-relaxed">Workers get a link by SMS. Open in any browser, enter PIN — done. No App Store, no Google Play, no IT support needed.</p>
+        <p class="text-gray-400 text-sm leading-relaxed">Workers get a link by SMS. Open in any browser, enter PIN \u2014 done. No App Store, no Google Play, no IT support needed.</p>
       </div>
 
     </div>
   </div>
 </section>
 
-<!-- ── HOW IT WORKS ───────────────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 HOW IT WORKS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <section id="how-it-works" class="py-24 bg-gray-950">
   <div class="max-w-4xl mx-auto px-5">
     <div class="text-center mb-14">
@@ -8593,7 +8593,7 @@ function getLandingHTML(): string {
       <div class="flex gap-5 items-start bg-gray-900 rounded-2xl p-6 border border-white/5">
         <div class="w-12 h-12 gradient-card rounded-xl flex items-center justify-center flex-shrink-0 font-black text-xl">1</div>
         <div>
-          <h3 class="font-bold text-xl mb-1.5">Create your account → Add your job sites</h3>
+          <h3 class="font-bold text-xl mb-1.5">Create your account \u2192 Add your job sites</h3>
           <p class="text-gray-400 leading-relaxed text-sm">Enter your business name and job site addresses. Set geofence radius per site (100m to 1km). Takes 3 minutes.</p>
         </div>
       </div>
@@ -8601,24 +8601,24 @@ function getLandingHTML(): string {
       <div class="flex gap-5 items-start bg-gray-900 rounded-2xl p-6 border border-white/5">
         <div class="w-12 h-12 gradient-card rounded-xl flex items-center justify-center flex-shrink-0 font-black text-xl">2</div>
         <div>
-          <h3 class="font-bold text-xl mb-1.5">Add workers → Send them the link</h3>
-          <p class="text-gray-400 leading-relaxed text-sm">Enter each worker's name and phone number. Tap "Send Invite" — they get an SMS with a one-tap link. They set a PIN. That's their login. Forever.</p>
+          <h3 class="font-bold text-xl mb-1.5">Add workers \u2192 Send them the link</h3>
+          <p class="text-gray-400 leading-relaxed text-sm">Enter each worker's name and phone number. Tap "Send Invite" \u2014 they get an SMS with a one-tap link. They set a PIN. That's their login. Forever.</p>
         </div>
       </div>
 
       <div class="flex gap-5 items-start bg-gray-900 rounded-2xl p-6 border border-white/5">
         <div class="w-12 h-12 gradient-card rounded-xl flex items-center justify-center flex-shrink-0 font-black text-xl">3</div>
         <div>
-          <h3 class="font-bold text-xl mb-1.5">Workers clock in — GPS verified in real-time</h3>
-          <p class="text-gray-400 leading-relaxed text-sm">Worker taps Clock In on their phone. GPS is captured instantly. If they're at the site — approved. If they're not — blocked and you're notified.</p>
+          <h3 class="font-bold text-xl mb-1.5">Workers clock in \u2014 GPS verified in real-time</h3>
+          <p class="text-gray-400 leading-relaxed text-sm">Worker taps Clock In on their phone. GPS is captured instantly. If they're at the site \u2014 approved. If they're not \u2014 blocked and you're notified.</p>
         </div>
       </div>
 
       <div class="flex gap-5 items-start bg-gray-900 rounded-2xl p-6 border border-white/5">
         <div class="w-12 h-12 gradient-card rounded-xl flex items-center justify-center flex-shrink-0 font-black text-xl">4</div>
         <div>
-          <h3 class="font-bold text-xl mb-1.5">Payroll calculates itself — export when ready</h3>
-          <p class="text-gray-400 leading-relaxed text-sm">Every shift is tracked and calculated — hours, earnings, stat holiday pay. Export weekly payroll or push straight to QuickBooks. Your accountant will love it.</p>
+          <h3 class="font-bold text-xl mb-1.5">Payroll calculates itself \u2014 export when ready</h3>
+          <p class="text-gray-400 leading-relaxed text-sm">Every shift is tracked and calculated \u2014 hours, earnings, stat holiday pay. Export weekly payroll or push straight to QuickBooks. Your accountant will love it.</p>
         </div>
       </div>
 
@@ -8626,13 +8626,13 @@ function getLandingHTML(): string {
   </div>
 </section>
 
-<!-- ── PRICING ────────────────────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 PRICING \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <section id="pricing" class="py-24 bg-gray-900">
   <div class="max-w-5xl mx-auto px-5">
     <div class="text-center mb-14">
       <h2 class="text-4xl font-black mb-3">Simple pricing.<br/><span class="text-blue-400">All features. Every plan.</span></h2>
       <p class="text-gray-400 text-lg">No feature gating. No surprise fees. Pick your team size and go.</p>
-      <p class="text-sm text-gray-500 mt-2">All prices in CAD · 14-day free trial · Cancel anytime</p>
+      <p class="text-sm text-gray-500 mt-2">All prices in CAD \u00B7 14-day free trial \u00B7 Cancel anytime</p>
     </div>
 
     <!-- Plans loaded dynamically from DB -->
@@ -8642,45 +8642,45 @@ function getLandingHTML(): string {
 
     <!-- Money-back guarantee -->
     <div class="mt-8 flex flex-col sm:flex-row items-center justify-center gap-6 text-sm text-gray-400">
-      <span><i class="fas fa-calendar-check text-green-400 mr-2"></i>14-day free trial — no credit card required</span>
-      <span><i class="fas fa-times-circle text-blue-400 mr-2"></i>Cancel anytime — no contracts</span>
+      <span><i class="fas fa-calendar-check text-green-400 mr-2"></i>14-day free trial \u2014 no credit card required</span>
+      <span><i class="fas fa-times-circle text-blue-400 mr-2"></i>Cancel anytime \u2014 no contracts</span>
       <span><i class="fas fa-lock text-purple-400 mr-2"></i>Secure payments via Stripe</span>
     </div>
     <p class="text-center text-gray-600 text-xs mt-4">*Stats sourced from American Payroll Association and Robert Half workforce survey</p>
   </div>
 </section>
 
-<!-- ── PAIN POINT CALLOUT ─────────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 PAIN POINT CALLOUT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <section class="py-16 bg-gray-950 border-y border-white/5">
   <div class="max-w-4xl mx-auto px-5 text-center">
     <h2 class="text-3xl font-black mb-3">Still using paper timesheets?</h2>
-    <p class="text-gray-400 text-lg mb-8 max-w-2xl mx-auto">Paper timesheets are a worker's best friend — and your worst enemy. They're easy to fake, impossible to audit, and cost you more than you think.</p>
+    <p class="text-gray-400 text-lg mb-8 max-w-2xl mx-auto">Paper timesheets are a worker's best friend \u2014 and your worst enemy. They're easy to fake, impossible to audit, and cost you more than you think.</p>
     <div class="grid md:grid-cols-4 gap-4">
       <div class="bg-gray-900 rounded-xl p-4 border border-white/5">
-        <div class="text-red-400 font-black text-2xl mb-1">❌</div>
+        <div class="text-red-400 font-black text-2xl mb-1">\u274C</div>
         <p class="text-sm text-gray-300 font-medium">Paper timesheets</p>
         <p class="text-xs text-gray-500 mt-1">Easy to fake, no GPS, no audit trail</p>
       </div>
       <div class="bg-gray-900 rounded-xl p-4 border border-white/5">
-        <div class="text-red-400 font-black text-2xl mb-1">❌</div>
+        <div class="text-red-400 font-black text-2xl mb-1">\u274C</div>
         <p class="text-sm text-gray-300 font-medium">Basic clock-in apps</p>
         <p class="text-xs text-gray-500 mt-1">No GPS = still faked from home</p>
       </div>
       <div class="bg-gray-900 rounded-xl p-4 border border-white/5">
-        <div class="text-red-400 font-black text-2xl mb-1">❌</div>
+        <div class="text-red-400 font-black text-2xl mb-1">\u274C</div>
         <p class="text-sm text-gray-300 font-medium">Punch clocks</p>
         <p class="text-xs text-gray-500 mt-1">Expensive hardware, buddy punching</p>
       </div>
       <div class="bg-green-950/40 rounded-xl p-4 border border-green-800/40">
-        <div class="text-green-400 font-black text-2xl mb-1">✅</div>
+        <div class="text-green-400 font-black text-2xl mb-1">\u2705</div>
         <p class="text-sm text-white font-bold">ClockInProof</p>
-        <p class="text-xs text-green-400 mt-1">GPS verified · Fraud blocked · Proof stored</p>
+        <p class="text-xs text-green-400 mt-1">GPS verified \u00B7 Fraud blocked \u00B7 Proof stored</p>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ── FAQ ────────────────────────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 FAQ \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <section id="faq" class="py-24 bg-gray-900">
   <div class="max-w-3xl mx-auto px-5">
     <h2 class="text-4xl font-black text-center mb-14">Questions? <span class="text-blue-400">Answered.</span></h2>
@@ -8692,7 +8692,7 @@ function getLandingHTML(): string {
           <i class="fas fa-chevron-down text-gray-400 transition-transform flex-shrink-0 ml-4"></i>
         </button>
         <div class="faq-body hidden px-6 pb-5 text-gray-400 text-sm leading-relaxed">
-          No. Workers receive a link via SMS. They open it in their phone's browser — Chrome, Safari, anything. No App Store, no Google Play, no passwords to remember. They set a 4-digit PIN and that's their login.
+          No. Workers receive a link via SMS. They open it in their phone's browser \u2014 Chrome, Safari, anything. No App Store, no Google Play, no passwords to remember. They set a 4-digit PIN and that's their login.
         </div>
       </div>
 
@@ -8722,7 +8722,7 @@ function getLandingHTML(): string {
           <i class="fas fa-chevron-down text-gray-400 transition-transform flex-shrink-0 ml-4"></i>
         </button>
         <div class="faq-body hidden px-6 pb-5 text-gray-400 text-sm leading-relaxed">
-          Yes — unlimited job sites on all plans. Workers pick their site from a dropdown when clocking in. Each site has its own geofence, radius, and history. You can see all active workers across all sites on one live map.
+          Yes \u2014 unlimited job sites on all plans. Workers pick their site from a dropdown when clocking in. Each site has its own geofence, radius, and history. You can see all active workers across all sites on one live map.
         </div>
       </div>
 
@@ -8742,7 +8742,7 @@ function getLandingHTML(): string {
           <i class="fas fa-chevron-down text-gray-400 transition-transform flex-shrink-0 ml-4"></i>
         </button>
         <div class="faq-body hidden px-6 pb-5 text-gray-400 text-sm leading-relaxed">
-          Sign up with your company name and email. No credit card required. You get full access to all features for 14 days. At the end of the trial, enter your payment info to continue — or simply don't, and your account pauses. No automatic charges.
+          Sign up with your company name and email. No credit card required. You get full access to all features for 14 days. At the end of the trial, enter your payment info to continue \u2014 or simply don't, and your account pauses. No automatic charges.
         </div>
       </div>
 
@@ -8760,7 +8760,7 @@ function getLandingHTML(): string {
   </div>
 </section>
 
-<!-- ── FINAL CTA ───────────────────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 FINAL CTA \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <section class="gradient-hero py-24 border-t border-white/10">
   <div class="max-w-3xl mx-auto px-5 text-center">
     <div class="inline-flex items-center gap-2 bg-red-600/20 border border-red-500/30 rounded-full px-4 py-1.5 text-red-300 text-xs font-bold uppercase tracking-wider mb-6">
@@ -8770,7 +8770,7 @@ function getLandingHTML(): string {
       Your crew clocks in tomorrow.<br/>
       <span class="text-blue-400">You'll know exactly where they are.</span>
     </h2>
-    <p class="text-gray-300 text-lg mb-10 max-w-xl mx-auto">14 days free. No credit card. Setup in 5 minutes. Cancel if you don't catch time theft within a month — we'd be shocked.</p>
+    <p class="text-gray-300 text-lg mb-10 max-w-xl mx-auto">14 days free. No credit card. Setup in 5 minutes. Cancel if you don't catch time theft within a month \u2014 we'd be shocked.</p>
     <div class="flex flex-col sm:flex-row gap-4 justify-center">
       <a href="/signup?plan=growth" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-10 py-4 rounded-xl text-lg transition glow-blue">
         <i class="fas fa-shield-alt mr-2"></i>Start Free Trial
@@ -8783,7 +8783,7 @@ function getLandingHTML(): string {
   </div>
 </section>
 
-<!-- ── FOOTER ─────────────────────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 FOOTER \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <footer class="bg-gray-950 border-t border-white/5 py-14">
   <div class="max-w-6xl mx-auto px-5">
     <div class="grid md:grid-cols-5 gap-8 mb-10">
@@ -8794,8 +8794,8 @@ function getLandingHTML(): string {
         </div>
         <p class="text-gray-500 text-sm leading-relaxed mb-4">GPS-verified time tracking that stops time theft for trades, restoration, HVAC, construction, and every field service industry.</p>
         <div class="flex gap-3">
-          <span class="text-xs text-gray-600 bg-gray-900 px-2 py-1 rounded">🇨🇦 Canada</span>
-          <span class="text-xs text-gray-600 bg-gray-900 px-2 py-1 rounded">🇺🇸 USA</span>
+          <span class="text-xs text-gray-600 bg-gray-900 px-2 py-1 rounded">\uD83C\uDDE8\uD83C\uDDE6 Canada</span>
+          <span class="text-xs text-gray-600 bg-gray-900 px-2 py-1 rounded">\uD83C\uDDFA\uD83C\uDDF8 USA</span>
         </div>
       </div>
       <div>
@@ -8825,8 +8825,8 @@ function getLandingHTML(): string {
       </div>
     </div>
     <div class="border-t border-white/5 pt-8 flex flex-col md:flex-row justify-between items-center gap-3">
-      <p class="text-gray-600 text-xs">© 2026 ClockInProof Inc. All rights reserved. · timepiracy.com · stoptimepiracy.com</p>
-      <p class="text-gray-700 text-xs">Built on Cloudflare Edge · GPS by OpenStreetMap · Payments by Stripe</p>
+      <p class="text-gray-600 text-xs">\u00A9 2026 ClockInProof Inc. All rights reserved. \u00B7 timepiracy.com \u00B7 stoptimepiracy.com</p>
+      <p class="text-gray-700 text-xs">Built on Cloudflare Edge \u00B7 GPS by OpenStreetMap \u00B7 Payments by Stripe</p>
     </div>
   </div>
 </footer>
@@ -8844,7 +8844,7 @@ function toggleFaq(btn) {
   }
 }
 
-// ── Dynamic pricing from DB ──────────────────────────────────────────────────
+// \u2500\u2500 Dynamic pricing from DB \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 (async function loadLandingPricing() {
   const grid = document.getElementById('landing-pricing-grid')
   if (!grid) return
@@ -8889,7 +8889,7 @@ function toggleFaq(btn) {
 }
 
 
-// ─── WORKER APP ───────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500 WORKER APP \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 function getWorkerHTML(tenant?: any): string {
   const companyName = tenant?.company_name || 'ClockInProof'
   const primaryColor = tenant?.primary_color || '#4F46E5'
@@ -8904,7 +8904,7 @@ function getWorkerHTML(tenant?: any): string {
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="${companyName}"/>
-  <title>${companyName} — Clock In/Out</title>
+  <title>${companyName} \u2014 Clock In/Out</title>
   <link rel="manifest" href="/static/manifest-worker.json"/>
   <link rel="apple-touch-icon" href="/static/icon-180.png"/>
   <link rel="apple-touch-icon" sizes="192x192" href="/static/icon-192.png"/>
@@ -8980,15 +8980,15 @@ function getWorkerHTML(tenant?: any): string {
 </head>
 <body class="bg-gray-50 min-h-screen">
 
-<!-- ── Add to Home Screen Banner (shown once, dismissed to localStorage) ── -->
+<!-- \u2500\u2500 Add to Home Screen Banner (shown once, dismissed to localStorage) \u2500\u2500 -->
 <div id="a2hs-banner" class="hidden fixed bottom-0 left-0 right-0 z-50 p-3">
   <div class="bg-blue-700 text-white rounded-2xl shadow-2xl p-4 flex items-center gap-3 max-w-lg mx-auto">
-    <div class="w-10 h-10 bg-blue-500 rounded-xl flex items-center justify-center flex-shrink-0 text-xl">📲</div>
+    <div class="w-10 h-10 bg-blue-500 rounded-xl flex items-center justify-center flex-shrink-0 text-xl">\uD83D\uDCF2</div>
     <div class="flex-1 min-w-0">
       <p class="font-bold text-sm">Save app to Home Screen</p>
       <p class="text-blue-200 text-xs mt-0.5">
-        <span class="ios-hint">Tap <strong>Share</strong> → <strong>Add to Home Screen</strong></span>
-        <span class="android-hint hidden">Tap <strong>⋮</strong> → <strong>Add to Home Screen</strong></span>
+        <span class="ios-hint">Tap <strong>Share</strong> \u2192 <strong>Add to Home Screen</strong></span>
+        <span class="android-hint hidden">Tap <strong>\u22EE</strong> \u2192 <strong>Add to Home Screen</strong></span>
       </p>
     </div>
     <button onclick="dismissA2HS()" class="text-blue-200 hover:text-white p-1 flex-shrink-0">
@@ -9019,8 +9019,8 @@ function getWorkerHTML(tenant?: any): string {
           class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800"/>
       </div>
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">PIN (4–8 digits)</label>
-        <input id="reg-pin" type="password" placeholder="Create a 4–8 digit PIN" maxlength="8"
+        <label class="block text-sm font-medium text-gray-700 mb-1">PIN (4\u20138 digits)</label>
+        <input id="reg-pin" type="password" placeholder="Create a 4\u20138 digit PIN" maxlength="8"
           inputmode="numeric" pattern="[0-9]{4,8}"
           class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800"/>
       </div>
@@ -9091,7 +9091,7 @@ function getWorkerHTML(tenant?: any): string {
     </div>
   </div>
 
-  <!-- ── Bottom Tab Navigation ──────────────────────────────────────────── -->
+  <!-- \u2500\u2500 Bottom Tab Navigation \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
   <nav id="wk-bottom-nav" style="position:fixed;bottom:0;left:0;right:0;z-index:100;background:#fff;border-top:1px solid #e5e7eb;display:flex;align-items:stretch;box-shadow:0 -2px 12px rgba(0,0,0,0.08)">
     <button onclick="wkShowTab('clock')" id="wk-nav-clock" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px 10px;border:none;background:none;cursor:pointer;color:#4f46e5;font-size:10px;font-weight:700;gap:3px;border-top:2px solid #4f46e5">
       <i class="fas fa-clock" style="font-size:18px"></i>Clock In
@@ -9108,7 +9108,7 @@ function getWorkerHTML(tenant?: any): string {
     </button>
   </nav>
 
-  <!-- ── Tab Panels ──────────────────────────────────────────────────────── -->
+  <!-- \u2500\u2500 Tab Panels \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 
   <!-- CLOCK TAB -->
   <div id="wk-tab-clock" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:80px">
@@ -9143,7 +9143,7 @@ function getWorkerHTML(tenant?: any): string {
       </div>
     </div>
 
-    <!-- ── GUARDRAIL WARNING BANNERS ─────────────────────────────── -->
+    <!-- \u2500\u2500 GUARDRAIL WARNING BANNERS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <!-- Drift warning: worker has left the job site -->
     <div id="banner-drift" class="hidden bg-orange-50 border-2 border-orange-400 rounded-2xl p-4 shadow-sm">
       <div class="flex items-start gap-3">
@@ -9161,7 +9161,7 @@ function getWorkerHTML(tenant?: any): string {
       </div>
     </div>
 
-    <!-- Away warning: GPS not updating — phone likely left behind or off -->
+    <!-- Away warning: GPS not updating \u2014 phone likely left behind or off -->
     <div id="banner-away" class="hidden bg-yellow-50 border-2 border-yellow-400 rounded-2xl p-4 shadow-sm">
       <div class="flex items-start gap-3">
         <div class="w-10 h-10 bg-yellow-100 rounded-xl flex items-center justify-center flex-shrink-0">
@@ -9215,12 +9215,12 @@ function getWorkerHTML(tenant?: any): string {
       <div id="location-status" class="text-sm text-gray-500">
         <i class="fas fa-circle-notch spinner mr-1"></i> Getting location...
       </div>
-      <!-- Collapsible map — hidden by default, toggled by View Map button -->
+      <!-- Collapsible map \u2014 hidden by default, toggled by View Map button -->
       <!-- On mobile this renders as a fixed overlay; on desktop it's inline below the location row -->
       <div id="map-wrapper" class="hidden mt-3">
-        <!-- Mobile backdrop — tap outside map to close -->
+        <!-- Mobile backdrop \u2014 tap outside map to close -->
         <div id="map-backdrop" class="fixed inset-0 bg-black/40 z-30 lg:hidden" onclick="closeMap()"></div>
-        <!-- Map card — fixed on mobile, inline on desktop -->
+        <!-- Map card \u2014 fixed on mobile, inline on desktop -->
         <div class="relative fixed bottom-0 left-0 right-0 z-40 bg-white rounded-t-2xl shadow-2xl p-3 lg:static lg:rounded-xl lg:shadow-none lg:p-0 lg:z-auto">
           <div class="flex items-center justify-between mb-2 lg:mb-1.5">
             <p class="text-xs text-gray-500 font-semibold flex items-center gap-1">
@@ -9231,7 +9231,7 @@ function getWorkerHTML(tenant?: any): string {
             </button>
           </div>
           <div id="map" class="rounded-xl overflow-hidden" style="height:220px"></div>
-          <p class="text-[10px] text-gray-400 mt-1.5 text-center">© OpenStreetMap contributors</p>
+          <p class="text-[10px] text-gray-400 mt-1.5 text-center">\u00A9 OpenStreetMap contributors</p>
         </div>
       </div>
     </div>
@@ -9250,21 +9250,21 @@ function getWorkerHTML(tenant?: any): string {
       </h3>
       <div class="grid grid-cols-3 gap-3">
         <div class="text-center">
-          <p class="text-2xl font-bold text-blue-600" id="stat-sessions">–</p>
+          <p class="text-2xl font-bold text-blue-600" id="stat-sessions">\u2013</p>
           <p class="text-xs text-gray-500">Sessions</p>
         </div>
         <div class="text-center">
-          <p class="text-2xl font-bold text-green-600" id="stat-hours">–</p>
+          <p class="text-2xl font-bold text-green-600" id="stat-hours">\u2013</p>
           <p class="text-xs text-gray-500">Total Hrs</p>
         </div>
         <div class="text-center">
-          <p class="text-2xl font-bold text-yellow-600" id="stat-earnings">–</p>
+          <p class="text-2xl font-bold text-yellow-600" id="stat-earnings">\u2013</p>
           <p class="text-xs text-gray-500">Earned</p>
         </div>
       </div>
     </div>
 
-    <!-- ── My Hours & Pay ─────────────────────────────────────────────── -->
+    <!-- \u2500\u2500 My Hours & Pay \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <div class="bg-white rounded-2xl shadow-sm p-4">
       <div class="flex items-center justify-between mb-4">
         <h3 class="font-semibold text-gray-700 flex items-center gap-2">
@@ -9287,13 +9287,13 @@ function getWorkerHTML(tenant?: any): string {
       <div class="grid grid-cols-2 gap-3 mb-4">
         <div class="bg-blue-50 rounded-2xl p-4 text-center">
           <p class="text-xs text-blue-500 font-medium uppercase tracking-wider mb-1">Hours</p>
-          <p class="text-3xl font-bold text-blue-700" id="pay-hours">–</p>
+          <p class="text-3xl font-bold text-blue-700" id="pay-hours">\u2013</p>
           <p class="text-xs text-blue-400 mt-1" id="pay-hours-label">Today</p>
         </div>
         <div class="bg-emerald-50 rounded-2xl p-4 text-center">
           <p class="text-xs text-emerald-500 font-medium uppercase tracking-wider mb-1">Gross Pay</p>
-          <p class="text-3xl font-bold text-emerald-700" id="pay-gross">–</p>
-          <p class="text-xs text-emerald-400 mt-1" id="pay-gross-label">@ $<span id="pay-rate">–</span>/hr</p>
+          <p class="text-3xl font-bold text-emerald-700" id="pay-gross">\u2013</p>
+          <p class="text-xs text-emerald-400 mt-1" id="pay-gross-label">@ $<span id="pay-rate">\u2013</span>/hr</p>
         </div>
       </div>
 
@@ -9302,8 +9302,8 @@ function getWorkerHTML(tenant?: any): string {
         <div class="flex items-center justify-between">
           <div>
             <p class="text-xs text-purple-500 font-medium uppercase tracking-wider">Next Payday</p>
-            <p class="text-lg font-bold text-purple-800 mt-0.5" id="pay-next-date">–</p>
-            <p class="text-xs text-purple-500 mt-0.5" id="pay-next-countdown">–</p>
+            <p class="text-lg font-bold text-purple-800 mt-0.5" id="pay-next-date">\u2013</p>
+            <p class="text-xs text-purple-500 mt-0.5" id="pay-next-countdown">\u2013</p>
           </div>
           <div class="w-14 h-14 bg-purple-100 rounded-2xl flex items-center justify-center">
             <i class="fas fa-money-check-alt text-purple-500 text-2xl"></i>
@@ -9312,15 +9312,15 @@ function getWorkerHTML(tenant?: any): string {
         <div class="mt-3 pt-3 border-t border-purple-100">
           <div class="flex justify-between text-xs text-purple-600">
             <span>Pay period:</span>
-            <span id="pay-period-range">–</span>
+            <span id="pay-period-range">\u2013</span>
           </div>
           <div class="flex justify-between text-xs text-purple-600 mt-1">
             <span>Hours this period:</span>
-            <span class="font-bold" id="pay-period-hours">–</span>
+            <span class="font-bold" id="pay-period-hours">\u2013</span>
           </div>
           <div class="flex justify-between text-xs text-purple-600 mt-1">
             <span>Est. gross this period:</span>
-            <span class="font-bold text-emerald-600" id="pay-period-gross">–</span>
+            <span class="font-bold text-emerald-600" id="pay-period-gross">\u2013</span>
           </div>
         </div>
       </div>
@@ -9409,7 +9409,7 @@ function getWorkerHTML(tenant?: any): string {
         </button>
       </div>
 
-      <!-- Pending dispatches — needs response -->
+      <!-- Pending dispatches \u2014 needs response -->
       <div id="wk-dispatches-pending" class="space-y-3"></div>
 
       <!-- Recent completed dispatches -->
@@ -9440,21 +9440,21 @@ function getWorkerHTML(tenant?: any): string {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
           <div style="background:rgba(255,255,255,.15);border-radius:14px;padding:14px;text-align:center">
             <p style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;opacity:.8;margin-bottom:4px">Total Hours</p>
-            <p style="font-size:28px;font-weight:800" id="wk-hist-hours">–</p>
+            <p style="font-size:28px;font-weight:800" id="wk-hist-hours">\u2013</p>
           </div>
           <div style="background:rgba(255,255,255,.15);border-radius:14px;padding:14px;text-align:center">
             <p style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;opacity:.8;margin-bottom:4px">Gross Pay</p>
-            <p style="font-size:28px;font-weight:800" id="wk-hist-gross">–</p>
+            <p style="font-size:28px;font-weight:800" id="wk-hist-gross">\u2013</p>
           </div>
         </div>
         <div style="background:rgba(255,255,255,.1);border-radius:12px;padding:12px;display:flex;align-items:center;justify-content:space-between">
           <div>
             <p style="font-size:10px;opacity:.7;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Next Payday</p>
-            <p style="font-size:16px;font-weight:800;margin-top:2px" id="wk-hist-payday">–</p>
+            <p style="font-size:16px;font-weight:800;margin-top:2px" id="wk-hist-payday">\u2013</p>
           </div>
           <div style="text-align:right">
             <p style="font-size:10px;opacity:.7;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Days Away</p>
-            <p style="font-size:22px;font-weight:800" id="wk-hist-days-left">–</p>
+            <p style="font-size:22px;font-weight:800" id="wk-hist-days-left">\u2013</p>
           </div>
         </div>
       </div>
@@ -9485,26 +9485,26 @@ function getWorkerHTML(tenant?: any): string {
             <i class="fas fa-user" style="font-size:22px;color:#fff"></i>
           </div>
           <div>
-            <p style="font-size:17px;font-weight:800;color:#1e293b" id="wk-profile-name">–</p>
-            <p style="font-size:13px;color:#64748b;margin-top:2px" id="wk-profile-phone">–</p>
+            <p style="font-size:17px;font-weight:800;color:#1e293b" id="wk-profile-name">\u2013</p>
+            <p style="font-size:13px;color:#64748b;margin-top:2px" id="wk-profile-phone">\u2013</p>
           </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
           <div style="background:#f8fafc;border-radius:12px;padding:12px">
             <p style="font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:700;letter-spacing:.05em">Pay Rate</p>
-            <p style="font-size:16px;font-weight:800;color:#059669;margin-top:3px" id="wk-profile-rate">–</p>
+            <p style="font-size:16px;font-weight:800;color:#059669;margin-top:3px" id="wk-profile-rate">\u2013</p>
           </div>
           <div style="background:#f8fafc;border-radius:12px;padding:12px">
             <p style="font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:700;letter-spacing:.05em">Status</p>
-            <p style="font-size:16px;font-weight:800;color:#4f46e5;margin-top:3px" id="wk-profile-status">–</p>
+            <p style="font-size:16px;font-weight:800;color:#4f46e5;margin-top:3px" id="wk-profile-status">\u2013</p>
           </div>
           <div style="background:#f8fafc;border-radius:12px;padding:12px">
             <p style="font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:700;letter-spacing:.05em">Total Sessions</p>
-            <p style="font-size:16px;font-weight:800;color:#1e293b;margin-top:3px" id="wk-profile-sessions">–</p>
+            <p style="font-size:16px;font-weight:800;color:#1e293b;margin-top:3px" id="wk-profile-sessions">\u2013</p>
           </div>
           <div style="background:#f8fafc;border-radius:12px;padding:12px">
             <p style="font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:700;letter-spacing:.05em">All-Time Hours</p>
-            <p style="font-size:16px;font-weight:800;color:#1e293b;margin-top:3px" id="wk-profile-hours">–</p>
+            <p style="font-size:16px;font-weight:800;color:#1e293b;margin-top:3px" id="wk-profile-hours">\u2013</p>
           </div>
         </div>
       </div>
@@ -9556,8 +9556,8 @@ function getWorkerHTML(tenant?: any): string {
 
 </div><!-- /screen-main -->
 
-<!-- ── Clock In Job Details Modal ─────────────────────────────────────────── -->
-<!-- ── Worker Clock-Out Confirmation Modal ────────────────────────────────── -->
+<!-- \u2500\u2500 Clock In Job Details Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
+<!-- \u2500\u2500 Worker Clock-Out Confirmation Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <div id="clockout-confirm-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 modal-bg flex items-end justify-center z-50" onclick="if(event.target===this)cancelClockoutConfirm()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl slide-up overflow-hidden">
     <!-- Red header bar -->
@@ -9591,7 +9591,7 @@ function getWorkerHTML(tenant?: any): string {
 </div>
 
 <div id="job-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 modal-bg z-50 overflow-y-auto">
-  <!-- Outer scroll container — centers on tall screens, scrolls on small ones -->
+  <!-- Outer scroll container \u2014 centers on tall screens, scrolls on small ones -->
   <div class="flex items-center justify-center min-h-full p-4 pb-24">
   <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl flex flex-col" style="width:100%">
 
@@ -9622,7 +9622,7 @@ function getWorkerHTML(tenant?: any): string {
         <div id="saved-sites-row" class="hidden mb-2">
           <select id="saved-sites-select" onchange="pickSavedSite(this.value)"
             class="w-full px-4 py-3 border-2 border-emerald-200 rounded-xl focus:outline-none focus:border-emerald-500 text-gray-800 text-sm bg-emerald-50">
-            <option value="">📍 Pick a saved job site or activity...</option>
+            <option value="">\uD83D\uDCCD Pick a saved job site or activity...</option>
           </select>
         </div>
         <input id="job-location-input" type="text"
@@ -9642,21 +9642,21 @@ function getWorkerHTML(tenant?: any): string {
         <textarea id="job-description-input" rows="3"
           placeholder="e.g. Installing floor tiles in bedroom, drywall in bathroom, painting hallway"
           class="w-full px-4 py-3.5 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 text-gray-800 text-sm resize-none"></textarea>
-        <p class="text-xs text-gray-400 mt-1">Be specific — this helps track what was done each day</p>
+        <p class="text-xs text-gray-400 mt-1">Be specific \u2014 this helps track what was done each day</p>
       </div>
 
       <!-- Quick task chips -->
       <div>
         <p class="text-xs text-gray-500 font-medium mb-2">Quick add tasks:</p>
         <div class="flex flex-wrap gap-2" id="task-chips">
-          <button onclick="addChip('Flooring')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🪵 Flooring</button>
-          <button onclick="addChip('Drywall')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🧱 Drywall</button>
-          <button onclick="addChip('Painting')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🎨 Painting</button>
-          <button onclick="addChip('Plumbing')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🔧 Plumbing</button>
-          <button onclick="addChip('Electrical')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">⚡ Electrical</button>
-          <button onclick="addChip('Tiling')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🏗️ Tiling</button>
-          <button onclick="addChip('Cleanup')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🧹 Cleanup</button>
-          <button onclick="addChip('Inspection')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">🔍 Inspection</button>
+          <button onclick="addChip('Flooring')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">\uD83E\uDEB5 Flooring</button>
+          <button onclick="addChip('Drywall')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">\uD83E\uDDF1 Drywall</button>
+          <button onclick="addChip('Painting')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">\uD83C\uDFA8 Painting</button>
+          <button onclick="addChip('Plumbing')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">\uD83D\uDD27 Plumbing</button>
+          <button onclick="addChip('Electrical')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">\u26A1 Electrical</button>
+          <button onclick="addChip('Tiling')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">\uD83C\uDFD7\uFE0F Tiling</button>
+          <button onclick="addChip('Cleanup')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">\uD83E\uDDF9 Cleanup</button>
+          <button onclick="addChip('Inspection')" class="chip-btn px-3 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 text-xs rounded-full border border-gray-200 hover:border-blue-300 transition-colors">\uD83D\uDD0D Inspection</button>
         </div>
       </div>
 
@@ -9708,7 +9708,7 @@ function getWorkerHTML(tenant?: any): string {
 
     </div>
 
-    <!-- Sticky footer buttons — always visible -->
+    <!-- Sticky footer buttons \u2014 always visible -->
     <div class="flex-shrink-0 px-6 py-4 border-t border-gray-100 flex gap-3">
       <button onclick="closeJobModal()" class="flex-1 border-2 border-gray-200 text-gray-600 font-semibold py-3.5 rounded-xl hover:bg-gray-50">
         Cancel
@@ -9721,8 +9721,8 @@ function getWorkerHTML(tenant?: any): string {
   </div>
 </div>
 
-<!-- ── FRAUD BLOCKED MODAL ──────────────────────────────────────────────────── -->
-<!-- ── Worker: Report Issue Modal ─────────────────────────────────────────── -->
+<!-- \u2500\u2500 FRAUD BLOCKED MODAL \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
+<!-- \u2500\u2500 Worker: Report Issue Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 flex items-end justify-center" style="z-index:9990;padding:0 16px 88px">
   <div class="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl">
     <div class="flex items-center gap-3 mb-4">
@@ -9738,11 +9738,11 @@ function getWorkerHTML(tenant?: any): string {
       <i class="fas fa-info-circle mr-1"></i>
       Your message will be sent to the admin for review. They can adjust your session if needed.
     </div>
-    <textarea id="dispute-message" rows="3" placeholder="Describe the issue — e.g. 'I was clocked out by GPS but I was still on site'"
+    <textarea id="dispute-message" rows="3" placeholder="Describe the issue \u2014 e.g. 'I was clocked out by GPS but I was still on site'"
       class="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none mb-3"></textarea>
     <div class="flex flex-wrap gap-1.5 mb-4">
       <button onclick="setDisputeMsg('GPS clocked me out but I was still on site')" class="text-xs bg-gray-100 text-gray-600 border px-2 py-1 rounded-lg hover:bg-gray-200">GPS error</button>
-      <button onclick="setDisputeMsg('Wrong clock-out time — I worked longer')" class="text-xs bg-gray-100 text-gray-600 border px-2 py-1 rounded-lg hover:bg-gray-200">Wrong time</button>
+      <button onclick="setDisputeMsg('Wrong clock-out time \u2014 I worked longer')" class="text-xs bg-gray-100 text-gray-600 border px-2 py-1 rounded-lg hover:bg-gray-200">Wrong time</button>
       <button onclick="setDisputeMsg('Hours or earnings look incorrect')" class="text-xs bg-gray-100 text-gray-600 border px-2 py-1 rounded-lg hover:bg-gray-200">Wrong amount</button>
       <button onclick="setDisputeMsg('I forgot to clock in but was on site')" class="text-xs bg-gray-100 text-gray-600 border px-2 py-1 rounded-lg hover:bg-gray-200">Missed clock-in</button>
     </div>
@@ -9780,11 +9780,11 @@ function getWorkerHTML(tenant?: any): string {
           <p id="fraud-distance-msg" class="text-xs text-red-600 mb-2"></p>
           <div class="grid grid-cols-2 gap-2 text-xs">
             <div class="bg-white rounded-xl p-2 border border-red-100">
-              <p class="text-gray-500 mb-0.5">📍 Your location</p>
+              <p class="text-gray-500 mb-0.5">\uD83D\uDCCD Your location</p>
               <p id="fraud-your-loc" class="font-medium text-gray-700 text-[11px] leading-snug"></p>
             </div>
             <div class="bg-white rounded-xl p-2 border border-red-100">
-              <p class="text-gray-500 mb-0.5">🏗️ Job site</p>
+              <p class="text-gray-500 mb-0.5">\uD83C\uDFD7\uFE0F Job site</p>
               <p id="fraud-job-loc" class="font-medium text-gray-700 text-[11px] leading-snug"></p>
             </div>
           </div>
@@ -9825,7 +9825,7 @@ function getWorkerHTML(tenant?: any): string {
       </button>
       <button onclick="closeFraudModal()"
         class="w-full border-2 border-gray-200 text-gray-600 font-semibold py-3 rounded-2xl text-sm hover:bg-gray-50">
-        <i class="fas fa-times mr-2"></i>Cancel — Go Back
+        <i class="fas fa-times mr-2"></i>Cancel \u2014 Go Back
       </button>
     </div>
   </div>
@@ -9835,7 +9835,7 @@ function getWorkerHTML(tenant?: any): string {
 <div id="toast" class="hidden fixed left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-xl shadow-xl text-sm font-medium max-w-xs text-center" style="bottom:88px;z-index:9999"></div>
 
 <script src="/static/worker.js?v=20260305i"></script>
-<!-- ── Worker Dispute Modal ─────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 Worker Dispute Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <div id="dispute-modal" class="hidden fixed inset-0 bg-black/70 flex items-end justify-center" style="z-index:9990;padding:0 16px 88px" onclick="if(event.target===this)closeDisputeModal()">
   <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl p-6 slide-up">
     <div class="w-10 h-1 bg-gray-300 rounded-full mx-auto mb-5"></div>
@@ -9849,7 +9849,7 @@ function getWorkerHTML(tenant?: any): string {
       </div>
     </div>
     <p class="text-xs text-gray-500 mb-3">
-      Describe what happened — wrong clock-out time, GPS auto-clockout, missing hours, etc. Your admin will review and respond.
+      Describe what happened \u2014 wrong clock-out time, GPS auto-clockout, missing hours, etc. Your admin will review and respond.
     </p>
     <textarea id="dispute-message" rows="4"
       placeholder="e.g. I was auto clocked out at 2pm but I worked until 4pm. My GPS lost signal."
@@ -9874,10 +9874,10 @@ function getWorkerHTML(tenant?: any): string {
   <img src="/static/icon-192.png" style="width:40px;height:40px;border-radius:10px;flex-shrink:0;"/>
   <div style="flex:1;">
     <div style="font-weight:700;font-size:14px;">Add ClockInProof to Home Screen</div>
-    <div style="font-size:12px;opacity:0.85;">Tap Install — open anytime like a real app, no link needed</div>
+    <div style="font-size:12px;opacity:0.85;">Tap Install \u2014 open anytime like a real app, no link needed</div>
   </div>
   <button id="pwa-install-btn" style="background:white;color:#4f46e5;border:none;padding:8px 16px;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;flex-shrink:0;">Install</button>
-  <button onclick="document.getElementById('pwa-banner').style.display='none'" style="background:transparent;border:none;color:white;font-size:20px;cursor:pointer;padding:0 4px;flex-shrink:0;">✕</button>
+  <button onclick="document.getElementById('pwa-banner').style.display='none'" style="background:transparent;border:none;color:white;font-size:20px;cursor:pointer;padding:0 4px;flex-shrink:0;">\u2715</button>
 </div>
 
 <script>
@@ -9909,7 +9909,7 @@ document.getElementById('pwa-install-btn')?.addEventListener('click', async () =
   if (banner) banner.style.display = 'none';
 });
 
-// PWA: iOS Safari — show manual instructions
+// PWA: iOS Safari \u2014 show manual instructions
 const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
 const isInStandalone = window.navigator.standalone === true;
 if (isIOS && !isInStandalone) {
@@ -9931,14 +9931,14 @@ if (isIOS && !isInStandalone) {
 </html>`
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 function getAdminHTML(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>ClockInProof — Admin Dashboard</title>
+  <title>ClockInProof \u2014 Admin Dashboard</title>
   <link rel="icon" type="image/png" href="/static/icon-192.png"/>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
@@ -9946,7 +9946,7 @@ function getAdminHTML(): string {
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    /* ── THEME VARIABLES ─────────────────────────────────────────────────── */
+    /* \u2500\u2500 THEME VARIABLES \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
     :root {
       --bg-base:     #f1f5f9;
       --bg-card:     #ffffff;
@@ -9975,7 +9975,7 @@ function getAdminHTML(): string {
       --row-hover:   #273548;
       --shadow:      0 1px 4px rgba(0,0,0,.35);
     }
-    /* ── APPLY THEME VARS ────────────────────────────────────────────────── */
+    /* \u2500\u2500 APPLY THEME VARS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
     body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg-base) !important; color: var(--text-primary) !important; transition: background 0.2s, color 0.2s; }
     /* Cards / panels */
     .bg-white, [class*="bg-white"]                          { background: var(--bg-card) !important; }
@@ -10064,7 +10064,7 @@ function getAdminHTML(): string {
 <!-- Admin Dashboard -->
 <div id="admin-dashboard" class="hidden min-h-screen bg-gray-100 flex flex-col">
 
-  <!-- ── Top Navbar ─────────────────────────────────────────────────────────── -->
+  <!-- \u2500\u2500 Top Navbar \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
   <div class="bg-indigo-700 text-white shadow-lg flex-shrink-0">
     <div class="px-4 py-3 flex items-center justify-between">
       <!-- Left: hamburger + tenant brand -->
@@ -10072,7 +10072,7 @@ function getAdminHTML(): string {
         <button onclick="toggleSidebar()" class="w-9 h-9 flex items-center justify-center rounded-xl hover:bg-indigo-600 transition-colors lg:hidden" id="sidebar-hamburger">
           <i class="fas fa-bars text-lg"></i>
         </button>
-        <!-- Tenant brand block — swapped in by applyTenantBranding() -->
+        <!-- Tenant brand block \u2014 swapped in by applyTenantBranding() -->
         <div class="flex items-center gap-2.5" id="navbar-brand">
           <!-- Tenant logo (shown when logo set) -->
           <div id="navbar-logo-wrap" class="w-8 h-8 rounded-lg overflow-hidden bg-white bg-opacity-20 flex items-center justify-center flex-shrink-0 hidden">
@@ -10094,16 +10094,16 @@ function getAdminHTML(): string {
         <div class="hidden sm:flex items-center gap-2">
           <div onclick="showTab('live')" class="flex items-center gap-1.5 bg-green-500 bg-opacity-30 hover:bg-opacity-50 cursor-pointer px-3 py-1.5 rounded-full transition-colors">
             <span class="w-2 h-2 bg-green-400 rounded-full pulse"></span>
-            <span class="text-xs font-bold" id="stat-working-now">–</span>
+            <span class="text-xs font-bold" id="stat-working-now">\u2013</span>
             <span class="text-xs text-indigo-200">live</span>
           </div>
           <div onclick="showTab('payroll')" class="flex items-center gap-1.5 bg-white bg-opacity-10 hover:bg-opacity-20 cursor-pointer px-3 py-1.5 rounded-full transition-colors">
             <i class="fas fa-dollar-sign text-indigo-200 text-xs"></i>
-            <span class="text-xs font-bold" id="stat-total-payroll">–</span>
+            <span class="text-xs font-bold" id="stat-total-payroll">\u2013</span>
           </div>
           <div onclick="showTab('sessions')" class="flex items-center gap-1.5 bg-white bg-opacity-10 hover:bg-opacity-20 cursor-pointer px-3 py-1.5 rounded-full transition-colors">
             <i class="fas fa-clock text-indigo-200 text-xs"></i>
-            <span class="text-xs font-bold" id="stat-total-hours">–</span>
+            <span class="text-xs font-bold" id="stat-total-hours">\u2013</span>
             <span class="text-xs text-indigo-200">hrs</span>
           </div>
         </div>
@@ -10132,10 +10132,10 @@ function getAdminHTML(): string {
     </div>
   </div>
 
-  <!-- ── Body: sidebar + content ────────────────────────────────────────────── -->
+  <!-- \u2500\u2500 Body: sidebar + content \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
   <div class="flex flex-1 overflow-hidden relative">
 
-    <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+    <!-- \u2500\u2500 Sidebar \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <aside id="admin-sidebar" class="w-64 bg-white border-r border-gray-200 flex-shrink-0 flex flex-col shadow-sm
       fixed lg:static inset-y-0 left-0 z-40 transform -translate-x-full lg:translate-x-0 transition-transform duration-200"
       style="top:56px;height:calc(100vh - 56px)">
@@ -10193,7 +10193,7 @@ function getAdminHTML(): string {
           </span>
           <span>Workforce</span>
           <span class="ml-auto flex items-center gap-1.5">
-            <span class="text-xs text-gray-400" id="stat-total-workers">–</span>
+            <span class="text-xs text-gray-400" id="stat-total-workers">\u2013</span>
             <i id="workforce-chevron" class="fas fa-chevron-down text-[10px] text-gray-400 transition-transform duration-200"></i>
           </span>
         </button>
@@ -10275,7 +10275,7 @@ function getAdminHTML(): string {
             <i class="fas fa-plug text-sm"></i>
           </span>
           <span>QuickBooks Sync</span>
-          <span id="qb-nav-badge" class="ml-auto text-[10px] text-white font-bold bg-gray-400 px-1.5 py-0.5 rounded-full hidden">●</span>
+          <span id="qb-nav-badge" class="ml-auto text-[10px] text-white font-bold bg-gray-400 px-1.5 py-0.5 rounded-full hidden">\u25CF</span>
         </button>
 
         <!-- ADMIN -->
@@ -10353,7 +10353,7 @@ function getAdminHTML(): string {
     <!-- Sidebar overlay for mobile -->
     <div id="sidebar-overlay" class="hidden fixed inset-0 bg-black bg-opacity-40 z-30 lg:hidden" onclick="toggleSidebar()"></div>
 
-    <!-- ── Main content area ──────────────────────────────────────────────── -->
+    <!-- \u2500\u2500 Main content area \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <main class="flex-1 overflow-y-auto p-4 lg:p-6 min-w-0">
 
       <!-- Stats row (top of content, always visible) -->
@@ -10365,7 +10365,7 @@ function getAdminHTML(): string {
             </div>
             <span class="text-gray-400 text-xs">Workers</span>
           </div>
-          <p class="text-2xl font-bold text-gray-800" id="stat-total-workers-card">–</p>
+          <p class="text-2xl font-bold text-gray-800" id="stat-total-workers-card">\u2013</p>
         </div>
         <div onclick="showTab('live')" class="bg-white rounded-2xl shadow-sm p-4 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-green-200 transition-all group">
           <div class="flex items-center gap-2 mb-1">
@@ -10374,7 +10374,7 @@ function getAdminHTML(): string {
             </div>
             <span class="text-gray-400 text-xs">Working Now</span>
           </div>
-          <p class="text-2xl font-bold text-green-600" id="stat-working-now-card">–</p>
+          <p class="text-2xl font-bold text-green-600" id="stat-working-now-card">\u2013</p>
         </div>
         <div onclick="showTab('sessions')" class="bg-white rounded-2xl shadow-sm p-4 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-yellow-200 transition-all group">
           <div class="flex items-center gap-2 mb-1">
@@ -10383,7 +10383,7 @@ function getAdminHTML(): string {
             </div>
             <span class="text-gray-400 text-xs">Total Hours</span>
           </div>
-          <p class="text-2xl font-bold text-gray-800" id="stat-total-hours-card">–</p>
+          <p class="text-2xl font-bold text-gray-800" id="stat-total-hours-card">\u2013</p>
         </div>
         <div onclick="showTab('payroll')" class="bg-white rounded-2xl shadow-sm p-4 cursor-pointer hover:shadow-md hover:ring-2 hover:ring-purple-200 transition-all group">
           <div class="flex items-center gap-2 mb-1">
@@ -10392,7 +10392,7 @@ function getAdminHTML(): string {
             </div>
             <span class="text-gray-400 text-xs">Payroll</span>
           </div>
-          <p class="text-2xl font-bold text-gray-800" id="stat-total-payroll-card">–</p>
+          <p class="text-2xl font-bold text-gray-800" id="stat-total-payroll-card">\u2013</p>
         </div>
       </div>
 
@@ -10407,7 +10407,7 @@ function getAdminHTML(): string {
           <button onclick="showBulkClockoutModal()" id="bulk-clockout-btn"
             class="hidden bg-orange-100 hover:bg-orange-200 text-orange-700 text-xs font-bold px-3 py-2 rounded-xl transition-colors flex items-center gap-1.5">
             <i class="fas fa-map-marker-slash"></i>
-            <span id="bulk-clockout-label">Clock Out All — Left Site</span>
+            <span id="bulk-clockout-label">Clock Out All \u2014 Left Site</span>
           </button>
           <button onclick="loadLive()" class="text-gray-400 hover:text-gray-600 text-xs px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">
             <i class="fas fa-sync-alt mr-1"></i>Refresh
@@ -10450,7 +10450,7 @@ function getAdminHTML(): string {
           </div>
         </div>
       </div>
-      <!-- Status filter pills — shown only in 'all' and 'active' views -->
+      <!-- Status filter pills \u2014 shown only in 'all' and 'active' views -->
       <div class="flex flex-wrap gap-2 mb-4" id="workers-filter-bar">
         <button onclick="setWorkerFilter('all')" id="wf-all"
           class="text-xs px-3 py-1.5 rounded-full border-2 border-indigo-500 bg-indigo-50 text-indigo-700 font-semibold transition-all">
@@ -10522,7 +10522,7 @@ function getAdminHTML(): string {
         <div>
           <h3 class="font-bold text-gray-700 flex items-center gap-2">
             <span class="w-2 h-2 rounded-full bg-green-500 inline-block animate-pulse"></span>
-            <span id="map-live-label">Live — Currently Onsite</span>
+            <span id="map-live-label">Live \u2014 Currently Onsite</span>
           </h3>
           <p class="text-xs text-gray-400 mt-0.5">Only workers currently clocked in are shown</p>
         </div>
@@ -10590,7 +10590,7 @@ function getAdminHTML(): string {
     <!-- Tab: Settings -->
     <div id="tab-settings" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
 
-      <!-- ── Tenant Brand Header ── -->
+      <!-- \u2500\u2500 Tenant Brand Header \u2500\u2500 -->
       <div id="settings-tenant-header" class="flex items-center gap-4 mb-6 pb-5 border-b border-gray-100">
         <!-- Logo -->
         <div id="settings-logo-wrap" class="w-14 h-14 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center flex-shrink-0 overflow-hidden">
@@ -10599,7 +10599,7 @@ function getAdminHTML(): string {
         </div>
         <!-- Name + contact info -->
         <div class="flex-1 min-w-0">
-          <h3 id="settings-company-title" class="text-xl font-bold text-gray-900 leading-tight truncate">Loading…</h3>
+          <h3 id="settings-company-title" class="text-xl font-bold text-gray-900 leading-tight truncate">Loading\u2026</h3>
           <!-- Address -->
           <p id="settings-company-address" class="text-xs text-gray-500 mt-0.5 truncate hidden">
             <i class="fas fa-map-marker-alt text-gray-400 mr-1"></i>
@@ -10660,7 +10660,7 @@ function getAdminHTML(): string {
                 </div>
                 <div class="text-center">
                   <p class="text-sm font-medium text-indigo-700">Click or drag image here</p>
-                  <p class="text-xs text-gray-400 mt-0.5">PNG, JPG, SVG or WebP · Max 500KB</p>
+                  <p class="text-xs text-gray-400 mt-0.5">PNG, JPG, SVG or WebP \u00B7 Max 500KB</p>
                 </div>
               </div>
             </div>
@@ -10672,7 +10672,7 @@ function getAdminHTML(): string {
             <label class="block text-sm font-medium text-gray-700 mb-1">Worker App URL</label>
             <div class="flex items-center gap-2 px-3 py-2.5 border border-gray-200 rounded-xl bg-gray-50">
               <i class="fas fa-mobile-alt text-gray-400 text-sm"></i>
-              <span id="s-worker-app-url-display" class="text-sm text-gray-600 font-mono flex-1">—</span>
+              <span id="s-worker-app-url-display" class="text-sm text-gray-600 font-mono flex-1">\u2014</span>
               <button onclick="navigator.clipboard.writeText(document.getElementById('s-worker-app-url-display').textContent).then(()=>showAdminToast('URL copied!','success',2000))"
                 class="text-xs text-indigo-500 hover:text-indigo-700 font-medium">
                 <i class="fas fa-copy"></i>
@@ -10710,7 +10710,7 @@ function getAdminHTML(): string {
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">
-              Reply-To Email <span class="text-xs text-indigo-600 font-normal">(your real inbox — tenants reply here)</span>
+              Reply-To Email <span class="text-xs text-indigo-600 font-normal">(your real inbox \u2014 tenants reply here)</span>
             </label>
             <input id="s-reply-to-email" type="email" placeholder="Noweis2020@gmail.com"
               class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
@@ -10724,13 +10724,13 @@ function getAdminHTML(): string {
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Country</label>
             <select id="s-country" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm" onchange="updateProvinceList()">
-              <option value="CA">🇨🇦 Canada</option>
-              <option value="US">🇺🇸 United States</option>
-              <option value="GB">🇬🇧 United Kingdom</option>
-              <option value="AU">🇦🇺 Australia</option>
-              <option value="NZ">🇳🇿 New Zealand</option>
-              <option value="DE">🇩🇪 Germany</option>
-              <option value="FR">🇫🇷 France</option>
+              <option value="CA">\uD83C\uDDE8\uD83C\uDDE6 Canada</option>
+              <option value="US">\uD83C\uDDFA\uD83C\uDDF8 United States</option>
+              <option value="GB">\uD83C\uDDEC\uD83C\uDDE7 United Kingdom</option>
+              <option value="AU">\uD83C\uDDE6\uD83C\uDDFA Australia</option>
+              <option value="NZ">\uD83C\uDDF3\uD83C\uDDFF New Zealand</option>
+              <option value="DE">\uD83C\uDDE9\uD83C\uDDEA Germany</option>
+              <option value="FR">\uD83C\uDDEB\uD83C\uDDF7 France</option>
             </select>
           </div>
           <div>
@@ -10803,7 +10803,7 @@ function getAdminHTML(): string {
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Paid Hours per Day</label>
             <input id="s-paid-hours" type="number" step="0.5" min="1" max="12" value="7.5" class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"/>
-            <p class="text-xs text-gray-400 mt-1">Standard: 8h shift − 30min lunch = 7.5h paid</p>
+            <p class="text-xs text-gray-400 mt-1">Standard: 8h shift \u2212 30min lunch = 7.5h paid</p>
           </div>
         </div>
 
@@ -10846,7 +10846,7 @@ function getAdminHTML(): string {
             <label class="block text-sm font-medium text-gray-700 mb-1">First Payday (anchor date)</label>
             <input id="s-pay-anchor" type="date" value="2026-03-06"
               class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"/>
-            <p class="text-xs text-gray-400 mt-1">Set to your next upcoming payday — all future paydays auto-calculate</p>
+            <p class="text-xs text-gray-400 mt-1">Set to your next upcoming payday \u2014 all future paydays auto-calculate</p>
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Show Pay to Workers</label>
@@ -10865,7 +10865,7 @@ function getAdminHTML(): string {
             </label>
             <input id="s-accountant-email" type="email" placeholder="accountant@yourfirm.com"
               class="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-400 text-sm"/>
-            <p class="text-xs text-gray-400 mt-1">Pre-filled on the Payroll Export tab — saved with settings</p>
+            <p class="text-xs text-gray-400 mt-1">Pre-filled on the Payroll Export tab \u2014 saved with settings</p>
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">
@@ -10882,14 +10882,14 @@ function getAdminHTML(): string {
       <div class="space-y-4">
         <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2 flex items-center gap-2">
           <img src="https://upload.wikimedia.org/wikipedia/commons/9/9d/Intuit_QuickBooks_logo.png" class="h-4 w-auto" onerror="this.style.display='none'"/>
-          <i class="fas fa-link text-green-600"></i> QuickBooks Online — Direct Connect
+          <i class="fas fa-link text-green-600"></i> QuickBooks Online \u2014 Direct Connect
         </h4>
         <div class="bg-green-50 border border-green-200 rounded-2xl p-4 space-y-4">
           <!-- Status Banner -->
           <div id="qb-settings-status" class="flex items-center gap-3 p-3 rounded-xl bg-white border border-green-200">
             <div id="qb-status-dot" class="w-3 h-3 rounded-full bg-gray-300 flex-shrink-0"></div>
             <div class="flex-1">
-              <p id="qb-status-text" class="text-sm font-semibold text-gray-600">Checking connection…</p>
+              <p id="qb-status-text" class="text-sm font-semibold text-gray-600">Checking connection\u2026</p>
               <p id="qb-company-name-display" class="text-xs text-gray-400"></p>
             </div>
             <button id="qb-connect-btn" onclick="qbConnect()"
@@ -10907,17 +10907,17 @@ function getAdminHTML(): string {
               <label class="block text-sm font-medium text-gray-700 mb-1">
                 <i class="fas fa-key text-green-500 mr-1"></i> Intuit Client ID
               </label>
-              <input id="s-qb-client-id" type="text" placeholder="ABCDEFabcdef…"
+              <input id="s-qb-client-id" type="text" placeholder="ABCDEFabcdef\u2026"
                 class="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-400 text-sm font-mono"/>
-              <p class="text-xs text-gray-400 mt-1">From developer.intuit.com → My Apps → Keys</p>
+              <p class="text-xs text-gray-400 mt-1">From developer.intuit.com \u2192 My Apps \u2192 Keys</p>
             </div>
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">
                 <i class="fas fa-lock text-green-500 mr-1"></i> Intuit Client Secret
               </label>
-              <input id="s-qb-client-secret" type="password" placeholder="••••••••••••"
+              <input id="s-qb-client-secret" type="password" placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
                 class="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-400 text-sm font-mono"/>
-              <p class="text-xs text-gray-400 mt-1">Keep secret — never share this value</p>
+              <p class="text-xs text-gray-400 mt-1">Keep secret \u2014 never share this value</p>
             </div>
           </div>
           <div class="flex items-center gap-4">
@@ -10930,14 +10930,14 @@ function getAdminHTML(): string {
               </select>
             </div>
             <div class="flex-1 bg-green-100 rounded-xl p-3 text-xs text-green-800">
-              <strong>How it works:</strong> Save your Client ID &amp; Secret → click Connect → approve in QuickBooks → 
+              <strong>How it works:</strong> Save your Client ID &amp; Secret \u2192 click Connect \u2192 approve in QuickBooks \u2192 
               hours sync automatically each pay period. No manual CSV import needed.
             </div>
           </div>
           <p class="text-xs text-gray-500">
             <i class="fas fa-info-circle mr-1 text-blue-400"></i>
-            Get free credentials at <a href="https://developer.intuit.com" target="_blank" class="text-blue-500 underline">developer.intuit.com</a> → 
-            Create App → QuickBooks Online → copy Client ID &amp; Secret. 
+            Get free credentials at <a href="https://developer.intuit.com" target="_blank" class="text-blue-500 underline">developer.intuit.com</a> \u2192 
+            Create App \u2192 QuickBooks Online \u2192 copy Client ID &amp; Secret. 
             Set Redirect URI to: <code id="qb-redirect-uri-display" class="bg-white px-1 rounded text-xs text-gray-700">https://admin.clockinproof.com/api/qb/callback</code>
           </p>
         </div>
@@ -10961,7 +10961,7 @@ function getAdminHTML(): string {
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">
-              Geofence Radius <span class="text-gray-400 font-normal">(metres — worker must be within this distance)</span>
+              Geofence Radius <span class="text-gray-400 font-normal">(metres \u2014 worker must be within this distance)</span>
             </label>
             <div class="flex items-center gap-3">
               <input id="s-geofence-radius" type="number" min="50" max="5000" step="50" value="300"
@@ -11025,7 +11025,7 @@ function getAdminHTML(): string {
               <i class="fas fa-wifi text-yellow-500"></i>
               <span class="text-sm font-semibold text-gray-700">Idle / Away Warning</span>
             </div>
-            <p class="text-xs text-gray-500 mb-3">Alert the worker (and flag the session) if no GPS ping is received — means the app is closed or the phone is off-site.</p>
+            <p class="text-xs text-gray-500 mb-3">Alert the worker (and flag the session) if no GPS ping is received \u2014 means the app is closed or the phone is off-site.</p>
             <label class="text-xs font-medium text-gray-600 block mb-1">Warn after no GPS update for</label>
             <div class="flex items-center gap-2">
               <input id="s-away-warning-min" type="number" min="5" max="120" step="5" value="30"
@@ -11063,11 +11063,11 @@ function getAdminHTML(): string {
 
         <div class="text-xs text-gray-500 flex items-start gap-2 bg-gray-50 rounded-xl p-3">
           <i class="fas fa-info-circle text-purple-400 mt-0.5 flex-shrink-0"></i>
-          <span>Workers see a coloured warning banner before auto clock-out. The admin Live tab shows <span class="font-medium text-orange-600">⚠ Drifted</span>, <span class="font-medium text-yellow-600">⏰ Away</span>, and <span class="font-medium text-red-600">🔴 Auto clocked-out</span> badges. All guardrail events are recorded on the session for your records.</span>
+          <span>Workers see a coloured warning banner before auto clock-out. The admin Live tab shows <span class="font-medium text-orange-600">\u26A0 Drifted</span>, <span class="font-medium text-yellow-600">\u23F0 Away</span>, and <span class="font-medium text-red-600">\uD83D\uDD34 Auto clocked-out</span> badges. All guardrail events are recorded on the session for your records.</span>
         </div>
       </div>
 
-      <!-- Notifications — Platform-managed, no tenant setup needed -->
+      <!-- Notifications \u2014 Platform-managed, no tenant setup needed -->
       <div class="space-y-4">
         <h4 class="font-semibold text-gray-600 text-sm uppercase tracking-wider border-b pb-2 flex items-center gap-2">
           <i class="fas fa-bell text-amber-500"></i> Notifications
@@ -11088,7 +11088,7 @@ function getAdminHTML(): string {
               </label>
             </div>
             <p class="text-xs text-gray-500 mb-2">Rich HTML email with map link, worker details, and a direct approval link.</p>
-            <p class="text-xs text-green-600 font-medium"><i class="fas fa-check-circle mr-1"></i>Included — powered by ClockInProof platform</p>
+            <p class="text-xs text-green-600 font-medium"><i class="fas fa-check-circle mr-1"></i>Included \u2014 powered by ClockInProof platform</p>
           </div>
 
           <!-- SMS toggle -->
@@ -11104,14 +11104,14 @@ function getAdminHTML(): string {
               </label>
             </div>
             <p class="text-xs text-gray-500 mb-2">Instant SMS with a deep-link to the Overrides tab. Works on Android &amp; iOS.</p>
-            <p class="text-xs text-green-600 font-medium"><i class="fas fa-check-circle mr-1"></i>Included — powered by ClockInProof platform</p>
+            <p class="text-xs text-green-600 font-medium"><i class="fas fa-check-circle mr-1"></i>Included \u2014 powered by ClockInProof platform</p>
           </div>
         </div>
 
         <!-- Admin phone number (tenant sets their own) -->
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">
-            Admin Phone Number <span class="text-gray-400 font-normal">(for SMS alerts — include country code e.g. +1 613 555 0100)</span>
+            Admin Phone Number <span class="text-gray-400 font-normal">(for SMS alerts \u2014 include country code e.g. +1 613 555 0100)</span>
           </label>
           <input id="s-admin-phone" type="tel" placeholder="+1 613 555 0100"
             class="w-full px-3 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-400 text-sm"/>
@@ -11121,7 +11121,7 @@ function getAdminHTML(): string {
         <!-- Info note -->
         <div class="bg-indigo-50 border border-indigo-100 rounded-xl p-3 text-xs text-indigo-600 flex items-start gap-2">
           <i class="fas fa-shield-halved text-indigo-400 mt-0.5 flex-shrink-0"></i>
-          <span>All messaging is handled by the ClockInProof platform — no external accounts or API keys required. Email and SMS are included in your plan.</span>
+          <span>All messaging is handled by the ClockInProof platform \u2014 no external accounts or API keys required. Email and SMS are included in your plan.</span>
         </div>
       </div>
 
@@ -11151,7 +11151,7 @@ function getAdminHTML(): string {
           </div>
           <div class="flex-1 min-w-[200px]">
             <label class="block text-sm font-semibold text-gray-700 mb-1">Week Range</label>
-            <p id="export-week-label" class="text-sm font-bold text-indigo-700 mt-1 py-2.5">—</p>
+            <p id="export-week-label" class="text-sm font-bold text-indigo-700 mt-1 py-2.5">\u2014</p>
           </div>
         </div>
         <div class="flex gap-3 mt-4 flex-wrap">
@@ -11175,7 +11175,7 @@ function getAdminHTML(): string {
         <div class="flex items-center gap-3 flex-wrap">
           <select id="export-worker-select"
             class="flex-1 min-w-[200px] border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white">
-            <option value="">📋 All Staff (Combined Report)</option>
+            <option value="">\uD83D\uDCCB All Staff (Combined Report)</option>
           </select>
           <span id="export-worker-badge"
             class="px-3 py-1.5 bg-indigo-50 text-indigo-700 text-xs font-bold rounded-full border border-indigo-200">
@@ -11260,7 +11260,7 @@ function getAdminHTML(): string {
         <div class="space-y-2 text-sm text-gray-600">
           <div class="flex items-start gap-2">
             <i class="fas fa-check-circle text-green-500 mt-0.5 flex-shrink-0"></i>
-            <span><strong>Schedule:</strong> Every Friday at 11:59 PM — covers Monday 12:00 AM to Friday 11:59 PM</span>
+            <span><strong>Schedule:</strong> Every Friday at 11:59 PM \u2014 covers Monday 12:00 AM to Friday 11:59 PM</span>
           </div>
           <div class="flex items-start gap-2">
             <i class="fas fa-check-circle text-green-500 mt-0.5 flex-shrink-0"></i>
@@ -11272,13 +11272,13 @@ function getAdminHTML(): string {
           </div>
           <div class="flex items-start gap-2">
             <i class="fas fa-clock text-blue-500 mt-0.5 flex-shrink-0"></i>
-            <span id="last-email-sent-info" class="text-gray-500">Last sent: —</span>
+            <span id="last-email-sent-info" class="text-gray-500">Last sent: \u2014</span>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- ── Tab: Payroll Totals ─────────────────────────────────────────────── -->
+    <!-- \u2500\u2500 Tab: Payroll Totals \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <div id="tab-payroll" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <div class="flex items-center justify-between mb-5 flex-wrap gap-3">
         <h3 class="font-bold text-gray-800 text-lg flex items-center gap-2">
@@ -11295,15 +11295,15 @@ function getAdminHTML(): string {
       <!-- Summary totals banner -->
       <div class="grid grid-cols-3 gap-3 mb-6">
         <div class="bg-purple-50 border border-purple-100 rounded-2xl p-4 text-center">
-          <p class="text-2xl font-bold text-purple-700" id="pt-total-payroll">–</p>
+          <p class="text-2xl font-bold text-purple-700" id="pt-total-payroll">\u2013</p>
           <p class="text-xs text-purple-500 mt-0.5 font-medium">Total Payroll</p>
         </div>
         <div class="bg-blue-50 border border-blue-100 rounded-2xl p-4 text-center">
-          <p class="text-2xl font-bold text-blue-700" id="pt-total-hours">–</p>
+          <p class="text-2xl font-bold text-blue-700" id="pt-total-hours">\u2013</p>
           <p class="text-xs text-blue-500 mt-0.5 font-medium">Total Hours</p>
         </div>
         <div class="bg-green-50 border border-green-100 rounded-2xl p-4 text-center">
-          <p class="text-2xl font-bold text-green-700" id="pt-total-workers">–</p>
+          <p class="text-2xl font-bold text-green-700" id="pt-total-workers">\u2013</p>
           <p class="text-xs text-green-500 mt-0.5 font-medium">Workers Paid</p>
         </div>
       </div>
@@ -11314,7 +11314,7 @@ function getAdminHTML(): string {
       </div>
     </div>
 
-    <!-- ── Tab: Weekly Summary → Accountant ───────────────────────────────── -->
+    <!-- \u2500\u2500 Tab: Weekly Summary \u2192 Accountant \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <div id="tab-accountant" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <div class="flex items-center justify-between mb-5 flex-wrap gap-3">
         <div>
@@ -11325,7 +11325,7 @@ function getAdminHTML(): string {
         </div>
       </div>
 
-      <!-- ── Pay Period Selector ── -->
+      <!-- \u2500\u2500 Pay Period Selector \u2500\u2500 -->
       <div class="bg-gradient-to-br from-indigo-50 to-purple-50 border border-indigo-200 rounded-2xl p-5 mb-5">
         <div class="flex items-center gap-2 mb-3">
           <i class="fas fa-calendar-alt text-indigo-600"></i>
@@ -11369,7 +11369,7 @@ function getAdminHTML(): string {
         </div>
       </div>
 
-      <!-- ── QB Export Buttons ── -->
+      <!-- \u2500\u2500 QB Export Buttons \u2500\u2500 -->
       <div class="bg-white border border-gray-200 rounded-2xl p-5 mb-5">
         <div class="flex items-center gap-2 mb-3">
           <i class="fas fa-download text-green-600"></i>
@@ -11383,8 +11383,8 @@ function getAdminHTML(): string {
               <i class="fas fa-table text-white"></i>
             </div>
             <div class="text-left flex-1">
-              <p class="font-bold text-green-800 text-sm">QuickBooks Online — CSV</p>
-              <p class="text-xs text-green-600">Payroll → Import → upload CSV · Works with QB Online &amp; most accounting software</p>
+              <p class="font-bold text-green-800 text-sm">QuickBooks Online \u2014 CSV</p>
+              <p class="text-xs text-green-600">Payroll \u2192 Import \u2192 upload CSV \u00B7 Works with QB Online &amp; most accounting software</p>
             </div>
             <i class="fas fa-download text-green-600 group-hover:text-green-800"></i>
           </button>
@@ -11395,8 +11395,8 @@ function getAdminHTML(): string {
               <i class="fas fa-file-code text-white"></i>
             </div>
             <div class="text-left flex-1">
-              <p class="font-bold text-blue-800 text-sm">QuickBooks Desktop — IIF</p>
-              <p class="text-xs text-blue-600">File → Utilities → Import → IIF Files · Imports hours directly into timesheets</p>
+              <p class="font-bold text-blue-800 text-sm">QuickBooks Desktop \u2014 IIF</p>
+              <p class="text-xs text-blue-600">File \u2192 Utilities \u2192 Import \u2192 IIF Files \u00B7 Imports hours directly into timesheets</p>
             </div>
             <i class="fas fa-download text-blue-600 group-hover:text-blue-800"></i>
           </button>
@@ -11407,15 +11407,15 @@ function getAdminHTML(): string {
               <i class="fas fa-file-csv text-white"></i>
             </div>
             <div class="text-left flex-1">
-              <p class="font-bold text-gray-800 text-sm">Full Detail Report — CSV</p>
-              <p class="text-xs text-gray-500">Every clock-in/out with GPS · for records &amp; audit</p>
+              <p class="font-bold text-gray-800 text-sm">Full Detail Report \u2014 CSV</p>
+              <p class="text-xs text-gray-500">Every clock-in/out with GPS \u00B7 for records &amp; audit</p>
             </div>
             <i class="fas fa-download text-gray-500 group-hover:text-gray-700"></i>
           </button>
         </div>
       </div>
 
-      <!-- ── Email to Accountant ── -->
+      <!-- \u2500\u2500 Email to Accountant \u2500\u2500 -->
       <div class="bg-amber-50 border border-amber-200 rounded-2xl p-5 mb-5">
         <div class="flex items-center gap-2 mb-3">
           <i class="fas fa-paper-plane text-amber-600"></i>
@@ -11449,7 +11449,7 @@ function getAdminHTML(): string {
         <div id="qb-send-status" class="hidden mt-3 rounded-xl p-3 text-sm"></div>
       </div>
 
-      <!-- ── Preview ── -->
+      <!-- \u2500\u2500 Preview \u2500\u2500 -->
       <div>
         <div class="flex items-center justify-between mb-3">
           <h4 class="font-bold text-gray-700 text-sm flex items-center gap-2">
@@ -11469,12 +11469,12 @@ function getAdminHTML(): string {
       <div id="acct-send-status" class="hidden mt-4 rounded-xl p-4 text-sm"></div>
     </div>
 
-    <!-- ── Tab: QuickBooks Sync ───────────────────────────────────────────── -->
+    <!-- \u2500\u2500 Tab: QuickBooks Sync \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <div id="tab-quickbooks" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <div class="flex items-center justify-between mb-5">
         <h3 class="font-bold text-gray-700 flex items-center gap-2 text-lg">
           <i class="fas fa-plug text-green-600"></i>
-          QuickBooks Online — Direct Sync
+          QuickBooks Online \u2014 Direct Sync
         </h3>
         <span class="text-xs bg-green-100 text-green-700 px-3 py-1 rounded-full font-semibold">Beta</span>
       </div>
@@ -11485,7 +11485,7 @@ function getAdminHTML(): string {
           <i class="fas fa-circle-notch fa-spin text-gray-400"></i>
         </div>
         <div class="flex-1">
-          <p id="qb-tab-status-title" class="font-bold text-gray-700 text-base">Checking connection…</p>
+          <p id="qb-tab-status-title" class="font-bold text-gray-700 text-base">Checking connection\u2026</p>
           <p id="qb-tab-status-sub" class="text-sm text-gray-500"></p>
         </div>
         <div class="flex gap-2">
@@ -11503,12 +11503,12 @@ function getAdminHTML(): string {
       <!-- Setup steps (shown when not connected) -->
       <div id="qb-setup-steps" class="mb-6 bg-blue-50 border border-blue-200 rounded-2xl p-4">
         <p class="font-bold text-blue-800 mb-3 flex items-center gap-2">
-          <i class="fas fa-list-ol"></i> Quick Setup — 3 Steps
+          <i class="fas fa-list-ol"></i> Quick Setup \u2014 3 Steps
         </p>
         <ol class="space-y-2 text-sm text-blue-700">
           <li class="flex gap-3">
             <span class="w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">1</span>
-            <span>Go to <a href="https://developer.intuit.com" target="_blank" class="underline font-medium">developer.intuit.com</a> → Create App → QuickBooks Online → copy <strong>Client ID</strong> &amp; <strong>Client Secret</strong></span>
+            <span>Go to <a href="https://developer.intuit.com" target="_blank" class="underline font-medium">developer.intuit.com</a> \u2192 Create App \u2192 QuickBooks Online \u2192 copy <strong>Client ID</strong> &amp; <strong>Client Secret</strong></span>
           </li>
           <li class="flex gap-3">
             <span class="w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">2</span>
@@ -11516,7 +11516,7 @@ function getAdminHTML(): string {
           </li>
           <li class="flex gap-3">
             <span class="w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">3</span>
-            <span>Go to <strong>Settings → QuickBooks Direct Connect</strong>, enter Client ID &amp; Secret, save, then click <strong>Connect to QuickBooks</strong></span>
+            <span>Go to <strong>Settings \u2192 QuickBooks Direct Connect</strong>, enter Client ID &amp; Secret, save, then click <strong>Connect to QuickBooks</strong></span>
           </li>
         </ol>
       </div>
@@ -11543,7 +11543,7 @@ function getAdminHTML(): string {
           <span class="text-xs text-gray-400 ml-2">or map each worker manually below</span>
         </div>
         <div id="qb-mapping-list" class="space-y-2">
-          <p class="text-gray-400 text-sm text-center py-4"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p>
+          <p class="text-gray-400 text-sm text-center py-4"><i class="fas fa-spinner fa-spin mr-2"></i>Loading\u2026</p>
         </div>
       </div>
 
@@ -11615,7 +11615,7 @@ function getAdminHTML(): string {
       </div>
     </div>
 
-    <!-- ── Tab: Overrides ─────────────────────────────────────────────────── -->
+    <!-- \u2500\u2500 Tab: Overrides \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <div id="tab-overrides" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
   <div class="flex items-center justify-between mb-5">
     <h3 class="font-bold text-gray-700 flex items-center gap-2">
@@ -11656,7 +11656,7 @@ function getAdminHTML(): string {
   </div>
     </div><!-- /tab-overrides -->
 
-    <!-- ── Tab: Job Sites ──────────────────────────────────────────────────── -->
+    <!-- \u2500\u2500 Tab: Job Sites \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <div id="tab-job-sites" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <div class="flex items-center justify-between mb-5">
         <div>
@@ -11687,7 +11687,7 @@ function getAdminHTML(): string {
       </div>
     </div>
 
-    <!-- ── Tab: Job Dispatch ──────────────────────────────────────────────── -->
+    <!-- \u2500\u2500 Tab: Job Dispatch \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <div id="tab-dispatch" class="tab-content hidden space-y-5">
 
       <!-- Header -->
@@ -11707,19 +11707,19 @@ function getAdminHTML(): string {
         <!-- Stats row -->
         <div id="dispatch-stats-row" class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
           <div class="bg-violet-50 rounded-xl p-3 text-center">
-            <p class="text-2xl font-black text-violet-600" id="dstat-sent">—</p>
+            <p class="text-2xl font-black text-violet-600" id="dstat-sent">\u2014</p>
             <p class="text-[11px] text-gray-500 font-semibold mt-0.5">Sent (7d)</p>
           </div>
           <div class="bg-sky-50 rounded-xl p-3 text-center">
-            <p class="text-2xl font-black text-sky-600" id="dstat-replied">—</p>
+            <p class="text-2xl font-black text-sky-600" id="dstat-replied">\u2014</p>
             <p class="text-[11px] text-gray-500 font-semibold mt-0.5">Replied</p>
           </div>
           <div class="bg-emerald-50 rounded-xl p-3 text-center">
-            <p class="text-2xl font-black text-emerald-600" id="dstat-arrived">—</p>
+            <p class="text-2xl font-black text-emerald-600" id="dstat-arrived">\u2014</p>
             <p class="text-[11px] text-gray-500 font-semibold mt-0.5">Arrived</p>
           </div>
           <div class="bg-amber-50 rounded-xl p-3 text-center">
-            <p class="text-2xl font-black text-amber-600" id="dstat-total">—</p>
+            <p class="text-2xl font-black text-amber-600" id="dstat-total">\u2014</p>
             <p class="text-[11px] text-gray-500 font-semibold mt-0.5">Total (7d)</p>
           </div>
         </div>
@@ -11744,7 +11744,7 @@ function getAdminHTML(): string {
       </div>
     </div>
 
-    <!-- ── Tab: Encircle Integration ──────────────────────────────────────── -->
+    <!-- \u2500\u2500 Tab: Encircle Integration \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <div id="tab-encircle" class="tab-content hidden space-y-4">
 
       <!-- Header bar -->
@@ -11757,7 +11757,7 @@ function getAdminHTML(): string {
             <div>
               <h3 class="text-base font-bold text-gray-800 flex items-center gap-2">
                 Encircle Integration
-                <span id="encircle-connected-pill" class="hidden text-[11px] font-bold px-2 py-0.5 rounded-full bg-green-100 text-green-700">● Connected</span>
+                <span id="encircle-connected-pill" class="hidden text-[11px] font-bold px-2 py-0.5 rounded-full bg-green-100 text-green-700">\u25CF Connected</span>
               </h3>
               <p id="encircle-status-sub" class="text-xs text-gray-400 mt-0.5">Enter your bearer token below to connect</p>
             </div>
@@ -11784,7 +11784,7 @@ function getAdminHTML(): string {
           <div>
             <p class="text-xs font-bold text-amber-700">Encircle API does not send job status</p>
             <p class="text-xs text-amber-600 mt-0.5 leading-relaxed">
-              Closing or leaving a job in Encircle does <strong>not</strong> remove it from CIP sync —
+              Closing or leaving a job in Encircle does <strong>not</strong> remove it from CIP sync \u2014
               Encircle's API returns all jobs with no status field.
               To remove a job from CIP, use the <strong>Close Job</strong> button on the card below.
               CIP will permanently ignore it on all future syncs.
@@ -11805,7 +11805,7 @@ function getAdminHTML(): string {
           <p class="font-semibold mb-1">How to get your Bearer Token:</p>
           <ol class="list-decimal list-inside space-y-1 leading-relaxed">
             <li>Log in to <a href="https://encircleapp.com" target="_blank" class="underline font-medium">encircleapp.com</a></li>
-            <li>Go to <strong>Settings → Integrations → API</strong></li>
+            <li>Go to <strong>Settings \u2192 Integrations \u2192 API</strong></li>
             <li>Copy your Bearer Token and paste it below</li>
           </ol>
         </div>
@@ -11892,7 +11892,7 @@ function getAdminHTML(): string {
 
     </div>
 
-    <!-- ── Tab: Issue Reports (Disputes) ───────────────────────────────────── -->
+    <!-- \u2500\u2500 Tab: Issue Reports (Disputes) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <div id="tab-disputes" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <div class="flex items-center justify-between mb-5">
         <div>
@@ -11910,7 +11910,7 @@ function getAdminHTML(): string {
       </div>
     </div>
 
-    <!-- ── Tab: Support Tickets ──────────────────────────────────────────── -->
+    <!-- \u2500\u2500 Tab: Support Tickets \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <div id="tab-support-tickets" class="tab-content hidden">
 
       <!-- Submit new ticket card -->
@@ -11946,8 +11946,8 @@ function getAdminHTML(): string {
             <select id="tkt-priority" class="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
               <option value="normal">Normal</option>
               <option value="high">High</option>
-              <option value="urgent">Urgent — system is down</option>
-              <option value="low">Low — no rush</option>
+              <option value="urgent">Urgent \u2014 system is down</option>
+              <option value="low">Low \u2014 no rush</option>
             </select>
           </div>
           <div>
@@ -11957,7 +11957,7 @@ function getAdminHTML(): string {
           </div>
           <div class="md:col-span-2">
             <label class="block text-xs font-semibold text-gray-600 mb-1">Description *</label>
-            <textarea id="tkt-description" rows="4" placeholder="Please describe your issue in detail — include steps to reproduce if applicable..."
+            <textarea id="tkt-description" rows="4" placeholder="Please describe your issue in detail \u2014 include steps to reproduce if applicable..."
               class="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"></textarea>
           </div>
         </div>
@@ -11992,7 +11992,7 @@ function getAdminHTML(): string {
   </div><!-- /flex body -->
 </div><!-- /admin-dashboard -->
 
-<!-- ── Job Dispatch Modal ──────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 Job Dispatch Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <div id="dispatch-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 z-[90] flex items-start justify-center p-4 overflow-y-auto" onclick="if(event.target===this)closeDispatchModal()">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg my-6 overflow-hidden">
     <!-- Header -->
@@ -12034,7 +12034,7 @@ function getAdminHTML(): string {
         <select id="dispatch-encircle-select"
           class="w-full px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:border-violet-500 transition-colors"
           onchange="onDispatchEncircleSelect(this.value)">
-          <option value="">— Loading jobs… —</option>
+          <option value="">\u2014 Loading jobs\u2026 \u2014</option>
         </select>
       </div>
 
@@ -12068,7 +12068,7 @@ function getAdminHTML(): string {
         <label class="block text-xs font-bold text-gray-600 mb-1.5">Select Worker <span class="text-red-500">*</span></label>
         <select id="dispatch-worker-select"
           class="w-full px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:border-violet-500 transition-colors">
-          <option value="">— Loading workers… —</option>
+          <option value="">\u2014 Loading workers\u2026 \u2014</option>
         </select>
         <p id="dispatch-worker-phone-preview" class="text-[11px] text-gray-400 mt-1 hidden">
           <i class="fas fa-mobile-alt mr-1"></i><span id="dispatch-worker-phone-val"></span>
@@ -12087,7 +12087,7 @@ function getAdminHTML(): string {
         <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-2 flex items-center gap-1.5">
           <i class="fas fa-comment-dots text-green-400"></i>SMS Preview
         </p>
-        <pre id="dispatch-sms-preview" class="text-xs text-green-300 font-mono whitespace-pre-wrap leading-relaxed">Select a job and worker to preview the SMS…</pre>
+        <pre id="dispatch-sms-preview" class="text-xs text-green-300 font-mono whitespace-pre-wrap leading-relaxed">Select a job and worker to preview the SMS\u2026</pre>
       </div>
     </div>
 
@@ -12105,7 +12105,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<!-- ── Add / Edit Job Site Modal ─────────────────────────────────────────── -->
+<!-- \u2500\u2500 Add / Edit Job Site Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <div id="site-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onclick="if(event.target===this)closeSiteModal()">
   <div class="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md">
     <div class="flex items-center justify-between mb-5">
@@ -12243,7 +12243,7 @@ function getAdminHTML(): string {
           </div>
           <!-- Front photo -->
           <div>
-            <label class="block text-sm font-medium text-gray-700 mb-2">License — Front</label>
+            <label class="block text-sm font-medium text-gray-700 mb-2">License \u2014 Front</label>
             <label for="modal-lic-front" class="block cursor-pointer">
               <div id="modal-lic-front-preview" class="w-full h-32 bg-amber-50 border-2 border-dashed border-amber-300 rounded-xl flex flex-col items-center justify-center hover:bg-amber-100 transition-colors">
                 <i class="fas fa-camera text-amber-400 text-2xl mb-1"></i>
@@ -12255,7 +12255,7 @@ function getAdminHTML(): string {
           </div>
           <!-- Back photo -->
           <div>
-            <label class="block text-sm font-medium text-gray-700 mb-2">License — Back</label>
+            <label class="block text-sm font-medium text-gray-700 mb-2">License \u2014 Back</label>
             <label for="modal-lic-back" class="block cursor-pointer">
               <div id="modal-lic-back-preview" class="w-full h-32 bg-amber-50 border-2 border-dashed border-amber-300 rounded-xl flex flex-col items-center justify-center hover:bg-amber-100 transition-colors">
                 <i class="fas fa-camera text-amber-400 text-2xl mb-1"></i>
@@ -12293,7 +12293,7 @@ function getAdminHTML(): string {
 <!-- Toast -->
 <div id="admin-toast" class="hidden fixed bottom-6 right-6 px-5 py-3 rounded-xl shadow-xl z-50 text-sm font-medium text-white"></div>
 
-<!-- ── Worker Detail Drawer ─────────────────────────────────────────── -->
+<!-- \u2500\u2500 Worker Detail Drawer \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <div id="worker-drawer" class="hidden fixed inset-0 z-50 flex justify-end" onclick="if(event.target===this)closeWorkerDrawer()">
   <div class="absolute inset-0 bg-black bg-opacity-40 backdrop-blur-sm"></div>
   <div class="relative w-full max-w-md bg-white h-full overflow-y-auto shadow-2xl flex flex-col">
@@ -12310,15 +12310,15 @@ function getAdminHTML(): string {
     <!-- Stats strip -->
     <div class="grid grid-cols-3 gap-3 px-5 py-4 bg-gray-50 border-b">
       <div class="text-center">
-        <p class="text-xl font-bold text-indigo-600" id="wd-total-sessions">–</p>
+        <p class="text-xl font-bold text-indigo-600" id="wd-total-sessions">\u2013</p>
         <p class="text-xs text-gray-500 mt-0.5">Sessions</p>
       </div>
       <div class="text-center">
-        <p class="text-xl font-bold text-yellow-600" id="wd-total-hours">–</p>
+        <p class="text-xl font-bold text-yellow-600" id="wd-total-hours">\u2013</p>
         <p class="text-xs text-gray-500 mt-0.5">Total Hours</p>
       </div>
       <div class="text-center">
-        <p class="text-xl font-bold text-green-600" id="wd-total-earned">–</p>
+        <p class="text-xl font-bold text-green-600" id="wd-total-earned">\u2013</p>
         <p class="text-xs text-gray-500 mt-0.5">Total Earned</p>
       </div>
     </div>
@@ -12376,19 +12376,19 @@ function getAdminHTML(): string {
         <div class="grid grid-cols-1 gap-2">
           <div class="flex items-start gap-3">
             <i class="fas fa-phone text-indigo-400 mt-0.5 w-4 flex-shrink-0"></i>
-            <div><p class="text-xs text-gray-400">Phone</p><p class="text-sm font-semibold text-gray-700" id="wd-p-phone">–</p></div>
+            <div><p class="text-xs text-gray-400">Phone</p><p class="text-sm font-semibold text-gray-700" id="wd-p-phone">\u2013</p></div>
           </div>
           <div class="flex items-start gap-3">
             <i class="fas fa-envelope text-indigo-400 mt-0.5 w-4 flex-shrink-0"></i>
-            <div><p class="text-xs text-gray-400">Email</p><p class="text-sm font-semibold text-gray-700" id="wd-p-email">–</p></div>
+            <div><p class="text-xs text-gray-400">Email</p><p class="text-sm font-semibold text-gray-700" id="wd-p-email">\u2013</p></div>
           </div>
           <div class="flex items-start gap-3">
             <i class="fas fa-home text-indigo-400 mt-0.5 w-4 flex-shrink-0"></i>
-            <div><p class="text-xs text-gray-400">Home Address</p><p class="text-sm font-semibold text-gray-700" id="wd-p-address">–</p></div>
+            <div><p class="text-xs text-gray-400">Home Address</p><p class="text-sm font-semibold text-gray-700" id="wd-p-address">\u2013</p></div>
           </div>
           <div class="flex items-start gap-3">
             <i class="fas fa-heart text-red-400 mt-0.5 w-4 flex-shrink-0"></i>
-            <div><p class="text-xs text-gray-400">Emergency Contact</p><p class="text-sm font-semibold text-gray-700" id="wd-p-emergency">–</p></div>
+            <div><p class="text-xs text-gray-400">Emergency Contact</p><p class="text-sm font-semibold text-gray-700" id="wd-p-emergency">\u2013</p></div>
           </div>
         </div>
       </div>
@@ -12396,16 +12396,16 @@ function getAdminHTML(): string {
       <div class="bg-emerald-50 rounded-2xl p-4 space-y-3">
         <p class="text-xs font-bold text-emerald-600 uppercase tracking-wider">Employment</p>
         <div class="grid grid-cols-2 gap-3">
-          <div><p class="text-xs text-gray-400">Job Title</p><p class="text-sm font-semibold text-gray-700" id="wd-p-title">–</p></div>
-          <div><p class="text-xs text-gray-400">Start Date</p><p class="text-sm font-semibold text-gray-700" id="wd-p-start">–</p></div>
-          <div><p class="text-xs text-gray-400">Pay Type</p><p class="text-sm font-semibold text-gray-700" id="wd-p-paytype">–</p></div>
-          <div><p class="text-xs text-gray-400">Compensation</p><p class="text-sm font-bold text-emerald-700" id="wd-p-comp">–</p></div>
+          <div><p class="text-xs text-gray-400">Job Title</p><p class="text-sm font-semibold text-gray-700" id="wd-p-title">\u2013</p></div>
+          <div><p class="text-xs text-gray-400">Start Date</p><p class="text-sm font-semibold text-gray-700" id="wd-p-start">\u2013</p></div>
+          <div><p class="text-xs text-gray-400">Pay Type</p><p class="text-sm font-semibold text-gray-700" id="wd-p-paytype">\u2013</p></div>
+          <div><p class="text-xs text-gray-400">Compensation</p><p class="text-sm font-bold text-emerald-700" id="wd-p-comp">\u2013</p></div>
         </div>
       </div>
       <!-- Notes -->
       <div id="wd-p-notes-block" class="hidden bg-yellow-50 rounded-2xl p-4">
         <p class="text-xs font-bold text-yellow-600 uppercase tracking-wider mb-2">Notes</p>
-        <p class="text-sm text-gray-700" id="wd-p-notes">–</p>
+        <p class="text-sm text-gray-700" id="wd-p-notes">\u2013</p>
       </div>
     </div>
 
@@ -12416,9 +12416,9 @@ function getAdminHTML(): string {
       <div class="bg-white border-2 border-gray-200 rounded-2xl p-4" id="wd-s-current-card">
         <div class="flex items-center justify-between mb-3">
           <p class="text-xs font-bold text-gray-500 uppercase tracking-wider">Current Status</p>
-          <span id="wd-s-current-badge" class="text-xs px-3 py-1 rounded-full font-bold">–</span>
+          <span id="wd-s-current-badge" class="text-xs px-3 py-1 rounded-full font-bold">\u2013</span>
         </div>
-        <p class="text-sm text-gray-600" id="wd-s-since">–</p>
+        <p class="text-sm text-gray-600" id="wd-s-since">\u2013</p>
       </div>
 
       <!-- Change status form -->
@@ -12468,7 +12468,7 @@ function getAdminHTML(): string {
               </span>
               <div>
                 <p class="text-sm font-bold text-gray-800">Suspended</p>
-                <p class="text-xs text-gray-400">Temporarily removed from work — clocks out immediately</p>
+                <p class="text-xs text-gray-400">Temporarily removed from work \u2014 clocks out immediately</p>
               </div>
             </button>
             <button onclick="selectWorkerStatus('terminated')" id="wds-terminated"
@@ -12478,7 +12478,7 @@ function getAdminHTML(): string {
               </span>
               <div>
                 <p class="text-sm font-bold text-gray-800">Terminated</p>
-                <p class="text-xs text-gray-400">Employment ended — access revoked immediately</p>
+                <p class="text-xs text-gray-400">Employment ended \u2014 access revoked immediately</p>
               </div>
             </button>
           </div>
@@ -12525,7 +12525,7 @@ function getAdminHTML(): string {
           <i class="fas fa-id-card text-amber-500 text-2xl"></i>
           <div>
             <p class="text-xs text-gray-400">License Number</p>
-            <p class="text-sm font-bold text-gray-800" id="wd-l-number">–</p>
+            <p class="text-sm font-bold text-gray-800" id="wd-l-number">\u2013</p>
           </div>
         </div>
       </div>
@@ -12553,7 +12553,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<!-- ── Edit Worker Modal ─────────────────────────────────────────────────── -->
+<!-- \u2500\u2500 Edit Worker Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <div id="edit-worker-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 z-[60]">
   <div class="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[92vh] overflow-y-auto">
     <div class="sticky top-0 bg-white border-b px-6 py-4 flex items-center justify-between rounded-t-2xl z-10">
@@ -12710,7 +12710,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<!-- ── Session Detail Modal ────────────────────────────────────────── -->
+<!-- \u2500\u2500 Session Detail Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <div id="session-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" onclick="if(event.target===this)closeSessionModal()">
   <div class="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm"></div>
   <div class="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden">
@@ -12729,7 +12729,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<!-- ── Session Edit Modal ──────────────────────────────────────────────── -->
+<!-- \u2500\u2500 Session Edit Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <div id="session-edit-modal" class="hidden fixed inset-0 z-[70] flex items-center justify-center p-4" onclick="if(event.target===this)closeSessionEditModal()">
   <div class="absolute inset-0 bg-black bg-opacity-60 backdrop-blur-sm"></div>
   <div class="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
@@ -12761,7 +12761,7 @@ function getAdminHTML(): string {
         <div class="flex flex-wrap gap-1.5 mt-2">
           <button onclick="setVal('sem-reason','Worker forgot to clock out')" class="text-xs bg-gray-100 text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-200">Forgot clock-out</button>
           <button onclick="setVal('sem-reason','GPS auto-clockout was incorrect')" class="text-xs bg-gray-100 text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-200">GPS error</button>
-          <button onclick="setVal('sem-reason','Worker dispute — time corrected')" class="text-xs bg-gray-100 text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-200">Worker dispute</button>
+          <button onclick="setVal('sem-reason','Worker dispute \u2014 time corrected')" class="text-xs bg-gray-100 text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-200">Worker dispute</button>
           <button onclick="setVal('sem-reason','Payroll correction')" class="text-xs bg-gray-100 text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-200">Payroll fix</button>
         </div>
       </div>
@@ -12776,7 +12776,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<!-- ── Day Detail Modal ────────────────────────────────────────────── -->
+<!-- \u2500\u2500 Day Detail Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <div id="day-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" onclick="if(event.target===this)closeDayModal()">
   <div class="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm"></div>
   <div class="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden">
@@ -12797,7 +12797,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<!-- ── Admin Clock-Out Confirmation Modal ─────────────────────────────── -->
+<!-- \u2500\u2500 Admin Clock-Out Confirmation Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <div id="admin-clockout-modal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4" onclick="if(event.target===this)closeAdminClockoutModal()">
   <div class="absolute inset-0 bg-black bg-opacity-60 backdrop-blur-sm"></div>
   <div class="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
@@ -12826,7 +12826,7 @@ function getAdminHTML(): string {
         <div class="flex flex-wrap gap-1.5">
           <button onclick="pickAcoReason('Worker left the job site')" class="text-xs bg-orange-50 text-orange-700 border border-orange-300 px-2.5 py-1.5 rounded-lg hover:bg-orange-100 font-medium transition-colors"><i class="fas fa-walking mr-1"></i>Left site</button>
           <button onclick="pickAcoReason('Worker forgot to clock out')" class="text-xs bg-yellow-50 text-yellow-700 border border-yellow-300 px-2.5 py-1.5 rounded-lg hover:bg-yellow-100 font-medium transition-colors"><i class="fas fa-clock mr-1"></i>Forgot to clock out</button>
-          <button onclick="pickAcoReason('No GPS signal — admin action')" class="text-xs bg-blue-50 text-blue-700 border border-blue-300 px-2.5 py-1.5 rounded-lg hover:bg-blue-100 font-medium transition-colors"><i class="fas fa-map-marker-slash mr-1"></i>No GPS</button>
+          <button onclick="pickAcoReason('No GPS signal \u2014 admin action')" class="text-xs bg-blue-50 text-blue-700 border border-blue-300 px-2.5 py-1.5 rounded-lg hover:bg-blue-100 font-medium transition-colors"><i class="fas fa-map-marker-slash mr-1"></i>No GPS</button>
           <button onclick="pickAcoReason('End of work day')" class="text-xs bg-gray-100 text-gray-700 border border-gray-300 px-2.5 py-1.5 rounded-lg hover:bg-gray-200 font-medium transition-colors"><i class="fas fa-sun mr-1"></i>End of day</button>
           <button onclick="pickAcoReason('Worker left geofence area')" class="text-xs bg-purple-50 text-purple-700 border border-purple-300 px-2.5 py-1.5 rounded-lg hover:bg-purple-100 font-medium transition-colors"><i class="fas fa-map-marked-alt mr-1"></i>Left geofence</button>
           <button onclick="pickAcoReason('No-show / absent')" class="text-xs bg-rose-50 text-rose-700 border border-rose-300 px-2.5 py-1.5 rounded-lg hover:bg-rose-100 font-medium transition-colors"><i class="fas fa-user-slash mr-1"></i>No-show</button>
@@ -12855,7 +12855,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<!-- ── Admin Bulk Drift Clock-Out Confirmation ─────────────────────────── -->
+<!-- \u2500\u2500 Admin Bulk Drift Clock-Out Confirmation \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <div id="bulk-clockout-modal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4" onclick="if(event.target===this)closeBulkClockoutModal()">
   <div class="absolute inset-0 bg-black bg-opacity-60 backdrop-blur-sm"></div>
   <div class="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
@@ -12863,7 +12863,7 @@ function getAdminHTML(): string {
       <div class="w-14 h-14 bg-white bg-opacity-20 rounded-full flex items-center justify-center mx-auto mb-3">
         <i class="fas fa-map-marker-slash text-white text-2xl"></i>
       </div>
-      <h2 class="text-white text-lg font-bold">Clock Out All — Left Site</h2>
+      <h2 class="text-white text-lg font-bold">Clock Out All \u2014 Left Site</h2>
       <p id="bco-label" class="text-orange-100 text-sm mt-1"></p>
     </div>
     <div class="p-6 space-y-4">
@@ -12879,7 +12879,7 @@ function getAdminHTML(): string {
   </div>
 </div>
 
-<!-- ── Delete Worker Confirmation Modal ───────────────────────────────────── -->
+<!-- \u2500\u2500 Delete Worker Confirmation Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
 <div id="delete-worker-modal" class="hidden fixed inset-0 z-[70] flex items-center justify-center p-4" onclick="if(event.target===this)closeDeleteWorkerModal()">
   <div class="absolute inset-0 bg-black bg-opacity-60 backdrop-blur-sm"></div>
   <div class="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
@@ -12919,7 +12919,7 @@ function getAdminHTML(): string {
 </html>`
 }
 
-// ─── LEGAL PAGES (required by Intuit/QuickBooks App Partner Program) ─────────
+// \u2500\u2500\u2500 LEGAL PAGES (required by Intuit/QuickBooks App Partner Program) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 app.get('/privacy', (c) => {
   return c.html(`<!DOCTYPE html>
@@ -12927,7 +12927,7 @@ app.get('/privacy', (c) => {
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Privacy Policy — ClockInProof</title>
+  <title>Privacy Policy \u2014 ClockInProof</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-50 text-gray-800">
@@ -12956,7 +12956,7 @@ app.get('/privacy', (c) => {
           <li><strong>Worker data:</strong> Name, phone number, PIN, job title, start date, emergency contact, driver's licence (optional)</li>
           <li><strong>Location data:</strong> GPS coordinates at clock-in, clock-out, and periodic pings during active shifts (used solely for fraud prevention and timesheet accuracy)</li>
           <li><strong>Work session data:</strong> Clock-in/out times, hours worked, job location, session type</li>
-          <li><strong>Device data:</strong> A randomly-generated browser token stored in your phone's local storage. This is <strong>not</strong> biometric data — it cannot identify you as a person. It is used solely to verify that clock-in activity originates from the device you registered with. You give explicit informed consent before this token is recorded. You may request a device reset from your employer at any time.</li>
+          <li><strong>Device data:</strong> A randomly-generated browser token stored in your phone's local storage. This is <strong>not</strong> biometric data \u2014 it cannot identify you as a person. It is used solely to verify that clock-in activity originates from the device you registered with. You give explicit informed consent before this token is recorded. You may request a device reset from your employer at any time.</li>
           <li><strong>Employer/admin data:</strong> Business name, email, phone, payroll settings, Twilio and QuickBooks integration credentials</li>
         </ul>
       </section>
@@ -12982,7 +12982,7 @@ app.get('/privacy', (c) => {
           <li>We use this access solely to create <strong>TimeActivity</strong> records (employee hours) in your QB company</li>
           <li>We do not read, modify, or delete any financial records, invoices, bills, or bank data</li>
           <li>OAuth tokens are stored encrypted in our Cloudflare D1 database and never shared with third parties</li>
-          <li>You can disconnect at any time via Settings → QuickBooks → Disconnect, which immediately revokes our access</li>
+          <li>You can disconnect at any time via Settings \u2192 QuickBooks \u2192 Disconnect, which immediately revokes our access</li>
         </ul>
       </section>
 
@@ -12990,11 +12990,11 @@ app.get('/privacy', (c) => {
         <h2 class="text-lg font-bold text-gray-800 mb-2">5. Data Sharing</h2>
         <p>We do not sell, rent, or trade your personal information. We share data only with:</p>
         <ul class="list-disc pl-5 space-y-1 mt-2">
-          <li><strong>Cloudflare</strong> — infrastructure provider (Workers, D1 database, Pages hosting)</li>
-          <li><strong>Twilio</strong> — SMS delivery for worker invitations and notifications</li>
-          <li><strong>Intuit/QuickBooks</strong> — only when you explicitly enable the QB integration</li>
-          <li><strong>Resend</strong> — email delivery for payroll summaries</li>
-          <li><strong>Your accountant</strong> — payroll reports sent at your explicit request</li>
+          <li><strong>Cloudflare</strong> \u2014 infrastructure provider (Workers, D1 database, Pages hosting)</li>
+          <li><strong>Twilio</strong> \u2014 SMS delivery for worker invitations and notifications</li>
+          <li><strong>Intuit/QuickBooks</strong> \u2014 only when you explicitly enable the QB integration</li>
+          <li><strong>Resend</strong> \u2014 email delivery for payroll summaries</li>
+          <li><strong>Your accountant</strong> \u2014 payroll reports sent at your explicit request</li>
         </ul>
       </section>
 
@@ -13022,16 +13022,16 @@ app.get('/privacy', (c) => {
       <section>
         <h2 class="text-lg font-bold text-gray-800 mb-2">8a. Device Verification &amp; Anti-Fraud Technology</h2>
         <p class="mb-2"><strong>What it is:</strong> ClockInProof uses a randomly-generated browser token ("device token") stored in your phone's browser local storage to verify that clock-in and clock-out activity originates from your registered device. This prevents "buddy punching" (a third party clocking in on your behalf).</p>
-        <p class="mb-2"><strong>What it is NOT:</strong> This is not biometric data. It does not capture fingerprints, facial features, voice patterns, or any physical characteristic. It is a string of random letters and numbers — similar to how a website remembers you are logged in.</p>
+        <p class="mb-2"><strong>What it is NOT:</strong> This is not biometric data. It does not capture fingerprints, facial features, voice patterns, or any physical characteristic. It is a string of random letters and numbers \u2014 similar to how a website remembers you are logged in.</p>
         <p class="mb-2"><strong>Consent:</strong> Workers are shown a clear, plain-language consent screen the first time they register on a device. Clock-in is not possible without consent. This satisfies the requirements of:</p>
         <ul class="list-disc pl-5 space-y-1 mb-2">
-          <li><strong>Canada — PIPEDA</strong> (Principle 3: Consent; Principle 4.8: Openness)</li>
-          <li><strong>Ontario</strong> — Employment Standards Act, Electronic Monitoring Policy requirements</li>
-          <li><strong>Alberta/BC — PIPA</strong> — Employer consent for employee personal information collection</li>
-          <li><strong>Quebec — Law 25</strong> — Transparency and consent obligations</li>
-          <li><strong>US — CCPA (California)</strong> — Notice at collection; no biometric data is collected</li>
-          <li><strong>Illinois BIPA</strong> — Does not apply (no biometric identifiers collected)</li>
-          <li><strong>US Federal — ECPA</strong> — Monitoring disclosed to employees in advance</li>
+          <li><strong>Canada \u2014 PIPEDA</strong> (Principle 3: Consent; Principle 4.8: Openness)</li>
+          <li><strong>Ontario</strong> \u2014 Employment Standards Act, Electronic Monitoring Policy requirements</li>
+          <li><strong>Alberta/BC \u2014 PIPA</strong> \u2014 Employer consent for employee personal information collection</li>
+          <li><strong>Quebec \u2014 Law 25</strong> \u2014 Transparency and consent obligations</li>
+          <li><strong>US \u2014 CCPA (California)</strong> \u2014 Notice at collection; no biometric data is collected</li>
+          <li><strong>Illinois BIPA</strong> \u2014 Does not apply (no biometric identifiers collected)</li>
+          <li><strong>US Federal \u2014 ECPA</strong> \u2014 Monitoring disclosed to employees in advance</li>
         </ul>
         <p class="mb-2"><strong>Data minimization:</strong> The token is stored only in the database record for the worker. It is never shared with third parties, never used for purposes other than clock-in verification, and never combined with browsing data.</p>
         <p class="mb-2"><strong>Right to reset:</strong> Workers may request a device reset at any time through the worker app ("I have a new phone"). The employer is notified and must manually approve the reset. Workers retain full control of this process.</p>
@@ -13046,7 +13046,7 @@ app.get('/privacy', (c) => {
     </div>
 
     <div class="mt-12 pt-6 border-t border-gray-200 text-xs text-gray-400 flex justify-between">
-      <span>© 2026 ClockInProof / Noweis Inc. — Ontario, Canada</span>
+      <span>\u00A9 2026 ClockInProof / Noweis Inc. \u2014 Ontario, Canada</span>
       <a href="/terms" class="text-indigo-500 underline">Terms of Service</a>
     </div>
   </div>
@@ -13060,7 +13060,7 @@ app.get('/terms', (c) => {
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Terms of Service — ClockInProof</title>
+  <title>Terms of Service \u2014 ClockInProof</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-50 text-gray-800">
@@ -13114,7 +13114,7 @@ app.get('/terms', (c) => {
         <ul class="list-disc pl-5 space-y-1">
           <li>Employers must obtain proper consent from employees before collecting GPS location data</li>
           <li>Employers are responsible for compliance with applicable employment standards legislation (ESA Ontario, Canada Labour Code, etc.)</li>
-          <li>Payroll calculations provided by ClockInProof are for reference only — employers are responsible for final payroll accuracy</li>
+          <li>Payroll calculations provided by ClockInProof are for reference only \u2014 employers are responsible for final payroll accuracy</li>
           <li>Employers must not use the Service to discriminate, harass, or unfairly monitor employees</li>
         </ul>
       </section>
@@ -13155,7 +13155,7 @@ app.get('/terms', (c) => {
     </div>
 
     <div class="mt-12 pt-6 border-t border-gray-200 text-xs text-gray-400 flex justify-between">
-      <span>© 2026 ClockInProof / Noweis Inc. — Ontario, Canada</span>
+      <span>\u00A9 2026 ClockInProof / Noweis Inc. \u2014 Ontario, Canada</span>
       <a href="/privacy" class="text-indigo-500 underline">Privacy Policy</a>
     </div>
   </div>
@@ -13163,33 +13163,33 @@ app.get('/terms', (c) => {
 </html>`)
 })
 
-// ─── LEGAL ALIAS ROUTES (for Intuit App Store compliance) ────────────────────
-// /legal/privacy → same as /privacy
-// /legal/eula    → same as /terms
+// \u2500\u2500\u2500 LEGAL ALIAS ROUTES (for Intuit App Store compliance) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// /legal/privacy \u2192 same as /privacy
+// /legal/eula    \u2192 same as /terms
 app.get('/legal/privacy', (c) => c.redirect('/privacy', 301))
 app.get('/legal/eula',    (c) => c.redirect('/terms', 301))
 app.get('/legal/terms',   (c) => c.redirect('/terms', 301))
 
-// ─── SUPER ADMIN HTML ─────────────────────────────────────────────────────────
+// --- SUPER ADMIN HTML ---------------------------------------------------------
 function getSuperAdminHTML(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ClockInProof — Super Admin</title>
+<title>ClockInProof -- Super Admin</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0f172a;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;height:100vh;overflow:hidden}
 a{color:inherit;text-decoration:none}
-/* ── Layout ── */
+/* -- Layout -- */
 #login-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#0f172a 0%,#1e1b4b 100%)}
 #app{display:none;height:100vh;display:grid;grid-template-rows:56px 1fr;grid-template-columns:220px 1fr}
 #topbar{grid-column:1/-1;background:#0f172a;border-bottom:1px solid #1e293b;display:flex;align-items:center;justify-content:space-between;padding:0 20px;z-index:50}
 #sidebar{background:#0c1322;border-right:1px solid #1e293b;overflow-y:auto;display:flex;flex-direction:column;padding:12px 8px;transition:transform .25s ease}
 #content{overflow-y:auto;background:#0f172a}
-/* ── Mobile sidebar ── */
+/* -- Mobile sidebar -- */
 #sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:90;backdrop-filter:blur(2px)}
 #hamburger{display:none;background:none;border:none;color:#e2e8f0;font-size:20px;cursor:pointer;padding:4px 8px;margin-right:4px}
 @media(max-width:768px){
@@ -13198,18 +13198,18 @@ a{color:inherit;text-decoration:none}
   #sidebar.open{transform:translateX(0)}
   #hamburger{display:flex;align-items:center;justify-content:center}
 }
-/* ── Cards & common ── */
+/* -- Cards & common -- */
 .card{background:#1e293b;border:1px solid #334155;border-radius:12px}
 .stat-card{background:linear-gradient(135deg,#1e293b,#0f172a);border:1px solid #334155;border-radius:12px;padding:20px}
 .section-header{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#475569;padding:8px 10px 4px}
-/* ── Sidebar nav ── */
+/* -- Sidebar nav -- */
 .nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;font-size:13px;font-weight:500;color:#94a3b8;cursor:pointer;transition:all .15s;border:none;background:transparent;width:100%;text-align:left}
 .nav-item:hover{background:#1e293b;color:#e2e8f0}
 .nav-item.active{background:#312e81;color:#a5b4fc}
 .nav-item i{width:16px;text-align:center;font-size:14px}
 .nav-badge{margin-left:auto;background:#ef4444;color:#fff;border-radius:20px;padding:1px 7px;font-size:10px;font-weight:700}
 .nav-badge.green{background:#059669}
-/* ── Badges / pills ── */
+/* -- Badges / pills -- */
 .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase}
 .badge-active{background:#065f46;color:#6ee7b7}
 .badge-trial{background:#78350f;color:#fcd34d}
@@ -13218,31 +13218,31 @@ a{color:inherit;text-decoration:none}
 .badge-starter{background:#1e3a5f;color:#93c5fd}
 .badge-growth{background:#3b1f6b;color:#c4b5fd}
 .badge-pro{background:#14532d;color:#86efac}
-/* ── Buttons ── */
+/* -- Buttons -- */
 .btn{border-radius:8px;padding:7px 16px;font-weight:600;font-size:13px;cursor:pointer;border:none;transition:all .15s;display:inline-flex;align-items:center;gap:6px}
 .btn-primary{background:#4f46e5;color:#fff}.btn-primary:hover{background:#4338ca}
 .btn-danger{background:#dc2626;color:#fff;padding:5px 12px;font-size:12px}.btn-danger:hover{background:#b91c1c}
 .btn-success{background:#059669;color:#fff;padding:5px 12px;font-size:12px}.btn-success:hover{background:#047857}
 .btn-ghost{background:#1e293b;color:#94a3b8;padding:5px 12px;font-size:12px;border:1px solid #334155}.btn-ghost:hover{background:#334155;color:#e2e8f0}
 .btn-warning{background:#d97706;color:#fff;padding:5px 12px;font-size:12px}.btn-warning:hover{background:#b45309}
-/* ── Inputs ── */
+/* -- Inputs -- */
 .input{background:#0f172a;border:1px solid #475569;color:#e2e8f0;border-radius:8px;padding:8px 12px;width:100%;outline:none;font-size:13px}
 .input:focus{border-color:#4f46e5}
 select.input option{background:#1e293b}
-/* ── Table ── */
+/* -- Table -- */
 .tbl{width:100%;border-collapse:collapse;font-size:13px}
 .tbl th{text-align:left;padding:10px 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#64748b;border-bottom:1px solid #334155;white-space:nowrap}
 .tbl td{padding:10px 14px;border-bottom:1px solid #1e293b;vertical-align:middle}
 .tbl tr:hover td{background:#1e293b55}
-/* ── Tab pages ── */
+/* -- Tab pages -- */
 .page{display:none;padding:24px}
 .page.active{display:block}
-/* ── Modal ── */
+/* -- Modal -- */
 .modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;align-items:center;justify-content:center;padding:16px}
 .modal-bg.open{display:flex}
-/* ── Toast ── */
+/* -- Toast -- */
 #toast{position:fixed;bottom:24px;right:24px;background:#1e293b;border:1px solid #4f46e5;color:#e2e8f0;padding:12px 20px;border-radius:10px;z-index:9999;font-size:14px;box-shadow:0 4px 24px rgba(0,0,0,.5);display:none}
-/* ── Misc ── */
+/* -- Misc -- */
 .live-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;animation:pulse 1.5s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 .empty-state{text-align:center;padding:48px 16px;color:#475569}
@@ -13254,7 +13254,7 @@ select.input option{background:#1e293b}
 </head>
 <body>
 
-<!-- ══════════════════════════ LOGIN SCREEN ══════════════════════════ -->
+<!-- -------------------------- LOGIN SCREEN -------------------------- -->
 <div id="login-screen">
   <div class="card" style="padding:40px;width:100%;max-width:380px">
     <div style="text-align:center;margin-bottom:32px">
@@ -13265,15 +13265,15 @@ select.input option{background:#1e293b}
       <p style="color:#64748b;font-size:13px;margin-top:4px">ClockInProof Platform Control</p>
     </div>
     <div id="login-error" style="display:none;background:#7f1d1d33;border:1px solid #dc2626;color:#fca5a5;border-radius:8px;padding:10px 14px;font-size:13px;margin-bottom:16px"></div>
-    <input type="password" id="super-pin" class="input" style="text-align:center;font-size:22px;letter-spacing:8px;margin-bottom:14px" placeholder="••••••••" maxlength="30" autocomplete="current-password">
+    <input type="password" id="super-pin" class="input" style="text-align:center;font-size:22px;letter-spacing:8px;margin-bottom:14px" placeholder="********" maxlength="30" autocomplete="current-password">
     <button id="login-btn" class="btn btn-primary" style="width:100%;justify-content:center;padding:10px" onclick="doSuperLogin()">
       <i class="fas fa-unlock-keyhole"></i> Access Portal
     </button>
-    <p style="text-align:center;font-size:11px;color:#334155;margin-top:16px">Protected — authorized personnel only</p>
+    <p style="text-align:center;font-size:11px;color:#334155;margin-top:16px">Protected -- authorized personnel only</p>
   </div>
 </div>
 
-<!-- ══════════════════════════ APP SHELL ══════════════════════════ -->
+<!-- -------------------------- APP SHELL -------------------------- -->
 <div id="app" style="display:none">
 
   <!-- TOP BAR -->
@@ -13287,7 +13287,7 @@ select.input option{background:#1e293b}
       <span class="pill badge-pro" style="font-size:10px">SUPER ADMIN</span>
     </div>
     <div style="display:flex;align-items:center;gap:10px">
-      <span style="font-size:12px;color:#475569">Refreshed: <span id="last-refresh">—</span></span>
+      <span style="font-size:12px;color:#475569">Refreshed: <span id="last-refresh">--</span></span>
       <button class="btn btn-ghost" onclick="refreshCurrent()"><i class="fas fa-rotate-right"></i></button>
       <button class="btn btn-danger" onclick="doLogout()" style="padding:6px 14px"><i class="fas fa-sign-out-alt"></i> Logout</button>
     </div>
@@ -13363,7 +13363,7 @@ select.input option{background:#1e293b}
   <!-- CONTENT AREA -->
   <div id="content">
 
-    <!-- ── OVERVIEW ──────────────────────────────────────── -->
+    <!-- -- OVERVIEW ---------------------------------------- -->
     <div class="page active" id="page-overview">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
         <div>
@@ -13375,22 +13375,22 @@ select.input option{background:#1e293b}
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px">
         <div class="stat-card">
           <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px"><i class="fas fa-building mr-1"></i>Tenants</div>
-          <div style="font-size:32px;font-weight:800;color:#fff" id="ov-tenants">—</div>
+          <div style="font-size:32px;font-weight:800;color:#fff" id="ov-tenants">--</div>
           <div style="font-size:11px;color:#475569;margin-top:2px">active accounts</div>
         </div>
         <div class="stat-card">
           <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px"><i class="fas fa-users mr-1"></i>Workers</div>
-          <div style="font-size:32px;font-weight:800;color:#34d399" id="ov-workers">—</div>
+          <div style="font-size:32px;font-weight:800;color:#34d399" id="ov-workers">--</div>
           <div style="font-size:11px;color:#475569;margin-top:2px">total active</div>
         </div>
         <div class="stat-card">
           <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px"><i class="fas fa-circle live-dot mr-1"></i>Live Now</div>
-          <div style="font-size:32px;font-weight:800;color:#facc15" id="ov-live">—</div>
+          <div style="font-size:32px;font-weight:800;color:#facc15" id="ov-live">--</div>
           <div style="font-size:11px;color:#475569;margin-top:2px">clocked in</div>
         </div>
         <div class="stat-card">
           <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px"><i class="fas fa-calendar-check mr-1"></i>Sessions</div>
-          <div style="font-size:32px;font-weight:800;color:#818cf8" id="ov-sessions">—</div>
+          <div style="font-size:32px;font-weight:800;color:#818cf8" id="ov-sessions">--</div>
           <div style="font-size:11px;color:#475569;margin-top:2px">all time</div>
         </div>
       </div>
@@ -13410,7 +13410,7 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
-    <!-- ── LIVE ACTIVITY ──────────────────────────────────── -->
+    <!-- -- LIVE ACTIVITY ------------------------------------ -->
     <div class="page" id="page-live">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
         <div>
@@ -13437,7 +13437,7 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
-    <!-- ── ALL TENANTS ──────────────────────────────────── -->
+    <!-- -- ALL TENANTS ------------------------------------ -->
     <div class="page" id="page-tenants">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
         <div>
@@ -13529,7 +13529,7 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
-    <!-- ── ADD TENANT ──────────────────────────────────── -->
+    <!-- -- ADD TENANT ------------------------------------ -->
     <div class="page" id="page-add-tenant">
       <div style="max-width:680px">
         <h1 style="font-size:20px;font-weight:800;color:#fff;margin-bottom:6px">Create New Tenant</h1>
@@ -13563,7 +13563,7 @@ select.input option{background:#1e293b}
             <div>
               <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Plan</label>
               <select id="new-plan" class="input">
-                <option value="">Loading plans…</option>
+                <option value="">Loading plans...</option>
               </select>
             </div>
             <div>
@@ -13585,7 +13585,7 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
-    <!-- ── ALL SESSIONS ──────────────────────────────────── -->
+    <!-- -- ALL SESSIONS ------------------------------------ -->
     <div class="page" id="page-sessions">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
         <div>
@@ -13618,7 +13618,7 @@ select.input option{background:#1e293b}
         </table>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;color:#64748b;font-size:12px">
-        <span id="sess-info">—</span>
+        <span id="sess-info">--</span>
         <div style="display:flex;gap:6px">
           <button class="btn btn-ghost" id="sess-prev" onclick="changeSessPage(-1)"><i class="fas fa-chevron-left"></i> Prev</button>
           <button class="btn btn-ghost" id="sess-next" onclick="changeSessPage(1)">Next <i class="fas fa-chevron-right"></i></button>
@@ -13626,7 +13626,7 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
-    <!-- ── REVENUE / MRR ──────────────────────────────────── -->
+    <!-- -- REVENUE / MRR ------------------------------------ -->
     <div class="page" id="page-revenue">
       <div style="margin-bottom:20px">
         <h1 style="font-size:20px;font-weight:800;color:#fff">Revenue & MRR</h1>
@@ -13635,16 +13635,16 @@ select.input option{background:#1e293b}
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:20px">
         <div class="stat-card">
           <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Total MRR</div>
-          <div style="font-size:32px;font-weight:800;color:#34d399">$<span id="rev-mrr">—</span></div>
+          <div style="font-size:32px;font-weight:800;color:#34d399">$<span id="rev-mrr">--</span></div>
           <div style="font-size:11px;color:#475569;margin-top:2px">per month</div>
         </div>
         <div class="stat-card">
           <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Paying Tenants</div>
-          <div style="font-size:32px;font-weight:800;color:#fff" id="rev-tenants">—</div>
+          <div style="font-size:32px;font-weight:800;color:#fff" id="rev-tenants">--</div>
         </div>
         <div class="stat-card">
           <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">ARR Estimate</div>
-          <div style="font-size:32px;font-weight:800;color:#818cf8">$<span id="rev-arr">—</span></div>
+          <div style="font-size:32px;font-weight:800;color:#818cf8">$<span id="rev-arr">--</span></div>
           <div style="font-size:11px;color:#475569;margin-top:2px">annualized</div>
         </div>
       </div>
@@ -13668,12 +13668,12 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
-    <!-- ── PLANS & PRICING ──────────────────────────────────── -->
+    <!-- -- PLANS & PRICING ------------------------------------ -->
     <div class="page" id="page-plans">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">
         <div>
           <h1 style="font-size:20px;font-weight:800;color:#fff">Plans & Pricing</h1>
-          <p style="color:#64748b;font-size:13px">Edit plan name, price, features, worker limit, and Stripe Price ID — changes go live instantly on the public pricing page and signup flow.</p>
+          <p style="color:#64748b;font-size:13px">Edit plan name, price, features, worker limit, and Stripe Price ID -- changes go live instantly on the public pricing page and signup flow.</p>
         </div>
         <a href="https://clockinproof.com/landing#pricing" target="_blank" class="btn btn-ghost" style="font-size:12px"><i class="fas fa-external-link-alt"></i> Preview Public Page</a>
       </div>
@@ -13688,8 +13688,8 @@ select.input option{background:#1e293b}
         <p style="color:#64748b;font-size:12px;margin:0">
           <i class="fas fa-info-circle" style="color:#818cf8;margin-right:6px"></i>
           <strong style="color:#94a3b8">How this works:</strong>
-          Editing a plan updates the public landing page, the signup page, and max_workers for all existing tenants on that plan — instantly.
-          The <strong style="color:#94a3b8">Stripe Price ID</strong> field is for reference only — it must match the price you created in your Stripe dashboard.
+          Editing a plan updates the public landing page, the signup page, and max_workers for all existing tenants on that plan -- instantly.
+          The <strong style="color:#94a3b8">Stripe Price ID</strong> field is for reference only -- it must match the price you created in your Stripe dashboard.
           To change what Stripe bills a customer, update their subscription in the Stripe dashboard and the webhook will sync the plan back here automatically.
         </p>
       </div>
@@ -13700,7 +13700,7 @@ select.input option{background:#1e293b}
       <div class="card" style="width:100%;max-width:540px;padding:28px;max-height:90vh;overflow-y:auto">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
           <h3 style="font-size:16px;font-weight:700;color:#fff">Edit Plan</h3>
-          <button onclick="closePlanModal()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:18px">✕</button>
+          <button onclick="closePlanModal()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:18px">\u2715</button>
         </div>
 
         <input type="hidden" id="plan-edit-id">
@@ -13721,7 +13721,7 @@ select.input option{background:#1e293b}
             </div>
           </div>
           <div>
-            <label style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:5px">Stripe Price ID <span style="color:#475569;font-size:10px">from Stripe dashboard → Products</span></label>
+            <label style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:5px">Stripe Price ID <span style="color:#475569;font-size:10px">from Stripe dashboard \u2192 Products</span></label>
             <input id="plan-edit-stripe-id" class="input" placeholder="price_1T6kPUGsh3cS5lan..." style="font-family:monospace;font-size:12px">
           </div>
           <div>
@@ -13744,7 +13744,7 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
-    <!-- ── EMAIL & ALERTS ──────────────────────────────────── -->
+    <!-- -- EMAIL & ALERTS ------------------------------------ -->
     <div class="page" id="page-email">
       <div style="margin-bottom:20px">
         <h1 style="font-size:20px;font-weight:800;color:#fff">Email & Alerts</h1>
@@ -13756,11 +13756,11 @@ select.input option{background:#1e293b}
           <div style="display:flex;flex-direction:column;gap:10px">
             <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
               <span style="font-size:13px;color:#94a3b8">RESEND_API_KEY</span>
-              <span class="pill badge-active">✓ Configured</span>
+              <span class="pill badge-active">\u2713 Configured</span>
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
               <span style="font-size:13px;color:#94a3b8">From Domain</span>
-              <span style="font-size:13px;color:#e2e8f0">clockinproof.com ✓</span>
+              <span style="font-size:13px;color:#e2e8f0">clockinproof.com \u2713</span>
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
               <span style="font-size:13px;color:#94a3b8">DKIM Status</span>
@@ -13809,7 +13809,7 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
-    <!-- ── PLATFORM SETTINGS ──────────────────────────────────── -->
+    <!-- -- PLATFORM SETTINGS ------------------------------------ -->
     <div class="page" id="page-platform">
       <div style="margin-bottom:20px">
         <h1 style="font-size:20px;font-weight:800;color:#fff">Platform Settings</h1>
@@ -13835,7 +13835,7 @@ select.input option{background:#1e293b}
           <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:4px">
             <i class="fas fa-sms" style="color:#818cf8;margin-right:6px"></i>TWILIO SMS
           </h3>
-          <p style="font-size:11px;color:#475569;margin-bottom:14px">Platform SMS credentials — shared across all tenants. Stored as Cloudflare secrets in production.</p>
+          <p style="font-size:11px;color:#475569;margin-bottom:14px">Platform SMS credentials -- shared across all tenants. Stored as Cloudflare secrets in production.</p>
           <div style="display:flex;flex-direction:column;gap:12px">
             <div>
               <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Account SID</label>
@@ -13853,7 +13853,7 @@ select.input option{background:#1e293b}
               <p style="font-size:10px;color:#475569;margin-top:3px">Set as <code style="background:#0f172a;padding:1px 4px;border-radius:3px;color:#a5b4fc">TWILIO_FROM_NUMBER</code> Cloudflare secret</p>
             </div>
             <div>
-              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Messaging Service SID <span style="font-weight:400;text-transform:none">(optional — overrides From Number)</span></label>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Messaging Service SID <span style="font-weight:400;text-transform:none">(optional -- overrides From Number)</span></label>
               <input type="text" id="sp-twilio-msgsvc" class="input" placeholder="MGxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
               <p style="font-size:10px;color:#475569;margin-top:3px">Set as <code style="background:#0f172a;padding:1px 4px;border-radius:3px;color:#a5b4fc">TWILIO_MESSAGING_SERVICE</code> Cloudflare secret</p>
             </div>
@@ -13878,7 +13878,7 @@ select.input option{background:#1e293b}
           <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:4px">
             <i class="fas fa-envelope" style="color:#818cf8;margin-right:6px"></i>RESEND EMAIL
           </h3>
-          <p style="font-size:11px;color:#475569;margin-bottom:14px">Platform email credentials — powers all alerts, weekly reports, and invite emails.</p>
+          <p style="font-size:11px;color:#475569;margin-bottom:14px">Platform email credentials -- powers all alerts, weekly reports, and invite emails.</p>
           <div style="display:flex;flex-direction:column;gap:12px">
             <div>
               <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Resend API Key</label>
@@ -13905,7 +13905,7 @@ select.input option{background:#1e293b}
         <div class="card" style="padding:20px;grid-column:1/-1">
           <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:14px">
             <i class="fas fa-link" style="color:#818cf8;margin-right:6px"></i>APP URLs &amp; DOMAIN CONFIGURATION
-            <span style="font-size:10px;font-weight:500;color:#475569;margin-left:8px;text-transform:none">Platform infrastructure — not visible to tenant admins</span>
+            <span style="font-size:10px;font-weight:500;color:#475569;margin-left:8px;text-transform:none">Platform infrastructure -- not visible to tenant admins</span>
           </h3>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
             <div>
@@ -13915,7 +13915,7 @@ select.input option{background:#1e293b}
               <input type="url" id="sp-app-host" class="input" placeholder="https://app.clockinproof.com">
               <p style="font-size:11px;color:#475569;margin-top:4px">
                 <i class="fas fa-info-circle" style="margin-right:4px"></i>
-                In Cloudflare DNS, point <code style="background:#0f172a;padding:1px 5px;border-radius:4px">app.clockinproof.com</code> → this Pages project.
+                In Cloudflare DNS, point <code style="background:#0f172a;padding:1px 5px;border-radius:4px">app.clockinproof.com</code> \u2192 this Pages project.
               </p>
             </div>
             <div>
@@ -13925,17 +13925,17 @@ select.input option{background:#1e293b}
               <input type="url" id="sp-admin-host" class="input" placeholder="https://admin.clockinproof.com">
               <p style="font-size:11px;color:#475569;margin-top:4px">
                 <i class="fas fa-info-circle" style="margin-right:4px"></i>
-                In Cloudflare DNS, point <code style="background:#0f172a;padding:1px 5px;border-radius:4px">admin.clockinproof.com</code> → this Pages project. Alert SMS links use this URL.
+                In Cloudflare DNS, point <code style="background:#0f172a;padding:1px 5px;border-radius:4px">admin.clockinproof.com</code> \u2192 this Pages project. Alert SMS links use this URL.
               </p>
             </div>
           </div>
           <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:12px;margin-top:14px;font-size:12px;color:#64748b">
             <p style="font-weight:700;color:#94a3b8;margin-bottom:8px"><i class="fas fa-lightbulb" style="color:#f59e0b;margin-right:6px"></i>Cloudflare DNS Quick Setup</p>
-            <p>1. Cloudflare Dashboard → <strong style="color:#e2e8f0">clockinproof.com → DNS</strong></p>
-            <p style="margin-top:4px">2. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">app</code> → your Pages URL</p>
-            <p style="margin-top:4px">3. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">admin</code> → your Pages URL</p>
-            <p style="margin-top:4px">4. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">www</code> → your Pages URL (landing page)</p>
-            <p style="margin-top:4px">5. Pages → Custom Domains → add all three subdomains</p>
+            <p>1. Cloudflare Dashboard \u2192 <strong style="color:#e2e8f0">clockinproof.com \u2192 DNS</strong></p>
+            <p style="margin-top:4px">2. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">app</code> \u2192 your Pages URL</p>
+            <p style="margin-top:4px">3. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">admin</code> \u2192 your Pages URL</p>
+            <p style="margin-top:4px">4. Add CNAME: <code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#a5b4fc">www</code> \u2192 your Pages URL (landing page)</p>
+            <p style="margin-top:4px">5. Pages \u2192 Custom Domains \u2192 add all three subdomains</p>
           </div>
           <div style="margin-top:14px;display:flex;gap:10px">
             <button class="btn btn-primary" onclick="savePlatformUrls()"><i class="fas fa-save"></i> Save URLs</button>
@@ -13976,7 +13976,7 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
-    <!-- ── SUPPORT TICKETS ──────────────────────────────────── -->
+    <!-- -- SUPPORT TICKETS ------------------------------------ -->
     <div class="page" id="page-support">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
         <div>
@@ -13989,19 +13989,19 @@ select.input option{background:#1e293b}
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">
         <div class="stat-card" style="padding:14px">
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Open</div>
-          <div style="font-size:28px;font-weight:800;color:#f59e0b" id="tkst-open">—</div>
+          <div style="font-size:28px;font-weight:800;color:#f59e0b" id="tkst-open">--</div>
         </div>
         <div class="stat-card" style="padding:14px">
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">In Progress</div>
-          <div style="font-size:28px;font-weight:800;color:#818cf8" id="tkst-progress">—</div>
+          <div style="font-size:28px;font-weight:800;color:#818cf8" id="tkst-progress">--</div>
         </div>
         <div class="stat-card" style="padding:14px">
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Resolved</div>
-          <div style="font-size:28px;font-weight:800;color:#34d399" id="tkst-resolved">—</div>
+          <div style="font-size:28px;font-weight:800;color:#34d399" id="tkst-resolved">--</div>
         </div>
         <div class="stat-card" style="padding:14px">
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Urgent Open</div>
-          <div style="font-size:28px;font-weight:800;color:#ef4444" id="tkst-urgent">—</div>
+          <div style="font-size:28px;font-weight:800;color:#ef4444" id="tkst-urgent">--</div>
         </div>
       </div>
       <!-- Filter row -->
@@ -14044,12 +14044,12 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
-    <!-- ── TAX COMPLIANCE ─────────────────────────────────────────── -->
+    <!-- -- TAX COMPLIANCE ------------------------------------------- -->
     <div class="page" id="page-tax" style="padding:24px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">
         <div>
           <h1 style="font-size:20px;font-weight:800;color:#fff"><i class="fas fa-file-invoice-dollar" style="color:#818cf8;margin-right:8px"></i>Tax Compliance</h1>
-          <p style="color:#64748b;font-size:13px">Wyoming LLC · Canadian-owned · USD→CAD tracking · Form 5472 / T1135 / FBAR</p>
+          <p style="color:#64748b;font-size:13px">Wyoming LLC \u00B7 Canadian-owned \u00B7 USD\u2192CAD tracking \u00B7 Form 5472 / T1135 / FBAR</p>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <select id="tax-year-select" class="input" style="width:100px" onchange="loadTax()">
@@ -14066,43 +14066,43 @@ select.input option{background:#1e293b}
       <!-- Alert banners -->
       <div id="tax-alert-t1135" style="display:none;background:#7c2d12;border:1px solid #c2410c;border-radius:10px;padding:12px 16px;margin-bottom:12px;color:#fed7aa;font-size:13px">
         <i class="fas fa-exclamation-triangle" style="margin-right:8px;color:#fb923c"></i>
-        <strong>T1135 REQUIRED</strong> — CAD revenue has exceeded $100,000 threshold. You must file T1135 with your Canadian return.
+        <strong>T1135 REQUIRED</strong> -- CAD revenue has exceeded $100,000 threshold. You must file T1135 with your Canadian return.
       </div>
       <div id="tax-alert-fbar" style="display:none;background:#1e3a5f;border:1px solid #2563eb;border-radius:10px;padding:12px 16px;margin-bottom:16px;color:#bfdbfe;font-size:13px">
         <i class="fas fa-university" style="margin-right:8px;color:#60a5fa"></i>
-        <strong>FBAR ALERT</strong> — US account/revenue exceeds $10,000 USD. FBAR (FinCEN 114) filing required by April 15.
+        <strong>FBAR ALERT</strong> -- US account/revenue exceeds $10,000 USD. FBAR (FinCEN 114) filing required by April 15.
       </div>
 
       <!-- KPI cards -->
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px">
         <div class="stat-card">
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">YTD Revenue (USD)</div>
-          <div style="font-size:26px;font-weight:800;color:#34d399" id="tax-ytd-usd">—</div>
+          <div style="font-size:26px;font-weight:800;color:#34d399" id="tax-ytd-usd">--</div>
           <div style="font-size:11px;color:#475569;margin-top:2px">Gross (ECI)</div>
         </div>
         <div class="stat-card">
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">YTD Revenue (CAD)</div>
-          <div style="font-size:26px;font-weight:800;color:#818cf8" id="tax-ytd-cad">—</div>
+          <div style="font-size:26px;font-weight:800;color:#818cf8" id="tax-ytd-cad">--</div>
           <div style="font-size:11px;color:#475569;margin-top:2px">For CRA reporting</div>
         </div>
         <div class="stat-card">
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Stripe Fees (USD)</div>
-          <div style="font-size:26px;font-weight:800;color:#f59e0b" id="tax-fees-usd">—</div>
+          <div style="font-size:26px;font-weight:800;color:#f59e0b" id="tax-fees-usd">--</div>
           <div style="font-size:11px;color:#475569;margin-top:2px">Deductible expense</div>
         </div>
         <div class="stat-card">
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Net Income (USD)</div>
-          <div style="font-size:26px;font-weight:800;color:#e2e8f0" id="tax-net-usd">—</div>
+          <div style="font-size:26px;font-weight:800;color:#e2e8f0" id="tax-net-usd">--</div>
           <div style="font-size:11px;color:#475569;margin-top:2px">After refunds + fees</div>
         </div>
         <div class="stat-card">
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Today's Rate</div>
-          <div style="font-size:26px;font-weight:800;color:#e2e8f0" id="tax-rate-today">—</div>
-          <div style="font-size:11px;color:#475569;margin-top:2px">USD → CAD (BoC)</div>
+          <div style="font-size:26px;font-weight:800;color:#e2e8f0" id="tax-rate-today">--</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px">USD \u2192 CAD (BoC)</div>
         </div>
         <div class="stat-card">
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:4px">Pending Review</div>
-          <div style="font-size:26px;font-weight:800;color:#f87171" id="tax-pending-count">—</div>
+          <div style="font-size:26px;font-weight:800;color:#f87171" id="tax-pending-count">--</div>
           <div style="font-size:11px;color:#475569;margin-top:2px">Unreconciled tx</div>
         </div>
       </div>
@@ -14112,7 +14112,7 @@ select.input option{background:#1e293b}
         <div class="card" style="padding:14px">
           <div style="display:flex;justify-content:space-between;margin-bottom:6px">
             <span style="font-size:12px;font-weight:700;color:#e2e8f0"><i class="fas fa-maple-leaf" style="color:#f87171;margin-right:6px"></i>T1135 Threshold (CAD $100K)</span>
-            <span style="font-size:12px;color:#94a3b8" id="tax-t1135-label">—</span>
+            <span style="font-size:12px;color:#94a3b8" id="tax-t1135-label">--</span>
           </div>
           <div style="background:#1e293b;border-radius:20px;height:8px;overflow:hidden">
             <div id="tax-t1135-bar" style="background:#818cf8;height:100%;width:0%;border-radius:20px;transition:width .5s"></div>
@@ -14122,7 +14122,7 @@ select.input option{background:#1e293b}
         <div class="card" style="padding:14px">
           <div style="display:flex;justify-content:space-between;margin-bottom:6px">
             <span style="font-size:12px;font-weight:700;color:#e2e8f0"><i class="fas fa-university" style="color:#60a5fa;margin-right:6px"></i>FBAR Threshold (USD $10K)</span>
-            <span style="font-size:12px;color:#94a3b8" id="tax-fbar-label">—</span>
+            <span style="font-size:12px;color:#94a3b8" id="tax-fbar-label">--</span>
           </div>
           <div style="background:#1e293b;border-radius:20px;height:8px;overflow:hidden">
             <div id="tax-fbar-bar" style="background:#60a5fa;height:100%;width:0%;border-radius:20px;transition:width .5s"></div>
@@ -14253,11 +14253,11 @@ select.input option{background:#1e293b}
               <span style="font-size:15px;font-weight:700;color:#e2e8f0">Canada-US Tax Treaty</span>
             </div>
             <div style="font-size:12px;color:#94a3b8;line-height:1.8">
-              <div>✅ <strong style="color:#e2e8f0">ECI Income:</strong> Taxed in the US at regular rates — treaty reduces withholding</div>
-              <div>✅ <strong style="color:#e2e8f0">SaaS Revenue:</strong> Generally classified as ECI (business income)</div>
-              <div>✅ <strong style="color:#e2e8f0">Withholding Rate:</strong> Reduced from 30% → 0% for ECI with ITIN/W-8BEN-E</div>
-              <div>✅ <strong style="color:#e2e8f0">Foreign Tax Credit:</strong> US taxes paid can offset Canadian taxes owing</div>
-              <div>⚠️ <strong style="color:#fcd34d">ITIN Required:</strong> Apply via Form W-7 if not already obtained</div>
+              <div>[OK] <strong style="color:#e2e8f0">ECI Income:</strong> Taxed in the US at regular rates -- treaty reduces withholding</div>
+              <div>[OK] <strong style="color:#e2e8f0">SaaS Revenue:</strong> Generally classified as ECI (business income)</div>
+              <div>[OK] <strong style="color:#e2e8f0">Withholding Rate:</strong> Reduced from 30% \u2192 0% for ECI with ITIN/W-8BEN-E</div>
+              <div>[OK] <strong style="color:#e2e8f0">Foreign Tax Credit:</strong> US taxes paid can offset Canadian taxes owing</div>
+              <div>[!] <strong style="color:#fcd34d">ITIN Required:</strong> Apply via Form W-7 if not already obtained</div>
             </div>
           </div>
         </div>
@@ -14306,12 +14306,12 @@ select.input option{background:#1e293b}
       </div>
     </div><!-- /page-tax -->
 
-    <!-- ── TRIAL LINKS (inside #content) ─────────────────────────────── -->
+    <!-- -- TRIAL LINKS (inside #content) ------------------------------- -->
     <div class="page" id="page-trial-links" style="padding:24px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">
         <div>
           <h1 style="font-size:20px;font-weight:800;color:#fff"><i class="fas fa-link" style="color:#818cf8;margin-right:8px"></i>Trial Links</h1>
-          <p style="color:#64748b;font-size:13px">Generate shareable links for prospects — 60-day free trial, no credit card required</p>
+          <p style="color:#64748b;font-size:13px">Generate shareable links for prospects -- 60-day free trial, no credit card required</p>
         </div>
       </div>
 
@@ -14323,7 +14323,7 @@ select.input option{background:#1e293b}
           </div>
           <div>
             <div style="font-weight:700;color:#fff">Standard Free-Trial Link</div>
-            <div style="font-size:12px;color:#64748b">Works anywhere — email, SMS, LinkedIn, landing page</div>
+            <div style="font-size:12px;color:#64748b">Works anywhere -- email, SMS, LinkedIn, landing page</div>
           </div>
         </div>
         <div style="display:flex;gap:8px;align-items:center;background:#0f172a;border:1px solid #312e81;border-radius:8px;padding:10px 14px;margin-bottom:12px">
@@ -14380,7 +14380,7 @@ select.input option{background:#1e293b}
         <div class="card" style="padding:24px;width:100%;max-width:600px;position:relative;max-height:90vh;display:flex;flex-direction:column">
           <button onclick="document.getElementById('snippet-modal').style.display='none'" style="position:absolute;top:12px;right:16px;background:none;border:none;color:#64748b;font-size:18px;cursor:pointer">&#x2715;</button>
           <h3 id="snippet-title" style="font-size:15px;font-weight:700;color:#fff;margin-bottom:6px">Snippet</h3>
-          <p style="font-size:11px;color:#64748b;margin-bottom:10px">Edit as needed, then copy — placeholders like [Name] are for you to fill in.</p>
+          <p style="font-size:11px;color:#64748b;margin-bottom:10px">Edit as needed, then copy -- placeholders like [Name] are for you to fill in.</p>
           <textarea id="snippet-text" onclick="this.select()" style="flex:1;min-height:260px;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:8px;padding:12px;font-size:12px;line-height:1.7;resize:vertical;font-family:monospace" readonly></textarea>
           <div style="display:flex;gap:8px;margin-top:12px">
             <button class="btn btn-ghost" style="flex:1;font-size:12px" onclick="document.getElementById('snippet-text').select()"><i class="fas fa-mouse-pointer"></i> Select All</button>
@@ -14401,12 +14401,12 @@ select.input option{background:#1e293b}
       </div>
     </div>
 
-    <!-- ── SIGNUP LEADS ─────────────────────────────────────────────────── -->
+    <!-- -- SIGNUP LEADS --------------------------------------------------- -->
     <div class="page" id="page-leads" style="padding:24px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">
         <div>
           <h1 style="font-size:20px;font-weight:800;color:#fff"><i class="fas fa-user-plus" style="color:#818cf8;margin-right:8px"></i>Signup Leads</h1>
-          <p style="color:#64748b;font-size:13px">Everyone who started the free-trial flow — verified or not, converted or abandoned</p>
+          <p style="color:#64748b;font-size:13px">Everyone who started the free-trial flow -- verified or not, converted or abandoned</p>
         </div>
         <button class="btn btn-ghost" style="font-size:12px" onclick="loadLeads()"><i class="fas fa-sync"></i> Refresh</button>
       </div>
@@ -14415,19 +14415,19 @@ select.input option{background:#1e293b}
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">
         <div class="stat-card" style="padding:16px">
           <div style="font-size:11px;color:#475569;text-transform:uppercase;font-weight:700;margin-bottom:4px">Total Leads</div>
-          <div id="leads-stat-total" style="font-size:24px;font-weight:800;color:#fff">—</div>
+          <div id="leads-stat-total" style="font-size:24px;font-weight:800;color:#fff">--</div>
         </div>
         <div class="stat-card" style="padding:16px">
           <div style="font-size:11px;color:#475569;text-transform:uppercase;font-weight:700;margin-bottom:4px">Verified</div>
-          <div id="leads-stat-verified" style="font-size:24px;font-weight:800;color:#818cf8">—</div>
+          <div id="leads-stat-verified" style="font-size:24px;font-weight:800;color:#818cf8">--</div>
         </div>
         <div class="stat-card" style="padding:16px">
           <div style="font-size:11px;color:#475569;text-transform:uppercase;font-weight:700;margin-bottom:4px">Converted</div>
-          <div id="leads-stat-converted" style="font-size:24px;font-weight:800;color:#4ade80">—</div>
+          <div id="leads-stat-converted" style="font-size:24px;font-weight:800;color:#4ade80">--</div>
         </div>
         <div class="stat-card" style="padding:16px">
           <div style="font-size:11px;color:#475569;text-transform:uppercase;font-weight:700;margin-bottom:4px">Abandoned</div>
-          <div id="leads-stat-abandoned" style="font-size:24px;font-weight:800;color:#f87171">—</div>
+          <div id="leads-stat-abandoned" style="font-size:24px;font-weight:800;color:#f87171">--</div>
         </div>
       </div>
 
@@ -14449,9 +14449,9 @@ select.input option{background:#1e293b}
   </div><!-- /content -->
 </div><!-- /app -->
 
-<!-- ══════════════════════════════════════════════════════════════════
-     TAX PAGE — injected outside #app so it overlays full viewport
-     ══════════════════════════════════════════════════════════════════ -->
+<!-- ------------------------------------------------------------------
+     TAX PAGE -- injected outside #app so it overlays full viewport
+     ------------------------------------------------------------------ -->
 
 <!-- TICKET DETAIL MODAL -->
 <div class="modal-bg" id="ticket-modal" onclick="if(event.target===this)closeTicketModal()">
@@ -14460,12 +14460,12 @@ select.input option{background:#1e293b}
     <div style="padding:18px 20px;border-bottom:1px solid #334155;display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
       <div>
         <div style="display:flex;align-items:center;gap:10px">
-          <span style="font-family:monospace;background:#0f172a;color:#818cf8;padding:3px 10px;border-radius:6px;font-size:13px" id="tkt-modal-number">—</span>
+          <span style="font-family:monospace;background:#0f172a;color:#818cf8;padding:3px 10px;border-radius:6px;font-size:13px" id="tkt-modal-number">--</span>
           <span id="tkt-modal-status-badge"></span>
           <span id="tkt-modal-priority-badge"></span>
         </div>
-        <h3 style="font-size:16px;font-weight:700;color:#fff;margin-top:6px" id="tkt-modal-subject">—</h3>
-        <p style="font-size:12px;color:#475569;margin-top:2px" id="tkt-modal-meta">—</p>
+        <h3 style="font-size:16px;font-weight:700;color:#fff;margin-top:6px" id="tkt-modal-subject">--</h3>
+        <p style="font-size:12px;color:#475569;margin-top:2px" id="tkt-modal-meta">--</p>
       </div>
       <button onclick="closeTicketModal()" style="background:none;border:none;color:#64748b;font-size:22px;cursor:pointer;flex-shrink:0;line-height:1">&times;</button>
     </div>
@@ -14517,15 +14517,15 @@ select.input option{background:#1e293b}
     <div style="flex:1;min-width:0">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <h2 id="tp-name" style="font-size:18px;font-weight:700;color:#fff;margin:0">Loading...</h2>
-        <span id="tp-status-badge" class="pill">—</span>
-        <span id="tp-plan-badge" class="pill">—</span>
+        <span id="tp-status-badge" class="pill">--</span>
+        <span id="tp-plan-badge" class="pill">--</span>
       </div>
-      <div id="tp-meta" style="color:#64748b;font-size:12px;margin-top:2px">—</div>
+      <div id="tp-meta" style="color:#64748b;font-size:12px;margin-top:2px">--</div>
     </div>
     <div style="display:flex;gap:6px;flex-shrink:0">
       <a id="tp-admin-link" href="#" target="_blank" class="btn btn-ghost" title="Open Tenant Admin Panel" style="font-size:11px"><i class="fas fa-external-link-alt"></i> Admin</a>
       <a id="tp-app-link" href="#" target="_blank" class="btn btn-ghost" title="Worker App" style="font-size:11px"><i class="fas fa-mobile-alt"></i> App</a>
-      <button onclick="closeTenantProfile()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:18px;padding:4px 8px">✕</button>
+      <button onclick="closeTenantProfile()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:18px;padding:4px 8px">\u2715</button>
     </div>
   </div>
 
@@ -14566,7 +14566,7 @@ select.input option{background:#1e293b}
         <div>
           <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Plan</label>
           <select id="edit-plan" class="input">
-            <option value="">Loading plans…</option>
+            <option value="">Loading plans...</option>
           </select>
         </div>
         <div>
@@ -14605,11 +14605,11 @@ select.input option{background:#1e293b}
       <p id="delete-modal-desc" style="font-size:13px;color:#94a3b8;margin:0">This tenant and all their data will be archived. Workers will not be able to clock in.</p>
     </div>
     <div style="background:#1e293b;border-radius:8px;padding:14px;margin-bottom:20px;font-size:12px;color:#cbd5e1;border-left:3px solid #ef4444">
-      <strong style="color:#f87171">⚠ 90-Day Guardrail.</strong> The company, workers, sessions and GPS data move to the <strong>Archive tab</strong>. Everything is fully preserved and restorable for 90 days. After 90 days all data is permanently purged.
+      <strong style="color:#f87171">[!] 90-Day Guardrail.</strong> The company, workers, sessions and GPS data move to the <strong>Archive tab</strong>. Everything is fully preserved and restorable for 90 days. After 90 days all data is permanently purged.
     </div>
     <div style="margin-bottom:16px">
       <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#ef4444;margin-bottom:6px">Type the company name to confirm</label>
-      <input id="delete-confirm-input" type="text" class="input" placeholder="Type exact company name…" oninput="checkDeleteConfirm()">
+      <input id="delete-confirm-input" type="text" class="input" placeholder="Type exact company name..." oninput="checkDeleteConfirm()">
       <p id="delete-name-hint" style="font-size:11px;color:#64748b;margin-top:4px"></p>
     </div>
     <div style="display:flex;gap:12px">
@@ -14632,7 +14632,7 @@ let allTenants = []
 let sessPage = 1
 const sessLimit = 50
 
-// ── Auth ──────────────────────────────────────────────────────────────────────
+// -- Auth ----------------------------------------------------------------------
 async function doSuperLogin() {
   const pin = document.getElementById('super-pin').value.trim()
   if (!pin) {
@@ -14645,7 +14645,7 @@ async function doSuperLogin() {
   const errEl = document.getElementById('login-error')
   errEl.style.display = 'none'
   btn.disabled = true
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying…'
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...'
   try {
     const r = await fetch('/api/super/login', {
       method: 'POST',
@@ -14654,7 +14654,7 @@ async function doSuperLogin() {
     })
     const d = await r.json()
     if (!r.ok || d.error) {
-      errEl.textContent = d.error || 'Invalid PIN — please try again'
+      errEl.textContent = d.error || 'Invalid PIN -- please try again'
       errEl.style.display = 'block'
       btn.disabled = false
       btn.innerHTML = '<i class="fas fa-unlock-keyhole"></i> Access Portal'
@@ -14677,7 +14677,7 @@ async function doSuperLogin() {
     await new Promise(r => setTimeout(r, 400))
     showApp()
   } catch(e) {
-    errEl.textContent = 'Connection error — check your internet and try again'
+    errEl.textContent = 'Connection error -- check your internet and try again'
     errEl.style.display = 'block'
     btn.disabled = false
     btn.innerHTML = '<i class="fas fa-unlock-keyhole"></i> Access Portal'
@@ -14715,7 +14715,7 @@ function showApp() {
 
 if (superToken) showApp()
 
-// ── API helper ─────────────────────────────────────────────────────────────
+// -- API helper -------------------------------------------------------------
 async function api(path, opts = {}) {
   const r = await fetch(path, {
     ...opts,
@@ -14725,7 +14725,7 @@ async function api(path, opts = {}) {
   return r.json()
 }
 
-// ── Page navigation ────────────────────────────────────────────────────────
+// -- Page navigation --------------------------------------------------------
 function showPage(name) {
   document.querySelectorAll('.page').forEach(el => el.classList.remove('active'))
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'))
@@ -14747,7 +14747,7 @@ function showPage(name) {
   if (name === 'leads')       loadLeads()
 }
 
-// ── LEADS ─────────────────────────────────────────────────────────────────────
+// -- LEADS ---------------------------------------------------------------------
 let _allLeads = []
 let _leadsFilter = 'all'
 
@@ -14799,16 +14799,16 @@ function renderLeads() {
       : l.code_verified
         ? '<span class="pill" style="background:#1e3a5f;color:#93c5fd">verified</span>'
         : '<span class="pill badge-suspended">abandoned</span>'
-    const ago = l.created_at ? timeSince(new Date(l.created_at)) : '—'
+    const ago = l.created_at ? timeSince(new Date(l.created_at)) : '--'
     const utmHtml = l.utm_source ? '<span style="color:#818cf8;font-size:11px">' + l.utm_source + (l.utm_campaign ? ' / ' + l.utm_campaign : '') + '</span>' : '<span style="color:#334155;font-size:11px">direct</span>'
     return '<tr>' +
-      '<td style="font-weight:600;color:#e2e8f0">' + (l.company_name || '—') + '</td>' +
+      '<td style="font-weight:600;color:#e2e8f0">' + (l.company_name || '--') + '</td>' +
       '<td style="color:#94a3b8">' + l.email + '</td>' +
-      '<td style="color:#94a3b8">' + (l.phone || '—') + '</td>' +
+      '<td style="color:#94a3b8">' + (l.phone || '--') + '</td>' +
       '<td>' + statusHtml + '</td>' +
       '<td>' + utmHtml + '</td>' +
       '<td style="color:#64748b;font-size:12px">' + ago + '</td>' +
-      '<td>' + (l.converted && l.tenant_company ? '<span style="color:#4ade80;font-size:12px">' + l.tenant_company + '</span>' : '—') + '</td>' +
+      '<td>' + (l.converted && l.tenant_company ? '<span style="color:#4ade80;font-size:12px">' + l.tenant_company + '</span>' : '--') + '</td>' +
     '</tr>'
   }).join('')
   document.getElementById('leads-table').innerHTML =
@@ -14825,11 +14825,11 @@ function timeSince(date) {
   return Math.floor(s/86400) + 'd ago'
 }
 
-// ── TRIAL LINKS ──────────────────────────────────────────────────────────
+// -- TRIAL LINKS ----------------------------------------------------------
 const TRIAL_BASE = 'https://clockinproof.pages.dev/free-trial'
 
 function copyTrialLink() {
-  navigator.clipboard.writeText(TRIAL_BASE).then(() => showToast('✅ Link copied!'))
+  navigator.clipboard.writeText(TRIAL_BASE).then(() => showToast('[OK] Link copied!'))
 }
 
 function buildUtmLink() {
@@ -14837,7 +14837,7 @@ function buildUtmLink() {
   const med = document.getElementById('utm-medium').value.trim()
   const cam = document.getElementById('utm-campaign').value.trim()
   const con = document.getElementById('utm-content').value.trim()
-  if (!src && !med && !cam) { showToast('⚠️ Fill in at least one UTM field'); return }
+  if (!src && !med && !cam) { showToast('[!] Fill in at least one UTM field'); return }
   const params = new URLSearchParams()
   if (src) params.set('utm_source', src)
   if (med) params.set('utm_medium', med)
@@ -14850,27 +14850,27 @@ function buildUtmLink() {
 
 function copyUtmLink() {
   const txt = document.getElementById('utm-link-out').textContent
-  navigator.clipboard.writeText(txt).then(() => showToast('✅ UTM link copied!'))
+  navigator.clipboard.writeText(txt).then(() => showToast('[OK] UTM link copied!'))
 }
 
 function genEmailSnippet() {
   const link = TRIAL_BASE
   const lines = [
-    'Subject: Try ClockInProof free for 60 days \u2014 no credit card',
+    'Subject: Try ClockInProof free for 60 days - no credit card',
     '',
     'Hi [First Name],',
     '',
-    "I came across a tool I think would be a great fit for your team \u2014 it\'s called ClockInProof.",
+    "I came across a tool I think would be a great fit for your team - it's called ClockInProof.",
     '',
     'It gives field crews a simple GPS clock-in app, and gives owners real-time proof of work:',
-    '  \u2022 GPS-verified clock-in/out on any phone',
-    '  \u2022 Geofence fraud detection (alerts if workers clock in from the wrong location)',
-    '  \u2022 Job dispatch via SMS',
-    '  \u2022 Automated payroll reports',
+    '  - GPS-verified clock-in/out on any phone',
+    '  - Geofence fraud detection (alerts if workers clock in from the wrong location)',
+    '  - Job dispatch via SMS',
+    '  - Automated payroll reports',
     '',
     'No hardware. No app store installs needed. Workers just tap a link.',
     '',
-    'Start a free 60-day trial \u2014 no credit card required:',
+    'Start a free 60-day trial - no credit card required:',
     link,
     '',
     'Takes about 2 minutes to set up. Let me know if you have any questions.',
@@ -14885,7 +14885,7 @@ function genEmailSnippet() {
 }
 
 function genSmsSnippet() {
-  const txt = 'Hey [Name]! Quick one \u2014 have you tried ClockInProof? GPS time tracking for field crews, automated payroll, no credit card. Free 60-day trial: ' + TRIAL_BASE + ' \u2014 takes 2 min to set up.'
+  const txt = 'Hey [Name]! Quick one - have you tried ClockInProof? GPS time tracking for field crews, automated payroll, no credit card. Free 60-day trial: ' + TRIAL_BASE + ' - takes 2 min to set up.'
   document.getElementById('snippet-title').textContent = 'SMS Text'
   document.getElementById('snippet-text').value = txt
   document.getElementById('snippet-modal').style.display = 'flex'
@@ -14893,7 +14893,7 @@ function genSmsSnippet() {
 
 function copySnippet() {
   const txt = document.getElementById('snippet-text').value
-  navigator.clipboard.writeText(txt).then(() => showToast('✅ Copied!'))
+  navigator.clipboard.writeText(txt).then(() => showToast('[OK] Copied!'))
 }
 
 async function loadTrialSignups() {
@@ -14959,7 +14959,7 @@ function refreshCurrent() {
   document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString()
 }
 
-// ── Overview ───────────────────────────────────────────────────────────────
+// -- Overview ---------------------------------------------------------------
 async function loadOverview() {
   document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString()
   try {
@@ -14977,7 +14977,7 @@ async function loadOverview() {
     document.getElementById('ov-plans').innerHTML = (dash.plan_breakdown||[]).length
       ? (dash.plan_breakdown||[]).map(p => \`
           <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:#0f172a;border-radius:6px">
-            <span class="pill \${planColors[p.plan]||'badge-starter'}">\${(p.plan||'—').toUpperCase()}</span>
+            <span class="pill \${planColors[p.plan]||'badge-starter'}">\${(p.plan||'--').toUpperCase()}</span>
             <span style="font-size:18px;font-weight:800;color:#fff">\${p.count}</span>
           </div>\`).join('')
       : '<span style="color:#475569;font-size:13px">No tenants</span>'
@@ -14997,7 +14997,7 @@ async function loadOverview() {
   } catch(e) { console.error(e) }
 }
 
-// ── Live Activity ──────────────────────────────────────────────────────────
+// -- Live Activity ----------------------------------------------------------
 async function loadLiveBadge() {
   try {
     const d = await api('/api/super/live')
@@ -15025,7 +15025,7 @@ async function loadLive() {
         <td><a href="https://\${s.tenant_slug}.clockinproof.com" target="_blank" style="color:#818cf8;font-size:12px">\${s.company_name}</a></td>
         <td style="color:#94a3b8;font-size:12px">\${cin.toLocaleTimeString()}</td>
         <td><span class="live-dot" style="margin-right:4px"></span><span style="color:#34d399;font-weight:600">\${h}h \${m}m</span></td>
-        <td style="color:#94a3b8;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${s.clock_in_address||s.job_location||'—'}</td>
+        <td style="color:#94a3b8;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${s.clock_in_address||s.job_location||'--'}</td>
       </tr>\`
     }).join('')
   } catch(e) {
@@ -15033,7 +15033,7 @@ async function loadLive() {
   }
 }
 
-// ── Tenants ────────────────────────────────────────────────────────────────
+// -- Tenants ----------------------------------------------------------------
 async function loadTenants() {
   const tbody = document.getElementById('tenants-tbody')
   tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>'
@@ -15075,11 +15075,11 @@ function renderTenants(tenants) {
     const sc = t.status==='active'?'badge-active':t.status==='trial'?'badge-trial':'badge-suspended'
     const pc = t.plan==='pro'?'badge-pro':t.plan==='growth'?'badge-growth':'badge-starter'
     const la = t.last_active ? new Date(t.last_active).toLocaleDateString() : 'Never'
-    const cr = t.created_at ? new Date(t.created_at).toLocaleDateString() : '—'
+    const cr = t.created_at ? new Date(t.created_at).toLocaleDateString() : '--'
     return \`<tr style="cursor:pointer" onclick="openTenantProfile(\${t.id})">
       <td>
         <div style="font-weight:600;color:#e2e8f0">\${t.company_name}</div>
-        <div style="color:#475569;font-size:11px">\${t.admin_email||'—'}</div>
+        <div style="color:#475569;font-size:11px">\${t.admin_email||'--'}</div>
         <div style="color:#334155;font-size:10px">Created \${cr}</div>
       </td>
       <td><span style="color:#818cf8;font-size:12px">\${t.slug}</span></td>
@@ -15103,7 +15103,7 @@ function renderTenants(tenants) {
   }).join('')
 }
 
-// ── Archive Tab ─────────────────────────────────────────────────────────────
+// -- Archive Tab -------------------------------------------------------------
 let _currentTenantTab = 'active'
 function switchTenantTab(tab) {
   _currentTenantTab = tab
@@ -15148,17 +15148,17 @@ async function loadArchivedTenants() {
       return
     }
     tbody.innerHTML = tenants.map(t => {
-      const archivedOn = t.archived_at ? new Date(t.archived_at).toLocaleDateString() : (t.updated_at ? new Date(t.updated_at).toLocaleDateString() : '—')
+      const archivedOn = t.archived_at ? new Date(t.archived_at).toLocaleDateString() : (t.updated_at ? new Date(t.updated_at).toLocaleDateString() : '--')
       const daysLeft = typeof t.days_until_purge === 'number' ? t.days_until_purge : 90
       const purgeColor = daysLeft <= 7 ? '#ef4444' : daysLeft <= 30 ? '#f59e0b' : '#94a3b8'
-      const purgeLabel = daysLeft <= 0 ? '<span style="color:#ef4444;font-weight:700">⚠ Purge due</span>' : \`<span style="color:\${purgeColor};font-weight:600">\${daysLeft}d left</span>\`
+      const purgeLabel = daysLeft <= 0 ? '<span style="color:#ef4444;font-weight:700">[!] Purge due</span>' : \`<span style="color:\${purgeColor};font-weight:600">\${daysLeft}d left</span>\`
       return \`<tr>
         <td>
           <div style="font-weight:600;color:#e2e8f0">\${t.company_name}</div>
           <div style="font-size:10px;color:#475569;margin-top:2px">ID \${t.id}</div>
         </td>
         <td><span style="color:#64748b;font-size:12px">\${t.slug}</span></td>
-        <td style="color:#64748b;font-size:12px">\${t.admin_email || '—'}</td>
+        <td style="color:#64748b;font-size:12px">\${t.admin_email || '--'}</td>
         <td style="color:#64748b;text-align:center">\${t.worker_count || 0}</td>
         <td style="color:#64748b;text-align:center">\${t.session_count || 0}</td>
         <td style="color:#64748b;font-size:12px">\${archivedOn}</td>
@@ -15185,7 +15185,7 @@ async function restoreTenant(id, encodedName) {
     })
     const d = await r.json().catch(() => ({}))
     if (!r.ok || d.error) throw new Error(d.error || 'Server error (' + r.status + ')')
-    showToast('✅ ' + name + ' restored to active')
+    showToast('[OK] ' + name + ' restored to active')
     loadArchivedTenants()
     // Refresh badge
     api('/api/super/tenants/archived').then(data => {
@@ -15194,11 +15194,11 @@ async function restoreTenant(id, encodedName) {
       badge.textContent = count; badge.style.display = count > 0 ? 'inline' : 'none'
     }).catch(() => {})
   } catch(e) {
-    showToast('❌ Restore failed: ' + (e.message || 'Unknown error'), true)
+    showToast('[X] Restore failed: ' + (e.message || 'Unknown error'), true)
   }
 }
 
-// ── Edit Modal ──────────────────────────────────────────────────────────────
+// -- Edit Modal --------------------------------------------------------------
 function openEditModal(t) {
   if (typeof t === 'string') t = JSON.parse(t)
   document.getElementById('edit-tenant-id').value = t.id
@@ -15236,18 +15236,18 @@ async function saveTenant() {
   }
   try {
     await api('/api/super/tenants/'+id, { method:'PUT', body:JSON.stringify(body) })
-    closeEditModal(); showToast('✅ Tenant updated'); loadTenants()
-  } catch { showToast('❌ Update failed', true) }
+    closeEditModal(); showToast('[OK] Tenant updated'); loadTenants()
+  } catch { showToast('[X] Update failed', true) }
 }
 
 async function suspendTenant(id) {
   if (!confirm('Suspend this tenant? Workers will not be able to clock in.')) return
   await api('/api/super/tenants/'+id, { method:'PUT', body:JSON.stringify({status:'suspended'}) })
-  showToast('⏸ Tenant suspended'); loadTenants()
+  showToast('\u23F8 Tenant suspended'); loadTenants()
 }
 async function activateTenant(id) {
   await api('/api/super/tenants/'+id, { method:'PUT', body:JSON.stringify({status:'active'}) })
-  showToast('▶ Tenant activated'); loadTenants()
+  showToast('> Tenant activated'); loadTenants()
 }
 function deleteTenantBtn(btn) {
   const id   = btn.getAttribute('data-id')
@@ -15285,7 +15285,7 @@ async function executeDeleteTenant() {
   const btn = document.getElementById('delete-confirm-btn')
   const resultEl = document.getElementById('delete-result')
   btn.disabled = true
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right:6px"></i>Archiving…'
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right:6px"></i>Archiving...'
   resultEl.style.display = 'none'
   try {
     const r = await fetch('/api/super/tenants/' + _deleteId, {
@@ -15300,7 +15300,7 @@ async function executeDeleteTenant() {
     resultEl.style.color = '#86efac'
     resultEl.innerHTML = '<i class="fas fa-check-circle" style="margin-right:6px"></i><strong>' + _deleteName + '</strong> has been archived successfully. Workers can no longer clock in.'
     btn.style.display = 'none'
-    showToast('🗑 ' + _deleteName + ' archived')
+    showToast('\u1F5D1 ' + _deleteName + ' archived')
     setTimeout(() => { closeDeleteModal(); loadTenants(); switchTenantTab('archived') }, 2500)
   } catch(e) {
     resultEl.style.display = 'block'
@@ -15313,7 +15313,7 @@ async function executeDeleteTenant() {
   }
 }
 
-// ── Create Tenant ───────────────────────────────────────────────────────────
+// -- Create Tenant -----------------------------------------------------------
 let slugCheckTimer = null
 function onSlugInput() {
   const slug = document.getElementById('new-slug').value.trim()
@@ -15328,7 +15328,7 @@ function onEmailSlugInput() {
 }
 function updateEmailPreview(val) {
   const p = document.getElementById('email-preview')
-  if (val) { p.textContent = '→ admin.'+val+'@clockinproof.com'; p.style.display='block' }
+  if (val) { p.textContent = '\u2192 admin.'+val+'@clockinproof.com'; p.style.display='block' }
   else p.style.display='none'
 }
 document.getElementById('new-company').addEventListener('input', function() {
@@ -15345,11 +15345,11 @@ async function checkSlug(val) {
   clearTimeout(slugCheckTimer)
   const el = document.getElementById('slug-check')
   if (!val) { el.textContent=''; return }
-  el.textContent = '⏳'
+  el.textContent = '\u23F3'
   slugCheckTimer = setTimeout(async () => {
     try {
       const d = await fetch('/api/tenants/check-slug?slug='+encodeURIComponent(val)).then(r=>r.json())
-      el.textContent = d.available ? '✅' : '❌'
+      el.textContent = d.available ? '[OK]' : '[X]'
     } catch { el.textContent='?' }
   }, 500)
 }
@@ -15361,7 +15361,7 @@ async function createTenant() {
   const pin      = document.getElementById('new-pin').value.trim()
   const plan     = document.getElementById('new-plan').value
   const address  = document.getElementById('new-address').value.trim()
-  if (!company || !slug) { showToast('❌ Company name and subdomain required', true); return }
+  if (!company || !slug) { showToast('[X] Company name and subdomain required', true); return }
   const res = document.getElementById('create-result')
   res.style.cssText = 'display:block;padding:12px;border-radius:8px;background:#1e293b;color:#94a3b8;font-size:13px'
   res.textContent = 'Creating tenant...'
@@ -15372,10 +15372,10 @@ async function createTenant() {
     })
     if (d.error) {
       res.style.cssText = 'display:block;padding:12px;border-radius:8px;background:#7f1d1d33;border:1px solid #dc2626;color:#fca5a5;font-size:13px'
-      res.textContent = '❌ '+d.error; return
+      res.textContent = '[X] '+d.error; return
     }
     res.style.cssText = 'display:block;padding:12px;border-radius:8px;background:#065f4633;border:1px solid #059669;color:#6ee7b7;font-size:13px'
-    res.innerHTML = \`✅ <strong>Tenant created!</strong><br>
+    res.innerHTML = \`[OK] <strong>Tenant created!</strong><br>
       Admin email: <strong>\${email}</strong><br>
       Worker app: <a href="https://\${d.slug}.clockinproof.com" target="_blank" style="color:#6ee7b7;text-decoration:underline">\${d.slug}.clockinproof.com</a>\`
     ;['new-company','new-slug','new-email-slug','new-pin','new-address'].forEach(id => {
@@ -15384,15 +15384,15 @@ async function createTenant() {
     document.getElementById('new-plan').value = 'growth'
     document.getElementById('slug-check').textContent = ''
     document.getElementById('email-preview').style.display = 'none'
-    showToast('🎉 Tenant created!')
+    showToast('\u1F389 Tenant created!')
     allTenants = []
   } catch { 
     res.style.cssText = 'display:block;padding:12px;border-radius:8px;background:#7f1d1d33;border:1px solid #dc2626;color:#fca5a5;font-size:13px'
-    res.textContent = '❌ Failed to create tenant'
+    res.textContent = '[X] Failed to create tenant'
   }
 }
 
-// ── Sessions ────────────────────────────────────────────────────────────────
+// -- Sessions ----------------------------------------------------------------
 async function loadSessions() {
   const tbody = document.getElementById('sessions-tbody')
   tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>'
@@ -15402,7 +15402,7 @@ async function loadSessions() {
     if (tid) params.set('tenant_id', tid)
     const d = await api('/api/super/sessions?' + params)
     const rows = d.sessions || []
-    document.getElementById('sess-info').textContent = 'Showing ' + ((sessPage-1)*sessLimit+1) + '–' + Math.min(sessPage*sessLimit, d.total) + ' of ' + d.total
+    document.getElementById('sess-info').textContent = 'Showing ' + ((sessPage-1)*sessLimit+1) + '-' + Math.min(sessPage*sessLimit, d.total) + ' of ' + d.total
     document.getElementById('sess-prev').disabled = sessPage <= 1
     document.getElementById('sess-next').disabled = sessPage * sessLimit >= d.total
     if (!rows.length) {
@@ -15410,17 +15410,17 @@ async function loadSessions() {
       return
     }
     tbody.innerHTML = rows.map(s => {
-      const cin = s.clock_in_time ? new Date(s.clock_in_time).toLocaleString() : '—'
+      const cin = s.clock_in_time ? new Date(s.clock_in_time).toLocaleString() : '--'
       const cout = s.clock_out_time ? new Date(s.clock_out_time).toLocaleString() : '<span class="live-dot" style="margin-right:4px"></span>Active'
       const sc = s.status==='completed' ? 'badge-active' : 'badge-trial'
       return \`<tr>
-        <td style="font-weight:600;color:#e2e8f0">\${s.worker_name||'—'}</td>
-        <td style="color:#818cf8;font-size:12px">\${s.company_name||'—'}</td>
+        <td style="font-weight:600;color:#e2e8f0">\${s.worker_name||'--'}</td>
+        <td style="color:#818cf8;font-size:12px">\${s.company_name||'--'}</td>
         <td style="color:#94a3b8;font-size:12px">\${cin}</td>
         <td style="color:#94a3b8;font-size:12px">\${cout}</td>
-        <td style="color:#34d399;font-weight:600">\${s.total_hours?s.total_hours.toFixed(1)+'h':'—'}</td>
-        <td style="color:#64748b;font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${s.job_location||s.clock_in_address||'—'}</td>
-        <td><span class="pill \${sc}">\${s.status||'—'}</span></td>
+        <td style="color:#34d399;font-weight:600">\${s.total_hours?s.total_hours.toFixed(1)+'h':'--'}</td>
+        <td style="color:#64748b;font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${s.job_location||s.clock_in_address||'--'}</td>
+        <td><span class="pill \${sc}">\${s.status||'--'}</span></td>
       </tr>\`
     }).join('')
   } catch(e) {
@@ -15429,7 +15429,7 @@ async function loadSessions() {
 }
 function changeSessPage(dir) { sessPage = Math.max(1, sessPage+dir); loadSessions() }
 
-// ── Revenue ─────────────────────────────────────────────────────────────────
+// -- Revenue -----------------------------------------------------------------
 async function loadRevenue() {
   const tbody = document.getElementById('revenue-tbody')
   tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#475569"><i class="fas fa-spinner fa-spin"></i></td></tr>'
@@ -15448,8 +15448,8 @@ async function loadRevenue() {
       const sc = r.status==='active'?'badge-active':r.status==='trial'?'badge-trial':'badge-suspended'
       return \`<tr>
         <td><div style="font-weight:600;color:#e2e8f0">\${r.company_name}</div><div style="color:#475569;font-size:11px">\${r.slug}</div></td>
-        <td><span class="pill \${pc}">\${r.plan||'—'}</span></td>
-        <td><span class="pill \${sc}">\${r.status||'—'}</span></td>
+        <td><span class="pill \${pc}">\${r.plan||'--'}</span></td>
+        <td><span class="pill \${sc}">\${r.status||'--'}</span></td>
         <td style="color:#94a3b8">\${r.workers||0}</td>
         <td style="color:#94a3b8">\${r.sessions||0}</td>
         <td style="color:#94a3b8">\${r.total_hours||0}h</td>
@@ -15461,10 +15461,10 @@ async function loadRevenue() {
   }
 }
 
-// ── Email test ───────────────────────────────────────────────────────────────
+// -- Email test ---------------------------------------------------------------
 async function sendTestEmail() {
   const to = document.getElementById('test-email-to').value.trim()
-  if (!to) { showToast('❌ Enter a recipient email', true); return }
+  if (!to) { showToast('[X] Enter a recipient email', true); return }
   const res = document.getElementById('test-email-result')
   res.textContent = 'Sending...'; res.style.display='block'; res.style.color='#94a3b8'
   try {
@@ -15474,29 +15474,29 @@ async function sendTestEmail() {
       body: JSON.stringify({
         from:'ClockInProof <alerts@clockinproof.com>',
         to:[to],
-        subject:'✅ ClockInProof — Super Admin Test Email',
+        subject:'[OK] ClockInProof -- Super Admin Test Email',
         html:'<div style="font-family:sans-serif;padding:24px"><h2>Test Email</h2><p>Sent from the Super Admin portal.</p></div>'
       })
     })
     // Use backend proxy instead
     const d = await api('/api/super/test-email', { method:'POST', body:JSON.stringify({to}) })
-    if (d.error) { res.textContent='❌ '+d.error; res.style.color='#fca5a5'; return }
-    res.textContent = '✅ Email sent! ID: '+d.id; res.style.color='#6ee7b7'
-    showToast('✅ Test email sent!')
+    if (d.error) { res.textContent='[X] '+d.error; res.style.color='#fca5a5'; return }
+    res.textContent = '[OK] Email sent! ID: '+d.id; res.style.color='#6ee7b7'
+    showToast('[OK] Test email sent!')
   } catch(e) {
-    res.textContent = '❌ Failed — check browser console'; res.style.color='#fca5a5'
+    res.textContent = '[X] Failed -- check browser console'; res.style.color='#fca5a5'
   }
 }
 
-// ── Platform: change super PIN ───────────────────────────────────────────────
+// -- Platform: change super PIN -----------------------------------------------
 async function changeSuperPin() {
   const newPin = document.getElementById('new-super-pin').value.trim()
-  if (!newPin || newPin.length < 6) { showToast('❌ PIN must be at least 6 characters', true); return }
-  showToast('ℹ️ To change the PIN, update SUPER_ADMIN_PIN secret in Cloudflare Pages dashboard', false)
+  if (!newPin || newPin.length < 6) { showToast('[X] PIN must be at least 6 characters', true); return }
+  showToast('\u2139 To change the PIN, update SUPER_ADMIN_PIN secret in Cloudflare Pages dashboard', false)
   document.getElementById('new-super-pin').value = ''
 }
 
-// ── Platform URL Config ───────────────────────────────────────────────────────
+// -- Platform URL Config -------------------------------------------------------
 async function loadPlatformUrls() {
   try {
     const d = await api('/api/settings')
@@ -15536,10 +15536,10 @@ async function savePlatformUrls() {
       body: JSON.stringify(payload)
     })
     if (!res.ok) throw new Error('Save failed')
-    if (statusEl) { statusEl.textContent = '✓ URLs saved successfully'; statusEl.style.display = 'block' }
-    showToast('✅ Platform URLs saved')
+    if (statusEl) { statusEl.textContent = '\u2713 URLs saved successfully'; statusEl.style.display = 'block' }
+    showToast('[OK] Platform URLs saved')
     setTimeout(() => { if (statusEl) statusEl.style.display = 'none' }, 4000)
-  } catch(e) { showToast('❌ Failed to save URLs', true) }
+  } catch(e) { showToast('[X] Failed to save URLs', true) }
 }
 
 async function savePlatformTwilio() {
@@ -15563,10 +15563,10 @@ async function savePlatformTwilio() {
       body: JSON.stringify(payload)
     })
     if (!res.ok) throw new Error('Save failed')
-    if (statusEl) { statusEl.textContent = '✓ Twilio credentials saved to DB (Cloudflare secrets override these at runtime)'; statusEl.style.display = 'block' }
-    showToast('✅ Twilio credentials saved')
+    if (statusEl) { statusEl.textContent = '\u2713 Twilio credentials saved to DB (Cloudflare secrets override these at runtime)'; statusEl.style.display = 'block' }
+    showToast('[OK] Twilio credentials saved')
     setTimeout(() => { if (statusEl) statusEl.style.display = 'none' }, 5000)
-  } catch(e) { showToast('❌ Failed to save Twilio credentials', true) }
+  } catch(e) { showToast('[X] Failed to save Twilio credentials', true) }
 }
 
 async function savePlatformResend() {
@@ -15583,32 +15583,32 @@ async function savePlatformResend() {
       body: JSON.stringify(payload)
     })
     if (!res.ok) throw new Error('Save failed')
-    if (statusEl) { statusEl.textContent = '✓ Resend config saved (RESEND_API_KEY secret overrides at runtime)'; statusEl.style.display = 'block' }
-    showToast('✅ Resend config saved')
+    if (statusEl) { statusEl.textContent = '\u2713 Resend config saved (RESEND_API_KEY secret overrides at runtime)'; statusEl.style.display = 'block' }
+    showToast('[OK] Resend config saved')
     setTimeout(() => { if (statusEl) statusEl.style.display = 'none' }, 5000)
-  } catch(e) { showToast('❌ Failed to save Resend config', true) }
+  } catch(e) { showToast('[X] Failed to save Resend config', true) }
 }
 
 async function testPlatformSms() {
   const adminPhone = prompt('Send test SMS to which number? (include + country code)')
   if (!adminPhone) return
-  showToast('📤 Sending test SMS...')
+  showToast('\u1F4E4 Sending test SMS...')
   try {
     const res = await fetch('/api/test/sms', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to: adminPhone, message: '✅ ClockInProof platform SMS test — it works!' })
+      body: JSON.stringify({ to: adminPhone, message: '[OK] ClockInProof platform SMS test -- it works!' })
     })
     const d = await res.json()
-    if (d.success) showToast('✅ Test SMS sent to ' + adminPhone)
-    else showToast('❌ ' + (d.error || 'SMS failed'), true)
-  } catch(e) { showToast('❌ Test SMS failed', true) }
+    if (d.success) showToast('[OK] Test SMS sent to ' + adminPhone)
+    else showToast('[X] ' + (d.error || 'SMS failed'), true)
+  } catch(e) { showToast('[X] Test SMS failed', true) }
 }
 
 async function testPlatformEmail() {
   const toEmail = prompt('Send test email to which address?')
   if (!toEmail) return
-  showToast('📤 Sending test email...')
+  showToast('\u1F4E4 Sending test email...')
   try {
     const res = await fetch('/api/test/email', {
       method: 'POST',
@@ -15616,12 +15616,12 @@ async function testPlatformEmail() {
       body: JSON.stringify({ to: toEmail })
     })
     const d = await res.json()
-    if (d.success) showToast('✅ Test email sent to ' + toEmail)
-    else showToast('❌ ' + (d.error || 'Email failed'), true)
-  } catch(e) { showToast('❌ Test email failed', true) }
+    if (d.success) showToast('[OK] Test email sent to ' + toEmail)
+    else showToast('[X] ' + (d.error || 'Email failed'), true)
+  } catch(e) { showToast('[X] Test email failed', true) }
 }
 
-// ── Support Tickets ───────────────────────────────────────────────────────────
+// -- Support Tickets -----------------------------------------------------------
 let allTickets = []
 let currentTicketId = null
 
@@ -15678,12 +15678,12 @@ function renderTickets(tickets) {
   tbody.innerHTML = tickets.map(t => {
     const ps = PRIORITY_STYLES[t.priority] || PRIORITY_STYLES.normal
     const ss = STATUS_STYLES[t.status]     || STATUS_STYLES.open
-    const updated = t.updated_at ? new Date(t.updated_at).toLocaleDateString() : '—'
+    const updated = t.updated_at ? new Date(t.updated_at).toLocaleDateString() : '--'
     return \`<tr style="cursor:pointer" onclick="openTicket(\${t.id})">
       <td style="font-family:monospace;font-size:12px;color:#818cf8">\${t.ticket_number}</td>
       <td><div style="font-weight:600;color:#e2e8f0;font-size:13px">\${t.subject}</div>
           <div style="color:#475569;font-size:11px">\${t.category||'general'}</div></td>
-      <td style="color:#94a3b8;font-size:12px">\${t.company_name||'—'}</td>
+      <td style="color:#94a3b8;font-size:12px">\${t.company_name||'--'}</td>
       <td><span style="display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;background:\${ps.bg};color:\${ps.color}">\${ps.label}</span></td>
       <td><span style="display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;background:\${ss.bg};color:\${ss.color}">\${ss.label}</span></td>
       <td style="color:#64748b;font-size:12px">\${t.message_count||0}</td>
@@ -15703,7 +15703,7 @@ async function openTicket(id) {
     document.getElementById('tkt-modal-number').textContent  = t.ticket_number
     document.getElementById('tkt-modal-subject').textContent = t.subject
     document.getElementById('tkt-modal-meta').textContent    =
-      (t.company_name||'') + ' · ' + (t.submitter_email||'') + ' · ' + new Date(t.created_at).toLocaleString()
+      (t.company_name||'') + ' \u00B7 ' + (t.submitter_email||'') + ' \u00B7 ' + new Date(t.created_at).toLocaleString()
     const ss = STATUS_STYLES[t.status]     || STATUS_STYLES.open
     const ps = PRIORITY_STYLES[t.priority] || PRIORITY_STYLES.normal
     document.getElementById('tkt-modal-status-badge').innerHTML =
@@ -15751,17 +15751,17 @@ async function sendTicketReply() {
   if (!currentTicketId) return
   const message    = document.getElementById('tkt-reply-text').value.trim()
   const isInternal = document.getElementById('tkt-internal-note').checked
-  if (!message) { showToast('❌ Type a reply first', true); return }
+  if (!message) { showToast('[X] Type a reply first', true); return }
   try {
     await api('/api/super/tickets/' + currentTicketId + '/reply', {
       method: 'POST', body: JSON.stringify({ message, is_internal: isInternal })
     })
     document.getElementById('tkt-reply-text').value = ''
     document.getElementById('tkt-internal-note').checked = false
-    showToast(isInternal ? '📝 Internal note added' : '✅ Reply sent to tenant')
+    showToast(isInternal ? '\u1F4DD Internal note added' : '[OK] Reply sent to tenant')
     await openTicket(currentTicketId)
     loadTickets()
-  } catch { showToast('❌ Failed to send reply', true) }
+  } catch { showToast('[X] Failed to send reply', true) }
 }
 
 async function updateTicketStatus() {
@@ -15773,10 +15773,10 @@ async function updateTicketStatus() {
       api('/api/super/tickets/' + currentTicketId + '/status',   { method:'PUT', body:JSON.stringify({ status }) }),
       api('/api/super/tickets/' + currentTicketId + '/priority', { method:'PUT', body:JSON.stringify({ priority }) })
     ])
-    showToast('✅ Ticket updated')
+    showToast('[OK] Ticket updated')
     await openTicket(currentTicketId)
     loadTickets()
-  } catch { showToast('❌ Update failed', true) }
+  } catch { showToast('[X] Update failed', true) }
 }
 
 async function resolveAndClose() {
@@ -15787,13 +15787,13 @@ async function resolveAndClose() {
     await api('/api/super/tickets/' + currentTicketId + '/status', {
       method: 'PUT', body: JSON.stringify({ status: 'closed', resolution_note: note || '' })
     })
-    showToast('🔒 Ticket closed — tenant notified by email')
+    showToast('\u1F512 Ticket closed -- tenant notified by email')
     closeTicketModal()
     loadTickets()
-  } catch { showToast('❌ Failed to close ticket', true) }
+  } catch { showToast('[X] Failed to close ticket', true) }
 }
 
-// ── Toast ────────────────────────────────────────────────────────────────────
+// -- Toast --------------------------------------------------------------------
 function showToast(msg, isError=false) {
   const t = document.getElementById('toast')
   t.textContent = msg
@@ -15802,7 +15802,7 @@ function showToast(msg, isError=false) {
   setTimeout(()=>{ t.style.display='none' }, 3500)
 }
 
-// ── Tenant Profile Drawer ────────────────────────────────────────────────────
+// -- Tenant Profile Drawer ----------------------------------------------------
 let _profileTenantId = null
 
 function openTenantProfile(id) {
@@ -15814,9 +15814,9 @@ function openTenantProfile(id) {
   document.getElementById('tp-body').innerHTML = '<div style="text-align:center;padding:60px;color:#475569"><i class="fas fa-spinner fa-spin"></i> Loading tenant profile...</div>'
   // Reset header
   document.getElementById('tp-name').textContent  = 'Loading...'
-  document.getElementById('tp-meta').textContent  = '—'
-  document.getElementById('tp-status-badge').textContent = '—'
-  document.getElementById('tp-plan-badge').textContent   = '—'
+  document.getElementById('tp-meta').textContent  = '--'
+  document.getElementById('tp-status-badge').textContent = '--'
+  document.getElementById('tp-plan-badge').textContent   = '--'
   loadTenantProfile(id)
 }
 
@@ -15835,14 +15835,14 @@ async function loadTenantProfile(id) {
     const t  = d.tenant
     const st = d.stats || {}
 
-    // ── Header ──
+    // -- Header --
     const logo = document.getElementById('tp-logo')
     logo.textContent       = (t.company_name||'?')[0].toUpperCase()
     logo.style.background  = t.primary_color || '#4f46e5'
-    document.getElementById('tp-name').textContent = t.company_name || '—'
+    document.getElementById('tp-name').textContent = t.company_name || '--'
 
     const stBadge = document.getElementById('tp-status-badge')
-    stBadge.textContent  = t.status || '—'
+    stBadge.textContent  = t.status || '--'
     stBadge.className    = 'pill ' + (t.status==='active'?'badge-active':t.status==='trial'?'badge-trial':'badge-suspended')
 
     const plBadge = document.getElementById('tp-plan-badge')
@@ -15850,12 +15850,12 @@ async function loadTenantProfile(id) {
     plBadge.className    = 'pill ' + (t.plan==='pro'?'badge-pro':t.plan==='growth'?'badge-growth':'badge-starter')
 
     const since = t.days_active != null ? t.days_active + ' days active' : ''
-    document.getElementById('tp-meta').textContent = [t.admin_email, since, 'Slug: ' + t.slug].filter(Boolean).join('  ·  ')
+    document.getElementById('tp-meta').textContent = [t.admin_email, since, 'Slug: ' + t.slug].filter(Boolean).join('  \u00B7  ')
 
     document.getElementById('tp-admin-link').href = t.admin_url || '#'
     document.getElementById('tp-app-link').href   = t.app_url   || '#'
 
-    // ── Body ──
+    // -- Body --
     const nowIn    = st.currently_in  || 0
     const alerts   = (d.pending_device_resets||[]).length + (d.open_tickets||[]).length
     const alertBadge = alerts > 0 ? \`<span style="background:#dc2626;color:#fff;border-radius:20px;padding:2px 8px;font-size:11px;font-weight:700;margin-left:6px">\${alerts} alert\${alerts!==1?'s':''}</span>\` : ''
@@ -15863,11 +15863,11 @@ async function loadTenantProfile(id) {
     document.getElementById('tp-body').innerHTML = \`
     <!-- KPI row -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:20px">
-      \${kpiCard('fas fa-users','Workers',\`\${st.total_workers||0} / \${t.max_workers||'∞'}\`,'#6366f1')}
+      \${kpiCard('fas fa-users','Workers',\`\${st.total_workers||0} / \${t.max_workers||'\u221E'}\`,'#6366f1')}
       \${kpiCard('fas fa-clock','Clocked In Now',nowIn,'#22c55e')}
       \${kpiCard('fas fa-history','Total Sessions',st.total_sessions||0,'#818cf8')}
       \${kpiCard('fas fa-hourglass-half','Total Hours',(st.total_hours||0)+'h','#f59e0b')}
-      \${kpiCard('fas fa-calendar-alt','Days Active',t.days_active!=null?t.days_active+'d':'—','#06b6d4')}
+      \${kpiCard('fas fa-calendar-alt','Days Active',t.days_active!=null?t.days_active+'d':'--','#06b6d4')}
       \${kpiCard('fas fa-bell','Open Alerts',alerts,alerts>0?'#ef4444':'#64748b')}
     </div>
 
@@ -15901,7 +15901,7 @@ async function loadTenantProfile(id) {
       <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">
         <i class="fas fa-id-badge"></i> Worker Roster
         <span style="color:#475569;font-weight:400;text-transform:none;font-size:12px;margin-left:6px">
-          \${st.active_workers||0} active · \${st.on_holiday||0} holiday · \${st.sick_leave||0} sick · \${st.suspended||0} suspended
+          \${st.active_workers||0} active \u00B7 \${st.on_holiday||0} holiday \u00B7 \${st.sick_leave||0} sick \u00B7 \${st.suspended||0} suspended
         </span>
       </div>
       \${(d.workers||[]).length === 0
@@ -15914,7 +15914,7 @@ async function loadTenantProfile(id) {
               <span style="width:8px;height:8px;border-radius:50%;background:\${sc2};flex-shrink:0"></span>
               <div style="flex:1;min-width:0">
                 <div style="color:#e2e8f0;font-size:13px;font-weight:600">\${w.name}</div>
-                <div style="color:#64748b;font-size:11px">\${w.phone} · \${w.session_count||0} sessions · Last: \${last}</div>
+                <div style="color:#64748b;font-size:11px">\${w.phone} \u00B7 \${w.session_count||0} sessions \u00B7 Last: \${last}</div>
               </div>
               <span style="font-size:11px;color:#475569">\${w.status}</span>
               \${w.device_id ? '' : '<span style="font-size:10px;color:#f59e0b;background:#1c1400;border:1px solid #f59e0b;border-radius:4px;padding:1px 5px">no device</span>'}
@@ -15931,9 +15931,9 @@ async function loadTenantProfile(id) {
         ? '<div style="color:#475569;font-size:13px;padding:12px 0">No sessions yet</div>'
         : \`<div style="background:#0f1a2e;border:1px solid #1e293b;border-radius:10px;overflow:hidden">
           \${(d.recent_sessions).map(s => {
-            const ci   = s.clock_in  ? new Date(s.clock_in).toLocaleString()  : '—'
+            const ci   = s.clock_in  ? new Date(s.clock_in).toLocaleString()  : '--'
             const co   = s.clock_out ? new Date(s.clock_out).toLocaleString() : '<span style="color:#22c55e">Active</span>'
-            const hrs  = s.total_hours ? s.total_hours.toFixed(1)+'h' : '—'
+            const hrs  = s.total_hours ? s.total_hours.toFixed(1)+'h' : '--'
             return \`<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid #1e293b">
               <div style="flex:1;min-width:0">
                 <div style="color:#e2e8f0;font-size:13px;font-weight:600">\${s.worker_name}</div>
@@ -15953,13 +15953,13 @@ async function loadTenantProfile(id) {
     <div style="background:#0f1a2e;border:1px solid #1e293b;border-radius:10px;padding:16px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px"><i class="fas fa-cog"></i> Account Details</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        \${infoRow('Admin Email', t.admin_email||'—')}
-        \${infoRow('Admin PIN', t.admin_pin ? '••••' : '—')}
+        \${infoRow('Admin Email', t.admin_email||'--')}
+        \${infoRow('Admin PIN', t.admin_pin ? '****' : '--')}
         \${infoRow('Plan', (t.plan||'starter').toUpperCase())}
-        \${infoRow('Max Workers', t.max_workers||'∞')}
-        \${infoRow('Status', t.status||'—')}
-        \${infoRow('Created', t.created_at ? new Date(t.created_at).toLocaleDateString() : '—')}
-        \${infoRow('Primary Color', t.primary_color||'—')}
+        \${infoRow('Max Workers', t.max_workers||'\u221E')}
+        \${infoRow('Status', t.status||'--')}
+        \${infoRow('Created', t.created_at ? new Date(t.created_at).toLocaleDateString() : '--')}
+        \${infoRow('Primary Color', t.primary_color||'--')}
         \${infoRow('Subdomain', t.slug)}
       </div>
     </div>
@@ -15993,7 +15993,7 @@ function infoRow(label, value) {
   </div>\`
 }
 
-// ── Plans & Pricing ──────────────────────────────────────────────────────────
+// -- Plans & Pricing ----------------------------------------------------------
 let _plansData = []
 
 // Populate any plan <select> elements from DB data
@@ -16007,7 +16007,7 @@ function populatePlanDropdowns(plans, currentVal) {
       const dollars = Math.floor(p.price_monthly / 100)
       const workers = p.max_workers >= 999 ? 'Unlimited workers' : p.max_workers + ' workers'
       const key = (p.name || '').toLowerCase()
-      return '<option value="' + key + '">' + p.name + ' — $' + dollars + ' CAD/mo (' + workers + ')</option>'
+      return '<option value="' + key + '">' + p.name + ' -- $' + dollars + ' CAD/mo (' + workers + ')</option>'
     }).join('')
     if (prev) sel.value = prev
     if (!sel.value && plans.length) sel.value = (plans[Math.min(1, plans.length-1)].name || '').toLowerCase()
@@ -16057,7 +16057,7 @@ function renderPlansGrid(plans) {
         \${features.slice(0,6).map(f => \`<li><i class="fas fa-check" style="color:#22c55e;margin-right:6px"></i>\${f.trim()}</li>\`).join('')}
         \${features.length > 6 ? \`<li style="color:#64748b">+ \${features.length-6} more...</li>\` : ''}
       </ul>
-      \${p.stripe_price_id ? \`<div style="font-size:10px;color:#475569;font-family:monospace;margin-bottom:12px;word-break:break-all">\${p.stripe_price_id}</div>\` : '<div style="font-size:10px;color:#ef4444;margin-bottom:12px">⚠ No Stripe Price ID set</div>'}
+      \${p.stripe_price_id ? \`<div style="font-size:10px;color:#475569;font-family:monospace;margin-bottom:12px;word-break:break-all">\${p.stripe_price_id}</div>\` : '<div style="font-size:10px;color:#ef4444;margin-bottom:12px">[!] No Stripe Price ID set</div>'}
       <button onclick="openPlanModal(\${p.id})" class="btn btn-ghost" style="width:100%;font-size:12px"><i class="fas fa-edit"></i> Edit Plan</button>
     </div>\`
   }).join('')
@@ -16094,9 +16094,9 @@ async function savePlanEdit() {
   const active     = document.getElementById('plan-edit-active').checked
 
   const msg = document.getElementById('plan-edit-msg')
-  if (!name)           { showPlanMsg('❌ Plan name is required', true); return }
-  if (isNaN(price))    { showPlanMsg('❌ Invalid price', true); return }
-  if (isNaN(workers))  { showPlanMsg('❌ Invalid worker count', true); return }
+  if (!name)           { showPlanMsg('[X] Plan name is required', true); return }
+  if (isNaN(price))    { showPlanMsg('[X] Invalid price', true); return }
+  if (isNaN(workers))  { showPlanMsg('[X] Invalid worker count', true); return }
 
   try {
     showPlanMsg('Saving...', false)
@@ -16104,11 +16104,11 @@ async function savePlanEdit() {
       method: 'PUT',
       body: JSON.stringify({ name, stripe_price_id: stripeId, price_monthly: price, max_workers: workers, features, active })
     })
-    showPlanMsg('✅ Saved! Landing page & signup page now reflect these changes.', false)
+    showPlanMsg('[OK] Saved! Landing page & signup page now reflect these changes.', false)
     await loadPlansPage()
     setTimeout(closePlanModal, 1200)
   } catch(e) {
-    showPlanMsg('❌ ' + e.message, true)
+    showPlanMsg('[X] ' + e.message, true)
   }
 }
 
@@ -16125,23 +16125,23 @@ function showPlanMsg(txt, isErr) {
 </html>`
 }
 
-// ─── CLOUDFLARE SCHEDULED TRIGGER ────────────────────────────────────────────
-// Fires every Friday at 23:59 UTC  →  cron: "59 23 * * 5"
-// Also fires every 30 min for Encircle sync  →  cron: "*/30 * * * *"
+// \u2500\u2500\u2500 CLOUDFLARE SCHEDULED TRIGGER \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Fires every Friday at 23:59 UTC  \u2192  cron: "59 23 * * 5"
+// Also fires every 30 min for Encircle sync  \u2192  cron: "*/30 * * * *"
 export default {
   fetch: app.fetch,
   async scheduled(event: any, env: any, _ctx: any) {
     const db = env.DB as D1Database
     // Weekly payroll email (Fridays)
     await runWeeklyEmailJob(db, env)
-    // Encircle auto-sync (every 30 min — only runs if sync_enabled = 1)
+    // Encircle auto-sync (every 30 min \u2014 only runs if sync_enabled = 1)
     try {
       const settings = await db.prepare('SELECT sync_enabled FROM encircle_settings WHERE id = 1').first() as any
       if (settings?.sync_enabled === 1) {
         await runEncircleSync(db)
       }
     } catch (_) {
-      // Ignore errors in cron — don't fail the whole scheduled event
+      // Ignore errors in cron \u2014 don't fail the whole scheduled event
     }
   }
 }
