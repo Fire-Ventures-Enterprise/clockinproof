@@ -13178,7 +13178,7 @@ function getSuperAdminHTML(): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ClockInProof -- Super Admin</title>
-<link rel="icon" href="/icon-180.png" type="image/png">
+<link rel="icon" href="/static/icon-180.png" type="image/png">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
