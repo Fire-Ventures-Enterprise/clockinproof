@@ -10633,12 +10633,13 @@ function getAdminHTML(): string {
 
       <!-- ===== SUB-TAB: HISTORY ARCHIVE ===== -->
       <div id="sess-subtab-archive" class="hidden">
+        <!-- Header row -->
         <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
           <div>
             <h3 class="font-bold text-gray-700 flex items-center gap-2">
               <i class="fas fa-box-archive text-amber-500"></i> Session History Archive
             </h3>
-            <p class="text-xs text-gray-400 mt-0.5">Completed sessions you've archived — a permanent record of what happened</p>
+            <p class="text-xs text-gray-400 mt-0.5">Tick sessions to restore them, or use the batch checkboxes</p>
           </div>
           <div class="flex gap-2 items-center">
             <select id="archive-filter-worker" class="border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400" onchange="loadArchivedSessions()">
@@ -10649,6 +10650,25 @@ function getAdminHTML(): string {
             </button>
           </div>
         </div>
+
+        <!-- Sticky Restore Selected bar — shown only when items are checked -->
+        <div id="restore-selected-bar" class="hidden sticky top-0 z-10 mb-4 flex items-center justify-between gap-3 bg-indigo-600 text-white rounded-xl px-4 py-3 shadow-lg">
+          <div class="flex items-center gap-2">
+            <i class="fas fa-check-square text-indigo-200"></i>
+            <span id="restore-selected-count" class="font-bold text-sm">0 sessions selected</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="selectedRestoreIds.clear(); loadArchivedSessions()"
+              class="text-indigo-200 hover:text-white text-sm px-3 py-1.5 rounded-lg border border-indigo-400 hover:border-white transition-colors">
+              Clear
+            </button>
+            <button onclick="restoreSelected()"
+              class="bg-white text-indigo-700 hover:bg-indigo-50 font-bold text-sm px-4 py-1.5 rounded-lg transition-colors">
+              <i class="fas fa-rotate-left mr-1.5"></i>Restore Selected
+            </button>
+          </div>
+        </div>
+
         <div id="archive-batches-list" class="space-y-4">
           <div class="text-center py-12 text-gray-400">
             <i class="fas fa-box-open text-4xl mb-3 block"></i>

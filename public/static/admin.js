@@ -1800,11 +1800,18 @@ async function updateArchiveBadge() {
   } catch(e) {}
 }
 
+// Tracks which archived session IDs are checked for restore
+let selectedRestoreIds = new Set()
+
 async function loadArchivedSessions() {
   const container = document.getElementById('archive-batches-list')
   if (!container) return
   container.innerHTML = '<div class="text-center py-10 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl"></i></div>'
   const workerId = document.getElementById('archive-filter-worker')?.value || ''
+  // Reset selection on reload
+  selectedRestoreIds = new Set()
+  updateRestoreSelectionUI()
+
   try {
     let url = '/api/sessions/archived'
     if (workerId) url += '?worker_id=' + workerId
@@ -1812,7 +1819,7 @@ async function loadArchivedSessions() {
     const data = await res.json()
     const batches = data.batches || []
 
-    // Update badge
+    // Update tab badge
     const badge = document.getElementById('archive-batch-badge')
     if (badge) { badge.textContent = batches.length; badge.classList.toggle('hidden', batches.length === 0) }
 
@@ -1829,22 +1836,29 @@ async function loadArchivedSessions() {
       const archivedDate = batch.archived_at ? new Date(batch.archived_at).toLocaleString('en-US', {
         weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'
       }) : '--'
+      const batchSessionIds = batch.sessions.map(s => s.id)
+
       const sessionRows = batch.sessions.map(s => {
         const cin = new Date(s.clock_in_time).toLocaleString('en-US', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})
         const cout = s.clock_out_time ? new Date(s.clock_out_time).toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit'}) : '--'
-        return `<div class="flex items-center justify-between py-2 border-b border-gray-100 last:border-0 text-sm">
-          <div class="flex items-center gap-2">
-            <div class="w-6 h-6 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0">
-              <span class="text-amber-600 text-xs font-bold">${(s.worker_name||'?').charAt(0).toUpperCase()}</span>
-            </div>
-            <div>
-              <span class="font-semibold text-gray-700">${s.worker_name || '--'}</span>
-              ${s.job_location ? `<span class="text-gray-400 text-xs ml-2"><i class="fas fa-map-marker-alt mr-0.5"></i>${s.job_location}</span>` : ''}
-            </div>
+        return `<div class="flex items-center gap-3 py-2.5 border-b border-gray-100 last:border-0" id="restore-row-${s.id}">
+          <!-- Checkbox -->
+          <input type="checkbox" class="restore-checkbox w-4 h-4 rounded accent-indigo-600 cursor-pointer flex-shrink-0"
+            data-id="${s.id}" data-batch="${batch.batch_id}"
+            onchange="toggleRestoreSelect(${s.id}, '${batch.batch_id}', this.checked)">
+          <!-- Avatar -->
+          <div class="w-7 h-7 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0">
+            <span class="text-amber-600 text-xs font-bold">${(s.worker_name||'?').charAt(0).toUpperCase()}</span>
           </div>
-          <div class="text-right text-xs text-gray-500">
-            <div>${cin} - ${cout}</div>
-            <div class="font-bold text-gray-700">${(s.total_hours||0).toFixed(2)}h &nbsp; <span class="text-green-600">$${(s.earnings||0).toFixed(2)}</span></div>
+          <!-- Info -->
+          <div class="flex-1 min-w-0">
+            <span class="font-semibold text-gray-800 text-sm">${s.worker_name || '--'}</span>
+            ${s.job_location ? `<span class="text-gray-400 text-xs ml-2"><i class="fas fa-map-marker-alt mr-0.5"></i>${s.job_location}</span>` : ''}
+          </div>
+          <!-- Times + hours -->
+          <div class="text-right text-xs text-gray-500 flex-shrink-0">
+            <div>${cin} &rarr; ${cout}</div>
+            <div class="font-bold text-gray-700 mt-0.5">${(s.total_hours||0).toFixed(2)}h <span class="text-green-600 ml-1">$${(s.earnings||0).toFixed(2)}</span></div>
           </div>
         </div>`
       }).join('')
@@ -1852,37 +1866,104 @@ async function loadArchivedSessions() {
       return `<div class="border border-amber-200 rounded-2xl overflow-hidden" id="batch-${batch.batch_id}">
         <!-- Batch header -->
         <div class="bg-amber-50 border-b border-amber-200 px-5 py-4">
-          <div class="flex items-start justify-between gap-3">
-            <div class="flex-1">
-              <div class="flex items-center gap-2 mb-1">
-                <i class="fas fa-box-archive text-amber-500"></i>
-                <span class="font-bold text-gray-800">${batch.note || '(No note)'}</span>
+          <div class="flex items-start justify-between gap-3 flex-wrap">
+            <div class="flex items-start gap-3 flex-1 min-w-0">
+              <!-- Batch select-all checkbox -->
+              <div class="pt-0.5">
+                <input type="checkbox" class="batch-select-all w-4 h-4 rounded accent-amber-500 cursor-pointer"
+                  data-batch="${batch.batch_id}"
+                  title="Select all sessions in this batch"
+                  onchange="toggleSelectBatch('${batch.batch_id}', ${JSON.stringify(batchSessionIds)}, this.checked)">
               </div>
-              <div class="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
-                <span><i class="fas fa-calendar-check mr-1 text-amber-400"></i>Archived ${archivedDate}</span>
-                <span><i class="fas fa-users mr-1 text-indigo-400"></i>${batch.sessions.length} session${batch.sessions.length !== 1 ? 's' : ''}</span>
-                <span><i class="fas fa-clock mr-1 text-green-400"></i>${batch.total_hours.toFixed(1)}h total</span>
-                <span><i class="fas fa-dollar-sign mr-1 text-green-500"></i>$${batch.total_earnings.toFixed(2)} total</span>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 mb-1">
+                  <i class="fas fa-box-archive text-amber-500"></i>
+                  <span class="font-bold text-gray-800 truncate">${batch.note || '(No note)'}</span>
+                </div>
+                <div class="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
+                  <span><i class="fas fa-calendar-check mr-1 text-amber-400"></i>Archived ${archivedDate}</span>
+                  <span><i class="fas fa-users mr-1 text-indigo-400"></i>${batch.sessions.length} session${batch.sessions.length !== 1 ? 's' : ''}</span>
+                  <span><i class="fas fa-clock mr-1 text-green-400"></i>${batch.total_hours.toFixed(1)}h</span>
+                  <span><i class="fas fa-dollar-sign mr-1 text-green-500"></i>$${batch.total_earnings.toFixed(2)}</span>
+                </div>
               </div>
             </div>
-            <button onclick="unarchiveBatch('${batch.batch_id}')" class="flex-shrink-0 text-xs border border-gray-300 text-gray-500 hover:text-indigo-600 hover:border-indigo-300 px-3 py-1.5 rounded-lg transition-colors">
-              <i class="fas fa-rotate-left mr-1"></i>Restore
+            <!-- Restore entire batch button -->
+            <button onclick="restoreEntireBatch('${batch.batch_id}')"
+              class="flex-shrink-0 text-xs border border-gray-300 text-gray-500 hover:text-indigo-600 hover:border-indigo-300 px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap">
+              <i class="fas fa-rotate-left mr-1"></i>Restore All
             </button>
           </div>
         </div>
-        <!-- Batch sessions -->
-        <div class="px-5 py-3 max-h-72 overflow-y-auto">
+        <!-- Session rows with checkboxes -->
+        <div class="px-5 py-2 max-h-80 overflow-y-auto">
           ${sessionRows}
         </div>
       </div>`
     }).join('')
+
   } catch(e) {
     container.innerHTML = '<div class="text-center py-10 text-red-400"><i class="fas fa-exclamation-circle mr-2"></i>Failed to load archive</div>'
   }
 }
 
-async function unarchiveBatch(batchId) {
-  if (!confirm('Restore all sessions in this archive batch back to the Work Sessions tab?')) return
+function toggleRestoreSelect(id, batchId, checked) {
+  if (checked) selectedRestoreIds.add(id)
+  else selectedRestoreIds.delete(id)
+  updateRestoreSelectionUI()
+  // Sync the batch select-all checkbox
+  syncBatchSelectAll(batchId)
+}
+
+function toggleSelectBatch(batchId, sessionIds, checked) {
+  sessionIds.forEach(id => {
+    if (checked) selectedRestoreIds.add(id)
+    else selectedRestoreIds.delete(id)
+  })
+  // Sync individual checkboxes in this batch
+  document.querySelectorAll(`.restore-checkbox[data-batch="${batchId}"]`).forEach(cb => { cb.checked = checked })
+  updateRestoreSelectionUI()
+}
+
+function syncBatchSelectAll(batchId) {
+  const batchCbs = document.querySelectorAll(`.restore-checkbox[data-batch="${batchId}"]`)
+  const allChecked = Array.from(batchCbs).every(cb => cb.checked)
+  const batchAllCb = document.querySelector(`.batch-select-all[data-batch="${batchId}"]`)
+  if (batchAllCb) batchAllCb.checked = allChecked && batchCbs.length > 0
+}
+
+function updateRestoreSelectionUI() {
+  const count = selectedRestoreIds.size
+  let bar = document.getElementById('restore-selected-bar')
+  if (!bar) return
+  if (count === 0) {
+    bar.classList.add('hidden')
+  } else {
+    bar.classList.remove('hidden')
+    const label = bar.querySelector('#restore-selected-count')
+    if (label) label.textContent = count + ' session' + (count !== 1 ? 's' : '') + ' selected'
+  }
+}
+
+async function restoreSelected() {
+  const ids = Array.from(selectedRestoreIds)
+  if (!ids.length) return
+  try {
+    const res = await fetch('/api/sessions/unarchive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_ids: ids })
+    })
+    const data = await res.json()
+    if (data.error) { showToast(data.error, true); return }
+    showToast('Restored ' + ids.length + ' session' + (ids.length !== 1 ? 's' : '') + ' successfully')
+    selectedRestoreIds.clear()
+    await loadArchivedSessions()
+  } catch(e) { showToast('Failed to restore sessions', true) }
+}
+
+async function restoreEntireBatch(batchId) {
+  if (!confirm('Restore ALL sessions in this batch back to the Work Sessions tab?')) return
   try {
     const res = await fetch('/api/sessions/unarchive', {
       method: 'POST',
@@ -1891,9 +1972,10 @@ async function unarchiveBatch(batchId) {
     })
     const data = await res.json()
     if (data.error) { showToast(data.error, true); return }
-    showToast('Sessions restored successfully')
+    showToast('Batch restored successfully')
+    selectedRestoreIds.clear()
     await loadArchivedSessions()
-  } catch(e) { showToast('Failed to restore sessions', true) }
+  } catch(e) { showToast('Failed to restore batch', true) }
 }
 
 
