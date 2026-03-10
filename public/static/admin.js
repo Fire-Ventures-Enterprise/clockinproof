@@ -33,6 +33,7 @@ let adminMap = null
 let currentPeriod = 'today'
 let allSessionsData = []
 let sessionStore = {}  // id -> session object for modal lookup
+let selectedSessionIds = new Set()  // tracks checked session IDs for archive
 // Address search location anchor -- set from job sites or settings
 let _adminSearchLat = 45.42   // Ottawa centre fallback
 let _adminSearchLng = -75.70
@@ -179,10 +180,11 @@ document.getElementById('admin-email-input')?.addEventListener('keyup', e => {
 async function refreshAll() {
   document.getElementById('admin-last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString()
   await Promise.all([loadStats(), loadLive(), loadWorkers(), loadSessions()])
-  // Silently refresh badges for overrides, disputes, and device reset requests
+  // Silently refresh badges for overrides, disputes, device reset requests, and archive
   loadOverrides().catch(() => {})
   loadDisputes().catch(() => {})
   loadDeviceResetRequests().catch(() => {})
+  updateArchiveBadge().catch(() => {})
   // Trigger server-side watchdog -- auto-clocks out workers who left geofence / exceeded max shift
   // This ensures auto-clockout fires even if the worker's phone is offline
   runAdminWatchdog().catch(() => {})
@@ -1527,6 +1529,13 @@ async function loadWorkers() {
       workerSelect.innerHTML = '<option value="">All Workers</option>' +
         _allWorkersData.map(w => `<option value="${w.id}" ${currentVal == w.id ? 'selected' : ''}>${w.name}</option>`).join('')
     }
+    // Also populate the archive filter worker dropdown
+    const archiveWorkerSel = document.getElementById('archive-filter-worker')
+    if (archiveWorkerSel) {
+      const currentArchiveVal = archiveWorkerSel.value
+      archiveWorkerSel.innerHTML = '<option value="">All Workers</option>' +
+        _allWorkersData.map(w => `<option value="${w.id}" ${currentArchiveVal == w.id ? 'selected' : ''}>${w.name}</option>`).join('')
+    }
 
     renderWorkersTable()
     // If currently showing 'onsite' view, re-render that
@@ -1544,7 +1553,7 @@ async function loadSessions() {
 
     const res = await fetch(url)
     const data = await res.json()
-    allSessionsData = data.sessions || []
+    allSessionsData = (data.sessions || []).filter(s => !s.archived)
     // Deduplicate by session ID (guard against any edge-case double-fetch)
     const seen = new Set()
     allSessionsData = allSessionsData.filter(s => {
@@ -1554,6 +1563,12 @@ async function loadSessions() {
     // Populate sessionStore for modal lookups
     allSessionsData.forEach(s => { if (s.id) sessionStore[s.id] = s })
     const container = document.getElementById('sessions-by-day')
+    // Show/hide select bar
+    const selectBar = document.getElementById('sess-select-bar')
+    if (selectBar) selectBar.classList.toggle('hidden', allSessionsData.length === 0)
+    // Reset selection state
+    selectedSessionIds = new Set()
+    updateArchiveSelectionUI()
 
     if (allSessionsData.length === 0) {
       container.innerHTML = `<div class="text-center py-12 text-gray-400">
@@ -1594,7 +1609,9 @@ async function loadSessions() {
           ? `<a href="https://maps.google.com/?q=${sess.clock_in_lat},${sess.clock_in_lng}" target="_blank" class="text-blue-500 hover:text-blue-700 text-xs ml-2"><i class="fas fa-map-marker-alt mr-0.5"></i>Map</a>`
           : ''
 
-        return `<div class="bg-gray-50 rounded-xl p-4 border ${sess.auto_clockout ? 'border-red-100' : 'border-gray-100'} hover:border-indigo-300 hover:shadow-md transition-all cursor-pointer" onclick="openSessionById(${sess.id})">
+        const isCompleted = sess.status === 'completed'
+        return `<div class="bg-gray-50 rounded-xl p-4 border ${sess.auto_clockout ? 'border-red-100' : 'border-gray-100'} hover:border-indigo-300 hover:shadow-md transition-all" id="sess-card-${sess.id}">
+          ${isCompleted ? `<div class="flex items-start gap-3"><div class="pt-0.5 flex-shrink-0"><input type="checkbox" class="sess-checkbox w-4 h-4 rounded accent-indigo-600 cursor-pointer" data-id="${sess.id}" onchange="toggleSessionSelect(${sess.id}, this.checked)" onclick="event.stopPropagation()"></div><div class="flex-1 cursor-pointer" onclick="openSessionById(${sess.id})">` : `<div class="flex items-start gap-2"><div class="flex-1 cursor-pointer" onclick="openSessionById(${sess.id})">`}
           <div class="flex items-start justify-between gap-2">
             <div class="flex-1">
               <!-- Worker name + status -->
@@ -1661,6 +1678,7 @@ async function loadSessions() {
               <p class="text-xs text-gray-400 mt-1"><i class="fas fa-info-circle"></i></p>
             </div>
           </div>
+          ${isCompleted ? '</div></div>' : '</div></div>'}
         </div>`
       }).join('')
 
@@ -1687,6 +1705,197 @@ async function loadSessions() {
     }).join('')
   } catch(e) { console.error(e) }
 }
+
+// -- Session Archive / History -----------------------------------------------
+
+function switchSessionSubTab(tab) {
+  const isActive = tab === 'active'
+  document.getElementById('sess-subtab-active').classList.toggle('hidden', !isActive)
+  document.getElementById('sess-subtab-archive').classList.toggle('hidden', isActive)
+  const activeBtn = document.getElementById('sess-subtab-active-btn')
+  const archiveBtn = document.getElementById('sess-subtab-archive-btn')
+  if (activeBtn) {
+    activeBtn.className = isActive
+      ? 'px-4 py-2 text-sm font-semibold rounded-t-xl border-b-2 border-indigo-500 text-indigo-600 bg-indigo-50 transition-all'
+      : 'px-4 py-2 text-sm font-semibold rounded-t-xl border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition-all'
+  }
+  if (archiveBtn) {
+    archiveBtn.className = !isActive
+      ? 'px-4 py-2 text-sm font-semibold rounded-t-xl border-b-2 border-amber-500 text-amber-600 bg-amber-50 transition-all'
+      : 'px-4 py-2 text-sm font-semibold rounded-t-xl border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition-all'
+  }
+  if (!isActive) loadArchivedSessions()
+}
+
+function toggleSessionSelect(id, checked) {
+  if (checked) selectedSessionIds.add(id)
+  else selectedSessionIds.delete(id)
+  updateArchiveSelectionUI()
+}
+
+function toggleSelectAllSessions(checked) {
+  const completedIds = allSessionsData.filter(s => s.status === 'completed').map(s => s.id)
+  if (checked) completedIds.forEach(id => selectedSessionIds.add(id))
+  else selectedSessionIds.clear()
+  // Sync checkboxes
+  document.querySelectorAll('.sess-checkbox').forEach(cb => {
+    cb.checked = checked && Number(cb.dataset.id) && allSessionsData.find(s => s.id === Number(cb.dataset.id) && s.status === 'completed')
+  })
+  updateArchiveSelectionUI()
+}
+
+function updateArchiveSelectionUI() {
+  const count = selectedSessionIds.size
+  const countEl = document.getElementById('sess-select-count')
+  const archiveBtn = document.getElementById('archive-selected-btn')
+  const selectAllCb = document.getElementById('sess-select-all')
+  if (countEl) { countEl.textContent = count + ' selected'; countEl.classList.toggle('hidden', count === 0) }
+  if (archiveBtn) archiveBtn.classList.toggle('hidden', count === 0)
+  const completedTotal = allSessionsData.filter(s => s.status === 'completed').length
+  if (selectAllCb) selectAllCb.checked = count > 0 && count === completedTotal
+}
+
+function openArchiveModal() {
+  if (selectedSessionIds.size === 0) return
+  document.getElementById('archive-modal-count').textContent = selectedSessionIds.size + ' session' + (selectedSessionIds.size > 1 ? 's' : '') + ' selected'
+  document.getElementById('archive-note-input').value = ''
+  document.getElementById('archive-modal').classList.remove('hidden')
+}
+
+function closeArchiveModal() {
+  document.getElementById('archive-modal').classList.add('hidden')
+}
+
+async function confirmArchive() {
+  const note = document.getElementById('archive-note-input').value.trim()
+  const ids = Array.from(selectedSessionIds)
+  if (!ids.length) return
+  try {
+    const res = await fetch('/api/sessions/archive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_ids: ids, note })
+    })
+    const data = await res.json()
+    if (data.error) { showToast(data.error, true); return }
+    closeArchiveModal()
+    selectedSessionIds.clear()
+    showToast('Archived ' + ids.length + ' session' + (ids.length > 1 ? 's' : '') + ' successfully')
+    // Refresh badge
+    await updateArchiveBadge()
+    await loadSessions()
+  } catch(e) { showToast('Failed to archive sessions', true) }
+}
+
+async function updateArchiveBadge() {
+  try {
+    const res = await fetch('/api/sessions/archived')
+    const data = await res.json()
+    const badge = document.getElementById('archive-batch-badge')
+    if (badge) {
+      const count = data.batches?.length || 0
+      badge.textContent = count
+      badge.classList.toggle('hidden', count === 0)
+    }
+  } catch(e) {}
+}
+
+async function loadArchivedSessions() {
+  const container = document.getElementById('archive-batches-list')
+  if (!container) return
+  container.innerHTML = '<div class="text-center py-10 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl"></i></div>'
+  const workerId = document.getElementById('archive-filter-worker')?.value || ''
+  try {
+    let url = '/api/sessions/archived'
+    if (workerId) url += '?worker_id=' + workerId
+    const res = await fetch(url)
+    const data = await res.json()
+    const batches = data.batches || []
+
+    // Update badge
+    const badge = document.getElementById('archive-batch-badge')
+    if (badge) { badge.textContent = batches.length; badge.classList.toggle('hidden', batches.length === 0) }
+
+    if (!batches.length) {
+      container.innerHTML = `<div class="text-center py-12 text-gray-400">
+        <i class="fas fa-box-open text-4xl mb-3 block"></i>
+        <p class="font-medium">No archived sessions yet</p>
+        <p class="text-xs mt-1">Select sessions from the Work Sessions tab and click Archive Selected</p>
+      </div>`
+      return
+    }
+
+    container.innerHTML = batches.map(batch => {
+      const archivedDate = batch.archived_at ? new Date(batch.archived_at).toLocaleString('en-US', {
+        weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'
+      }) : '--'
+      const sessionRows = batch.sessions.map(s => {
+        const cin = new Date(s.clock_in_time).toLocaleString('en-US', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})
+        const cout = s.clock_out_time ? new Date(s.clock_out_time).toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit'}) : '--'
+        return `<div class="flex items-center justify-between py-2 border-b border-gray-100 last:border-0 text-sm">
+          <div class="flex items-center gap-2">
+            <div class="w-6 h-6 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0">
+              <span class="text-amber-600 text-xs font-bold">${(s.worker_name||'?').charAt(0).toUpperCase()}</span>
+            </div>
+            <div>
+              <span class="font-semibold text-gray-700">${s.worker_name || '--'}</span>
+              ${s.job_location ? `<span class="text-gray-400 text-xs ml-2"><i class="fas fa-map-marker-alt mr-0.5"></i>${s.job_location}</span>` : ''}
+            </div>
+          </div>
+          <div class="text-right text-xs text-gray-500">
+            <div>${cin} - ${cout}</div>
+            <div class="font-bold text-gray-700">${(s.total_hours||0).toFixed(2)}h &nbsp; <span class="text-green-600">$${(s.earnings||0).toFixed(2)}</span></div>
+          </div>
+        </div>`
+      }).join('')
+
+      return `<div class="border border-amber-200 rounded-2xl overflow-hidden" id="batch-${batch.batch_id}">
+        <!-- Batch header -->
+        <div class="bg-amber-50 border-b border-amber-200 px-5 py-4">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex-1">
+              <div class="flex items-center gap-2 mb-1">
+                <i class="fas fa-box-archive text-amber-500"></i>
+                <span class="font-bold text-gray-800">${batch.note || '(No note)'}</span>
+              </div>
+              <div class="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
+                <span><i class="fas fa-calendar-check mr-1 text-amber-400"></i>Archived ${archivedDate}</span>
+                <span><i class="fas fa-users mr-1 text-indigo-400"></i>${batch.sessions.length} session${batch.sessions.length !== 1 ? 's' : ''}</span>
+                <span><i class="fas fa-clock mr-1 text-green-400"></i>${batch.total_hours.toFixed(1)}h total</span>
+                <span><i class="fas fa-dollar-sign mr-1 text-green-500"></i>$${batch.total_earnings.toFixed(2)} total</span>
+              </div>
+            </div>
+            <button onclick="unarchiveBatch('${batch.batch_id}')" class="flex-shrink-0 text-xs border border-gray-300 text-gray-500 hover:text-indigo-600 hover:border-indigo-300 px-3 py-1.5 rounded-lg transition-colors">
+              <i class="fas fa-rotate-left mr-1"></i>Restore
+            </button>
+          </div>
+        </div>
+        <!-- Batch sessions -->
+        <div class="px-5 py-3 max-h-72 overflow-y-auto">
+          ${sessionRows}
+        </div>
+      </div>`
+    }).join('')
+  } catch(e) {
+    container.innerHTML = '<div class="text-center py-10 text-red-400"><i class="fas fa-exclamation-circle mr-2"></i>Failed to load archive</div>'
+  }
+}
+
+async function unarchiveBatch(batchId) {
+  if (!confirm('Restore all sessions in this archive batch back to the Work Sessions tab?')) return
+  try {
+    const res = await fetch('/api/sessions/unarchive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batch: batchId })
+    })
+    const data = await res.json()
+    if (data.error) { showToast(data.error, true); return }
+    showToast('Sessions restored successfully')
+    await loadArchivedSessions()
+  } catch(e) { showToast('Failed to restore sessions', true) }
+}
+
 
 async function loadMap() {
   const mapEl = document.getElementById('admin-map')

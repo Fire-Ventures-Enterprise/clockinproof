@@ -190,6 +190,10 @@ async function ensureSchema(db: D1Database) {
     `ALTER TABLE sessions ADD COLUMN auto_clockout_reason TEXT`,
     `ALTER TABLE sessions ADD COLUMN geofence_exit_time DATETIME`,
     `ALTER TABLE sessions ADD COLUMN geofence_deduction_min REAL`,
+    `ALTER TABLE sessions ADD COLUMN archived INTEGER DEFAULT 0`,
+    `ALTER TABLE sessions ADD COLUMN archive_note TEXT`,
+    `ALTER TABLE sessions ADD COLUMN archived_at DATETIME`,
+    `ALTER TABLE sessions ADD COLUMN archive_batch TEXT`,
     `CREATE TABLE IF NOT EXISTS location_pings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id INTEGER NOT NULL,
@@ -2756,7 +2760,82 @@ app.get('/api/sessions/:id/edits', async (c) => {
   return c.json({ edits: edits.results })
 })
 
-// \u2500\u2500\u2500 FEATURE 2: JOB SITES MANAGER \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// POST /api/sessions/archive -- bulk archive sessions with a note
+app.post('/api/sessions/archive', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
+  const { session_ids, note } = await c.req.json().catch(() => ({})) as any
+  if (!session_ids?.length) return c.json({ error: 'No sessions selected' }, 400)
+  const archiveNote = (note || '').toString().trim().slice(0, 500)
+  const batchId = `batch_${Date.now()}`
+  const now = new Date().toISOString()
+  const placeholders = session_ids.map(() => '?').join(',')
+  await db.prepare(
+    `UPDATE sessions SET archived = 1, archive_note = ?, archived_at = ?, archive_batch = ?
+     WHERE id IN (${placeholders}) AND tenant_id = ? AND status = 'completed'`
+  ).bind(archiveNote, now, batchId, ...session_ids.map(Number), tenantId).run()
+  return c.json({ success: true, batch: batchId, archived: session_ids.length, note: archiveNote })
+})
+
+// POST /api/sessions/unarchive -- restore archived sessions
+app.post('/api/sessions/unarchive', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
+  const { session_ids, batch } = await c.req.json().catch(() => ({})) as any
+  if (batch) {
+    await db.prepare(
+      `UPDATE sessions SET archived = 0, archive_note = NULL, archived_at = NULL, archive_batch = NULL
+       WHERE archive_batch = ? AND tenant_id = ?`
+    ).bind(batch, tenantId).run()
+  } else if (session_ids?.length) {
+    const placeholders = session_ids.map(() => '?').join(',')
+    await db.prepare(
+      `UPDATE sessions SET archived = 0, archive_note = NULL, archived_at = NULL, archive_batch = NULL
+       WHERE id IN (${placeholders}) AND tenant_id = ?`
+    ).bind(...session_ids.map(Number), tenantId).run()
+  } else {
+    return c.json({ error: 'Provide session_ids or batch' }, 400)
+  }
+  return c.json({ success: true })
+})
+
+// GET /api/sessions/archived -- archived sessions grouped by batch
+app.get('/api/sessions/archived', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
+  const worker_id = c.req.query('worker_id')
+  let q = `
+    SELECT s.*, w.name as worker_name, w.phone as worker_phone
+    FROM sessions s
+    JOIN workers w ON s.worker_id = w.id
+    WHERE s.tenant_id = ? AND s.archived = 1
+  `
+  const params: any[] = [tenantId]
+  if (worker_id) { q += ` AND s.worker_id = ?`; params.push(parseInt(worker_id)) }
+  q += ` ORDER BY s.archived_at DESC, s.clock_in_time DESC LIMIT 500`
+  const rows = await db.prepare(q).bind(...params).all()
+  const batches: Record<string, any> = {}
+  for (const s of (rows.results as any[])) {
+    const bid = s.archive_batch || 'legacy'
+    if (!batches[bid]) batches[bid] = {
+      batch_id: bid, note: s.archive_note || '',
+      archived_at: s.archived_at, sessions: [],
+      total_hours: 0, total_earnings: 0
+    }
+    batches[bid].sessions.push(s)
+    batches[bid].total_hours += (s.total_hours || 0)
+    batches[bid].total_earnings += (s.earnings || 0)
+  }
+  const result = Object.values(batches).sort((a: any, b: any) =>
+    new Date(b.archived_at).getTime() - new Date(a.archived_at).getTime()
+  )
+  return c.json({ batches: result, total: rows.results.length })
+})
+
+
 
 app.get('/api/job-sites', async (c) => {
   const db = c.env.DB
@@ -10499,24 +10578,126 @@ function getAdminHTML(): string {
 
     <!-- Tab: Sessions -->
     <div id="tab-sessions" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
-      <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
-        <h3 class="font-bold text-gray-700">Work Sessions</h3>
-        <div class="flex gap-2 items-center flex-wrap">
-          <input type="date" id="filter-date" class="border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            onchange="loadSessions()"/>
-          <select id="filter-worker" class="border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" onchange="loadSessions()">
-            <option value="">All Workers</option>
-          </select>
-          <button onclick="exportCSV()" class="bg-green-600 hover:bg-green-700 text-white text-sm px-4 py-2 rounded-xl font-medium">
-            <i class="fas fa-download mr-1"></i>Export
+
+      <!-- Sub-tabs: Active / History Archive -->
+      <div class="flex gap-1 mb-5 border-b border-gray-100 pb-1">
+        <button id="sess-subtab-active-btn" onclick="switchSessionSubTab('active')"
+          class="px-4 py-2 text-sm font-semibold rounded-t-xl border-b-2 border-indigo-500 text-indigo-600 bg-indigo-50 transition-all">
+          <i class="fas fa-clock mr-1.5"></i>Work Sessions
+        </button>
+        <button id="sess-subtab-archive-btn" onclick="switchSessionSubTab('archive')"
+          class="px-4 py-2 text-sm font-semibold rounded-t-xl border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition-all">
+          <i class="fas fa-box-archive mr-1.5"></i>History Archive
+          <span id="archive-batch-badge" class="hidden ml-1 bg-amber-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full"></span>
+        </button>
+      </div>
+
+      <!-- ===== SUB-TAB: ACTIVE SESSIONS ===== -->
+      <div id="sess-subtab-active">
+        <!-- Header row -->
+        <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
+          <div class="flex items-center gap-3">
+            <h3 class="font-bold text-gray-700">Work Sessions</h3>
+            <!-- Selection counter -->
+            <span id="sess-select-count" class="hidden bg-indigo-100 text-indigo-700 text-xs font-bold px-2.5 py-1 rounded-full">0 selected</span>
+          </div>
+          <div class="flex gap-2 items-center flex-wrap">
+            <input type="date" id="filter-date" class="border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              onchange="loadSessions()"/>
+            <select id="filter-worker" class="border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" onchange="loadSessions()">
+              <option value="">All Workers</option>
+            </select>
+            <!-- Archive selected button (shown when selections exist) -->
+            <button id="archive-selected-btn" onclick="openArchiveModal()" class="hidden bg-amber-500 hover:bg-amber-600 text-white text-sm px-4 py-2 rounded-xl font-medium">
+              <i class="fas fa-box-archive mr-1.5"></i>Archive Selected
+            </button>
+            <button onclick="exportCSV()" class="bg-green-600 hover:bg-green-700 text-white text-sm px-4 py-2 rounded-xl font-medium">
+              <i class="fas fa-download mr-1"></i>Export
+            </button>
+          </div>
+        </div>
+
+        <!-- Select-all bar (shown only when sessions exist) -->
+        <div id="sess-select-bar" class="hidden mb-3 flex items-center gap-3 bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-2.5">
+          <input type="checkbox" id="sess-select-all" onchange="toggleSelectAllSessions(this.checked)"
+            class="w-4 h-4 rounded accent-indigo-600 cursor-pointer">
+          <label for="sess-select-all" class="text-sm font-medium text-indigo-700 cursor-pointer select-none">
+            Select all completed sessions on this view
+          </label>
+          <span class="text-xs text-gray-400 ml-auto">Only completed sessions can be archived</span>
+        </div>
+
+        <!-- Day-grouped sessions view -->
+        <div id="sessions-by-day" class="space-y-5"></div>
+      </div>
+
+      <!-- ===== SUB-TAB: HISTORY ARCHIVE ===== -->
+      <div id="sess-subtab-archive" class="hidden">
+        <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
+          <div>
+            <h3 class="font-bold text-gray-700 flex items-center gap-2">
+              <i class="fas fa-box-archive text-amber-500"></i> Session History Archive
+            </h3>
+            <p class="text-xs text-gray-400 mt-0.5">Completed sessions you've archived — a permanent record of what happened</p>
+          </div>
+          <div class="flex gap-2 items-center">
+            <select id="archive-filter-worker" class="border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400" onchange="loadArchivedSessions()">
+              <option value="">All Workers</option>
+            </select>
+            <button onclick="loadArchivedSessions()" class="text-gray-500 hover:text-gray-700 px-3 py-2 rounded-xl border text-sm">
+              <i class="fas fa-rotate-right"></i>
+            </button>
+          </div>
+        </div>
+        <div id="archive-batches-list" class="space-y-4">
+          <div class="text-center py-12 text-gray-400">
+            <i class="fas fa-box-open text-4xl mb-3 block"></i>
+            <p>No archived sessions yet</p>
+            <p class="text-xs mt-1">Select sessions from the Work Sessions tab and click Archive Selected</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== ARCHIVE MODAL ===== -->
+    <div id="archive-modal" class="fixed inset-0 z-50 flex items-center justify-center hidden" style="background:rgba(0,0,0,0.5)">
+      <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md mx-4">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center">
+            <i class="fas fa-box-archive text-amber-600"></i>
+          </div>
+          <div>
+            <h3 class="font-bold text-gray-800 text-lg">Archive Sessions</h3>
+            <p class="text-xs text-gray-400" id="archive-modal-count">0 sessions selected</p>
+          </div>
+        </div>
+        <div class="mb-5">
+          <label class="block text-sm font-semibold text-gray-700 mb-2">
+            <i class="fas fa-sticky-note text-amber-500 mr-1"></i>What happened? (archive note)
+          </label>
+          <textarea id="archive-note-input" rows="3"
+            placeholder="e.g. Payroll processed for week of March 10 — all hours verified and paid"
+            class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 resize-none"
+            maxlength="500"></textarea>
+          <p class="text-xs text-gray-400 mt-1">This note will be attached to the archived batch as a permanent record</p>
+        </div>
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-5 text-xs text-amber-800">
+          <i class="fas fa-info-circle mr-1"></i>
+          Archived sessions are <strong>hidden from the main session list</strong> but fully preserved. You can view and restore them anytime from the History Archive tab.
+        </div>
+        <div class="flex gap-3">
+          <button onclick="closeArchiveModal()" class="flex-1 border border-gray-200 text-gray-600 font-semibold py-2.5 rounded-xl hover:bg-gray-50 text-sm">
+            Cancel
+          </button>
+          <button onclick="confirmArchive()" class="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-bold py-2.5 rounded-xl text-sm transition-colors">
+            <i class="fas fa-box-archive mr-1.5"></i>Archive Sessions
           </button>
         </div>
       </div>
-      <!-- Day-grouped sessions view -->
-      <div id="sessions-by-day" class="space-y-5"></div>
     </div>
 
     <!-- Tab: Map -->
+
     <div id="tab-map" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
       <div class="flex items-center justify-between mb-4">
         <div>
