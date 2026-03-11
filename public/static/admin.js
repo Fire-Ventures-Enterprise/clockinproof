@@ -133,7 +133,7 @@ async function adminLogin() {
 
       // Deep-link navigation
       const hash = window.location.hash.replace('#', '')
-      const validTabs = ['live','workers','sessions','map','calendar','settings','export','overrides','job-sites','encircle','dispatch','disputes','support-tickets','payroll','accountant','quickbooks']
+      const validTabs = ['live','workers','sessions','map','calendar','settings','export','overrides','job-sites','encircle','dispatch','disputes','support-tickets','payroll','accountant','quickbooks','integrations']
       if (hash && validTabs.includes(hash)) {
         showTab(hash)
       } else if (data.plan === 'trial') {
@@ -2434,6 +2434,7 @@ function showTab(name) {
   if (name === 'disputes') loadDisputes()
   if (name === 'support-tickets') loadTenantTickets()
   if (name === 'workers') loadDeviceResetRequests()
+  if (name === 'integrations') loadIntegrationsTab()
   // Close sidebar on mobile after navigation
   const sidebar = document.getElementById('admin-sidebar')
   if (sidebar && window.innerWidth < 1024) {
@@ -6849,3 +6850,154 @@ function dispatchJobSite(siteId) {
   }
 }
 
+
+// ═══════════════════════════════════════════════════════════════
+//  INTEGRATIONS TAB  (API Keys + Webhooks)
+// ═══════════════════════════════════════════════════════════════
+
+// ── Load tab (called by showTab) ─────────────────────────────
+async function loadIntegrationsTab() {
+  loadApiKeys()
+  loadWebhookConfig()
+}
+
+// ── API Keys ──────────────────────────────────────────────────
+async function loadApiKeys() {
+  const list = document.getElementById('api-keys-list')
+  if (!list) return
+  list.innerHTML = '<div class="text-center py-6 text-gray-400 text-sm"><i class="fas fa-spinner fa-spin text-xl mb-2 block"></i></div>'
+  try {
+    const r = await apiFetch('/api/admin/api-keys')
+    const d = await r.json()
+    if (!d.keys || d.keys.length === 0) {
+      list.innerHTML = '<div class="text-center py-6 text-gray-400 text-sm"><i class="fas fa-key text-2xl mb-2 block opacity-30"></i> No API keys yet.<br/>Click <strong>Generate Key</strong> to create one.</div>'
+      return
+    }
+    list.innerHTML = d.keys.map(k => `
+      <div class="flex items-center justify-between bg-gray-50 rounded-xl px-4 py-3 border border-gray-100">
+        <div class="min-w-0">
+          <div class="flex items-center gap-2 mb-0.5">
+            <span class="font-semibold text-gray-800 text-sm truncate">${escHtml(k.label || 'Unnamed')}</span>
+            <span class="text-[10px] bg-violet-100 text-violet-700 font-semibold px-1.5 py-0.5 rounded-full">${escHtml(k.integration || 'custom')}</span>
+            ${k.revoked ? '<span class="text-[10px] bg-red-100 text-red-600 font-semibold px-1.5 py-0.5 rounded-full">Revoked</span>' : '<span class="text-[10px] bg-green-100 text-green-700 font-semibold px-1.5 py-0.5 rounded-full">Active</span>'}
+          </div>
+          <div class="text-xs text-gray-400">
+            Prefix: <code class="font-mono">${escHtml(k.key_prefix)}</code>
+            &nbsp;·&nbsp;Created: ${fmtDate(k.created_at)}
+            ${k.last_used_at ? '&nbsp;·&nbsp;Last used: ' + fmtDate(k.last_used_at) : ''}
+          </div>
+        </div>
+        ${k.revoked ? '' : `<button onclick="revokeApiKey('${escHtml(k.key_prefix)}')"
+          class="ml-3 text-xs text-red-500 hover:text-red-700 font-semibold flex-shrink-0 border border-red-200 hover:border-red-400 rounded-lg px-2 py-1 transition-colors">
+          Revoke
+        </button>`}
+      </div>`).join('')
+  } catch(e) {
+    list.innerHTML = '<div class="text-red-500 text-sm text-center py-4">Failed to load keys.</div>'
+  }
+}
+
+async function revokeApiKey(prefix) {
+  if (!confirm('Revoke this API key? Any integration using it will stop working immediately.')) return
+  try {
+    const r = await apiFetch('/api/admin/api-keys/' + prefix, { method: 'DELETE' })
+    const d = await r.json()
+    if (d.ok) { loadApiKeys() }
+    else alert(d.error || 'Failed to revoke key.')
+  } catch(e) { alert('Network error.') }
+}
+
+// ── Generate Key Modal ────────────────────────────────────────
+function openGenerateKeyModal() {
+  document.getElementById('gen-key-label').value = ''
+  document.getElementById('gen-key-integration').value = 'roomlens'
+  document.getElementById('gen-key-error').classList.add('hidden')
+  document.getElementById('gen-key-form-section').classList.remove('hidden')
+  document.getElementById('gen-key-result-section').classList.add('hidden')
+  document.getElementById('gen-key-modal').classList.remove('hidden')
+}
+function closeGenKeyModal() {
+  document.getElementById('gen-key-modal').classList.add('hidden')
+  loadApiKeys()
+}
+function copyNewKey() {
+  const key = document.getElementById('new-key-display').textContent
+  navigator.clipboard.writeText(key).then(() => {
+    const msg = document.getElementById('copy-new-key-msg')
+    msg.classList.remove('hidden')
+    setTimeout(() => msg.classList.add('hidden'), 2000)
+  })
+}
+async function confirmGenerateKey() {
+  const label = document.getElementById('gen-key-label').value.trim()
+  const integration = document.getElementById('gen-key-integration').value
+  const errEl = document.getElementById('gen-key-error')
+  if (!label) { errEl.textContent = 'Please enter a label.'; errEl.classList.remove('hidden'); return }
+  errEl.classList.add('hidden')
+  try {
+    const r = await apiFetch('/api/admin/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label, integration })
+    })
+    const d = await r.json()
+    if (d.api_key) {
+      document.getElementById('new-key-display').textContent = d.api_key
+      document.getElementById('gen-key-form-section').classList.add('hidden')
+      document.getElementById('gen-key-result-section').classList.remove('hidden')
+    } else {
+      errEl.textContent = d.error || 'Failed to generate key.'
+      errEl.classList.remove('hidden')
+    }
+  } catch(e) { errEl.textContent = 'Network error.'; errEl.classList.remove('hidden') }
+}
+
+// ── Webhook Config ────────────────────────────────────────────
+async function loadWebhookConfig() {
+  try {
+    const r = await apiFetch('/api/admin/webhooks')
+    const d = await r.json()
+    if (d.webhook_url) {
+      document.getElementById('webhook-url-input').value = d.webhook_url
+      // Restore checked events
+      const evts = d.events || []
+      document.querySelectorAll('#webhook-events input[type=checkbox]').forEach(cb => {
+        cb.checked = evts.includes(cb.value)
+      })
+    }
+  } catch(e) { /* silent */ }
+}
+
+async function saveWebhook() {
+  const url = document.getElementById('webhook-url-input').value.trim()
+  const events = []
+  document.querySelectorAll('#webhook-events input[type=checkbox]:checked').forEach(cb => events.push(cb.value))
+  const banner = document.getElementById('webhook-status-banner')
+  try {
+    const r = await apiFetch('/api/admin/webhooks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ webhook_url: url, events })
+    })
+    const d = await r.json()
+    if (d.ok) {
+      banner.className = 'bg-green-50 border border-green-200 text-green-700 text-sm rounded-lg px-3 py-2 mb-3'
+      banner.innerHTML = '<i class="fas fa-check-circle mr-1"></i> Webhook saved!'
+      banner.classList.remove('hidden')
+      setTimeout(() => banner.classList.add('hidden'), 3000)
+    } else {
+      banner.className = 'bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-3 py-2 mb-3'
+      banner.innerHTML = '<i class="fas fa-exclamation-circle mr-1"></i> ' + (d.error || 'Failed to save.')
+      banner.classList.remove('hidden')
+    }
+  } catch(e) {
+    banner.className = 'bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-3 py-2 mb-3'
+    banner.innerHTML = '<i class="fas fa-exclamation-circle mr-1"></i> Network error.'
+    banner.classList.remove('hidden')
+  }
+}
+
+// Helper: escape HTML for safe rendering
+function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
+// Helper: format ISO date
+function fmtDate(s) { if (!s) return ''; try { return new Date(s).toLocaleDateString('en-CA', { year:'numeric',month:'short',day:'numeric' }) } catch { return s } }

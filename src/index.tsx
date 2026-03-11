@@ -194,6 +194,37 @@ async function ensureSchema(db: D1Database) {
     `ALTER TABLE sessions ADD COLUMN archive_note TEXT`,
     `ALTER TABLE sessions ADD COLUMN archived_at DATETIME`,
     `ALTER TABLE sessions ADD COLUMN archive_batch TEXT`,
+    // -- RoomLens / External API integration tables --
+    `CREATE TABLE IF NOT EXISTS api_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL,
+      key_hash TEXT NOT NULL UNIQUE,
+      key_prefix TEXT NOT NULL,
+      label TEXT,
+      integration TEXT DEFAULT 'generic',
+      last_used_at DATETIME,
+      revoked INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash)`,
+    `CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id)`,
+    `CREATE TABLE IF NOT EXISTS v1_webhooks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL UNIQUE,
+      url TEXT NOT NULL,
+      secret TEXT NOT NULL,
+      events TEXT DEFAULT 'job.created,job.dispatched,job.closed,worker.clocked_in,worker.clocked_out',
+      active INTEGER DEFAULT 1,
+      last_fired_at DATETIME,
+      last_status INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `ALTER TABLE job_sites ADD COLUMN external_ref TEXT`,
+    `ALTER TABLE job_sites ADD COLUMN external_source TEXT DEFAULT 'manual'`,
+    `ALTER TABLE job_sites ADD COLUMN status TEXT DEFAULT 'open'`,
+    `ALTER TABLE job_sites ADD COLUMN closed_at DATETIME`,
+    `CREATE INDEX IF NOT EXISTS idx_job_sites_external_ref ON job_sites(external_ref)`,
     `CREATE TABLE IF NOT EXISTS location_pings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id INTEGER NOT NULL,
@@ -7653,6 +7684,598 @@ app.get('/api/super/leads', async (c) => {
   const rows = await db.prepare(`SELECT l.*, t.company_name as tenant_company FROM signup_leads l LEFT JOIN tenants t ON t.id = l.tenant_id ORDER BY l.created_at DESC LIMIT 300`).all()
   return c.json({ leads: rows.results })
 })
+
+// =============================================================================
+// Admin API Key + Webhook Management (admin dashboard, uses X-Tenant-ID auth)
+// =============================================================================
+
+// GET /api/admin/api-keys — list keys for tenant
+app.get('/api/admin/api-keys', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
+  const rows = await db.prepare(
+    'SELECT id, key_prefix, label, integration, last_used_at, revoked, created_at FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC'
+  ).bind(tenantId).all()
+  return c.json({ keys: rows.results })
+})
+
+// POST /api/admin/api-keys — generate a new API key
+app.post('/api/admin/api-keys', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
+  const { label, integration } = await c.req.json().catch(() => ({})) as any
+  if (!label) return c.json({ error: 'label required' }, 400)
+  const secret   = genSecret(24)
+  const prefix   = genSecret(4)
+  const fullKey  = `cip_${prefix}_${secret}`
+  const hashed   = await sha256hex(fullKey)
+  const keyLabel = label.toString().slice(0, 80)
+  const intType  = (integration || 'custom').toString().slice(0, 40)
+  await db.prepare(
+    `INSERT INTO api_keys (tenant_id, key_hash, key_prefix, label, integration, created_at)
+     VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+  ).bind(tenantId, hashed, `cip_${prefix}`, keyLabel, intType).run()
+  return c.json({ api_key: fullKey, key_prefix: `cip_${prefix}`, label: keyLabel, integration: intType, note: 'Store this key securely. It will not be shown again.' }, 201)
+})
+
+// DELETE /api/admin/api-keys/:prefix — revoke a key
+app.delete('/api/admin/api-keys/:prefix', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
+  const prefix = c.req.param('prefix')
+  await db.prepare('UPDATE api_keys SET revoked = 1 WHERE key_prefix = ? AND tenant_id = ?').bind(prefix, tenantId).run()
+  return c.json({ ok: true, revoked: prefix })
+})
+
+// GET /api/admin/webhooks — get webhook config for tenant
+app.get('/api/admin/webhooks', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
+  const hook = await db.prepare(
+    'SELECT url AS webhook_url, events, active, last_fired_at, last_status, created_at, updated_at FROM v1_webhooks WHERE tenant_id = ?'
+  ).bind(tenantId).first<any>()
+  if (!hook) return c.json({ webhook_url: null })
+  // Return events as an array
+  const eventsArr = (hook.events || '').split(',').map((e: string) => e.trim()).filter(Boolean)
+  return c.json({ ...hook, events: eventsArr })
+})
+
+// POST /api/admin/webhooks — save/update webhook config
+app.post('/api/admin/webhooks', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
+  const { webhook_url, events } = await c.req.json().catch(() => ({})) as any
+  const url = (webhook_url || '').trim()
+  if (url && !url.startsWith('http')) return c.json({ error: 'Valid URL required' }, 400)
+  const eventsStr = Array.isArray(events) ? events.join(',') : (events || '*')
+  const hookSecret = genSecret(24)
+  if (!url) {
+    // Clear webhook
+    await db.prepare('UPDATE v1_webhooks SET active = 0 WHERE tenant_id = ?').bind(tenantId).run()
+    return c.json({ ok: true, message: 'Webhook cleared' })
+  }
+  await db.prepare(`
+    INSERT INTO v1_webhooks (tenant_id, url, secret, events, active, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(tenant_id) DO UPDATE SET
+      url = excluded.url,
+      events = excluded.events,
+      active = 1,
+      updated_at = CURRENT_TIMESTAMP
+  `).bind(tenantId, url, hookSecret, eventsStr).run()
+  return c.json({ ok: true, webhook_url: url, events: eventsStr })
+})
+
+// =============================================================================
+// REST API v1 — External Integrations (RoomLens Pro add-on)
+// Auth: Bearer token via X-Api-Key header
+// Base: /api/v1/*
+// Docs: https://clockinproof.com/api/docs (coming soon)
+// =============================================================================
+
+// ---- Helper: SHA-256 hash (Web Crypto, no Node.js) --------------------------
+async function sha256hex(text: string): Promise<string> {
+  const enc  = new TextEncoder()
+  const buf  = await crypto.subtle.digest('SHA-256', enc.encode(text))
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('')
+}
+
+// ---- Helper: generate secure random string ----------------------------------
+function genSecret(bytes = 32): string {
+  const arr = new Uint8Array(bytes)
+  crypto.getRandomValues(arr)
+  return Array.from(arr).map(b => b.toString(16).padStart(2,'0')).join('')
+}
+
+// ---- Auth middleware: verifyApiKey ------------------------------------------
+// Returns { tenantId, keyRow } or throws a 401 response
+async function verifyApiKey(c: any, db: D1Database): Promise<{ tenantId: number; keyRow: any }> {
+  const authHeader = c.req.header('Authorization') || ''
+  const rawKey = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim()
+    : c.req.header('X-Api-Key') || ''
+  if (!rawKey) throw { status: 401, error: 'Missing API key. Pass as Authorization: Bearer <key> or X-Api-Key header.' }
+  const hashed  = await sha256hex(rawKey)
+  const keyRow  = await db.prepare(
+    'SELECT * FROM api_keys WHERE key_hash = ? AND revoked = 0'
+  ).bind(hashed).first<any>()
+  if (!keyRow) throw { status: 401, error: 'Invalid or revoked API key.' }
+  // Update last_used_at (fire and forget)
+  db.prepare('UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?').bind(keyRow.id).run().catch(() => {})
+  return { tenantId: keyRow.tenant_id, keyRow }
+}
+
+// ---- Helper: fire webhook for a tenant -------------------------------------
+async function fireWebhook(db: D1Database, tenantId: number, event: string, payload: any): Promise<void> {
+  const hook = await db.prepare(
+    'SELECT * FROM v1_webhooks WHERE tenant_id = ? AND active = 1'
+  ).bind(tenantId).first<any>()
+  if (!hook) return
+  const events: string[] = (hook.events || '').split(',').map((e: string) => e.trim())
+  if (!events.includes(event) && !events.includes('*')) return
+  const body    = JSON.stringify({ event, tenant_id: tenantId, timestamp: new Date().toISOString(), data: payload })
+  const sig     = await sha256hex(hook.secret + body)   // simple HMAC-lite
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-CIP-Event': event,
+    'X-CIP-Signature': `sha256=${sig}`,
+    'User-Agent': 'ClockInProof-Webhook/1.0'
+  }
+  try {
+    const res = await fetch(hook.url, { method: 'POST', headers, body, signal: AbortSignal.timeout(8000) })
+    db.prepare('UPDATE v1_webhooks SET last_fired_at = CURRENT_TIMESTAMP, last_status = ? WHERE id = ?')
+      .bind(res.status, hook.id).run().catch(() => {})
+  } catch (_) {
+    db.prepare('UPDATE v1_webhooks SET last_fired_at = CURRENT_TIMESTAMP, last_status = 0 WHERE id = ?')
+      .bind(hook.id).run().catch(() => {})
+  }
+}
+
+// ---- CORS preflight for /api/v1/* ------------------------------------------
+app.options('/api/v1/*', (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  c.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
+  c.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Api-Key')
+  return c.text('', 204)
+})
+
+// ============================================================
+// POST /api/v1/api-keys  — Generate API key for a tenant
+// Auth: admin email+PIN (same as admin dashboard login)
+// Body: { email, pin, label?, integration? }
+// Returns: { api_key, key_prefix, label }
+// ============================================================
+app.post('/api/v1/api-keys', async (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  const db  = c.env.DB
+  await ensureSchema(db)
+  const { email, pin, label, integration } = await c.req.json().catch(() => ({})) as any
+  if (!email || !pin) return c.json({ error: 'email and pin required' }, 400)
+  // Authenticate against tenant admin credentials
+  const tenant = await db.prepare(
+    `SELECT t.* FROM tenants t
+     JOIN tenant_settings ts ON ts.tenant_id = t.id
+     WHERE ts.admin_email = ? AND ts.admin_pin = ? AND t.status IN ('active','trial')
+     LIMIT 1`
+  ).bind(email.toLowerCase().trim(), pin.toString().trim()).first<any>()
+  if (!tenant) return c.json({ error: 'Invalid credentials or inactive account' }, 401)
+  // Generate key: cip_<prefix>_<secret>
+  const secret   = genSecret(24)
+  const prefix   = genSecret(4)
+  const fullKey  = `cip_${prefix}_${secret}`
+  const hashed   = await sha256hex(fullKey)
+  const keyLabel = (label || integration || 'Integration Key').toString().slice(0, 80)
+  const intType  = (integration || 'generic').toString().slice(0, 40)
+  // Store hashed key only — never store plaintext
+  await db.prepare(
+    `INSERT INTO api_keys (tenant_id, key_hash, key_prefix, label, integration, created_at)
+     VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+  ).bind(tenant.id, hashed, `cip_${prefix}`, keyLabel, intType).run()
+  return c.json({
+    success: true,
+    api_key: fullKey,       // shown ONCE — store securely
+    key_prefix: `cip_${prefix}`,
+    label: keyLabel,
+    integration: intType,
+    tenant_id: tenant.id,
+    company: tenant.company_name,
+    note: 'Store this key securely. It will not be shown again.'
+  }, 201)
+})
+
+// ============================================================
+// GET /api/v1/api-keys  — List keys for tenant (no secrets)
+// ============================================================
+app.get('/api/v1/api-keys', async (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  const db = c.env.DB
+  await ensureSchema(db)
+  try {
+    const { tenantId } = await verifyApiKey(c, db)
+    const rows = await db.prepare(
+      'SELECT id, key_prefix, label, integration, last_used_at, revoked, created_at FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC'
+    ).bind(tenantId).all()
+    return c.json({ keys: rows.results })
+  } catch (e: any) { return c.json({ error: e.error || 'Unauthorized' }, e.status || 401) }
+})
+
+// ============================================================
+// DELETE /api/v1/api-keys/:prefix  — Revoke a key
+// ============================================================
+app.delete('/api/v1/api-keys/:prefix', async (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  const db = c.env.DB
+  await ensureSchema(db)
+  try {
+    const { tenantId } = await verifyApiKey(c, db)
+    const prefix = c.req.param('prefix')
+    await db.prepare(
+      'UPDATE api_keys SET revoked = 1 WHERE key_prefix = ? AND tenant_id = ?'
+    ).bind(prefix, tenantId).run()
+    return c.json({ success: true, revoked: prefix })
+  } catch (e: any) { return c.json({ error: e.error || 'Unauthorized' }, e.status || 401) }
+})
+
+// ============================================================
+// POST /api/v1/webhooks  — Register or update webhook URL
+// Body: { url, secret?, events? }
+// events: comma-separated list, or "*" for all
+// ============================================================
+app.post('/api/v1/webhooks', async (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  const db = c.env.DB
+  await ensureSchema(db)
+  try {
+    const { tenantId } = await verifyApiKey(c, db)
+    const { url, secret, events } = await c.req.json().catch(() => ({})) as any
+    if (!url || !url.startsWith('http')) return c.json({ error: 'Valid https URL required' }, 400)
+    const hookSecret = secret || genSecret(24)
+    const hookEvents = events || 'job.created,job.dispatched,job.closed,worker.clocked_in,worker.clocked_out'
+    await db.prepare(`
+      INSERT INTO v1_webhooks (tenant_id, url, secret, events, active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(tenant_id) DO UPDATE SET
+        url = excluded.url,
+        secret = CASE WHEN excluded.secret != '' THEN excluded.secret ELSE secret END,
+        events = excluded.events,
+        active = 1,
+        updated_at = CURRENT_TIMESTAMP
+    `).bind(tenantId, url.trim(), hookSecret, hookEvents).run()
+    return c.json({
+      success: true,
+      webhook: { url: url.trim(), events: hookEvents, secret: hookSecret,
+        note: 'Verify incoming webhooks using X-CIP-Signature header (sha256=HMAC)' }
+    }, 201)
+  } catch (e: any) { return c.json({ error: e.error || 'Unauthorized' }, e.status || 401) }
+})
+
+// ============================================================
+// GET /api/v1/webhooks  — Get current webhook config
+// ============================================================
+app.get('/api/v1/webhooks', async (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  const db = c.env.DB
+  await ensureSchema(db)
+  try {
+    const { tenantId } = await verifyApiKey(c, db)
+    const hook = await db.prepare(
+      'SELECT url, events, active, last_fired_at, last_status, created_at, updated_at FROM v1_webhooks WHERE tenant_id = ?'
+    ).bind(tenantId).first<any>()
+    if (!hook) return c.json({ webhook: null, message: 'No webhook registered' })
+    return c.json({ webhook: hook })
+  } catch (e: any) { return c.json({ error: e.error || 'Unauthorized' }, e.status || 401) }
+})
+
+// ============================================================
+// POST /api/v1/jobs  — Create a job site from external system
+// Body: { name, address, lat?, lng?, external_ref?, notes? }
+// Returns: { job_id, name, address, status }
+// ============================================================
+app.post('/api/v1/jobs', async (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  const db = c.env.DB
+  await ensureSchema(db)
+  try {
+    const { tenantId } = await verifyApiKey(c, db)
+    const { name, address, lat, lng, external_ref, notes } = await c.req.json().catch(() => ({})) as any
+    if (!name?.trim() || !address?.trim()) return c.json({ error: 'name and address are required' }, 400)
+    // Deduplicate by external_ref if provided
+    if (external_ref) {
+      const existing = await db.prepare(
+        'SELECT id, name, address, status FROM job_sites WHERE external_ref = ? AND tenant_id = ?'
+      ).bind(String(external_ref), tenantId).first<any>()
+      if (existing) return c.json({ job_id: existing.id, name: existing.name, address: existing.address,
+        status: existing.status, created: false, message: 'Job already exists with this external_ref' })
+    }
+    const result = await db.prepare(`
+      INSERT INTO job_sites (tenant_id, name, address, lat, lng, external_ref, external_source, status, active, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'roomlens', 'open', 1, CURRENT_TIMESTAMP)
+    `).bind(tenantId, name.trim(), address.trim(), lat || null, lng || null,
+      external_ref ? String(external_ref) : null).run()
+    const jobId = result.meta.last_row_id
+    // Fire webhook
+    await fireWebhook(db, tenantId, 'job.created', { job_id: jobId, name: name.trim(), address: address.trim(), external_ref })
+    return c.json({ success: true, job_id: jobId, name: name.trim(), address: address.trim(),
+      status: 'open', created: true }, 201)
+  } catch (e: any) { return c.json({ error: e.error || e.message || 'Server error' }, e.status || 500) }
+})
+
+// ============================================================
+// GET /api/v1/jobs  — List all jobs for tenant
+// ============================================================
+app.get('/api/v1/jobs', async (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  const db = c.env.DB
+  await ensureSchema(db)
+  try {
+    const { tenantId } = await verifyApiKey(c, db)
+    const status = c.req.query('status') || ''
+    let q = 'SELECT id as job_id, name, address, lat, lng, external_ref, status, created_at, closed_at FROM job_sites WHERE tenant_id = ? AND active = 1'
+    const params: any[] = [tenantId]
+    if (status) { q += ' AND status = ?'; params.push(status) }
+    q += ' ORDER BY created_at DESC LIMIT 200'
+    const rows = await db.prepare(q).bind(...params).all()
+    return c.json({ jobs: rows.results, total: rows.results.length })
+  } catch (e: any) { return c.json({ error: e.error || 'Unauthorized' }, e.status || 401) }
+})
+
+// ============================================================
+// POST /api/v1/jobs/:id/dispatch  — Dispatch worker to job via SMS
+// Body: { worker_id, notes? }  OR  { worker_phone, worker_name, notes? }
+// ============================================================
+app.post('/api/v1/jobs/:id/dispatch', async (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  const db  = c.env.DB
+  const env = c.env
+  await ensureSchema(db)
+  try {
+    const { tenantId } = await verifyApiKey(c, db)
+    const jobId = parseInt(c.req.param('id'))
+    const { worker_id, worker_phone, worker_name, notes } = await c.req.json().catch(() => ({})) as any
+    // Load job
+    const job = await db.prepare(
+      'SELECT * FROM job_sites WHERE id = ? AND tenant_id = ? AND active = 1'
+    ).bind(jobId, tenantId).first<any>()
+    if (!job) return c.json({ error: 'Job not found' }, 404)
+    if (job.status === 'closed') return c.json({ error: 'Cannot dispatch to a closed job' }, 409)
+    // Resolve worker
+    let worker: any = null
+    if (worker_id) {
+      worker = await db.prepare('SELECT * FROM workers WHERE id = ? AND tenant_id = ? AND active = 1').bind(parseInt(worker_id), tenantId).first<any>()
+      if (!worker) return c.json({ error: 'Worker not found or inactive' }, 404)
+    } else if (worker_phone && worker_name) {
+      worker = { id: null, name: worker_name, phone: worker_phone }
+    } else {
+      return c.json({ error: 'Provide worker_id or (worker_phone + worker_name)' }, 400)
+    }
+    // Normalize phone to E.164
+    const rawPhone    = worker.phone.replace(/[\s\-\(\)\.]/g, '')
+    const workerPhone = rawPhone.startsWith('+') ? rawPhone : rawPhone.length === 10 ? `+1${rawPhone}` : `+${rawPhone}`
+    // Get Twilio config
+    const dbSettings = await db.prepare(
+      "SELECT key, value FROM settings WHERE tenant_id = ? AND key IN ('twilio_account_sid','twilio_auth_token','twilio_from_number','twilio_messaging_service','app_host')"
+    ).bind(tenantId).all()
+    const cfg: Record<string,string> = {}
+    ;(dbSettings.results as any[]).forEach((r: any) => { cfg[r.key] = r.value })
+    const sid    = ((env as any).TWILIO_ACCOUNT_SID || cfg.twilio_account_sid || '').trim()
+    const token  = ((env as any).TWILIO_AUTH_TOKEN  || cfg.twilio_auth_token  || '').trim()
+    const msgSvc = ((env as any).TWILIO_MESSAGING_SERVICE || cfg.twilio_messaging_service || '').trim()
+    const from   = ((env as any).TWILIO_FROM_NUMBER || cfg.twilio_from_number || '').trim()
+    const mapsUrl  = `https://maps.google.com/?q=${encodeURIComponent(job.address)}`
+    const appHost  = cfg.app_host || 'https://app.clockinproof.com'
+    const dispatchNotes = (notes || '').toString().trim()
+    const smsBody = `Hi ${worker.name}! You have been dispatched to:\n${job.name}\n${job.address}\n${mapsUrl}` +
+      (dispatchNotes ? `\nNotes: ${dispatchNotes}` : '') +
+      `\n\nClock in when you arrive via: ${appHost}`
+    let smsSid: string | null = null
+    // Send SMS if Twilio configured
+    if (sid && token && (msgSvc || from)) {
+      const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`
+      const auth      = btoa(`${sid}:${token}`)
+      try {
+        const smsRes = await fetch(twilioUrl, {
+          method: 'POST',
+          headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams(msgSvc ? { MessagingServiceSid: msgSvc, To: workerPhone, Body: smsBody }
+                                           : { From: from, To: workerPhone, Body: smsBody }).toString()
+        })
+        const smsData = await smsRes.json() as any
+        if (smsRes.ok && smsData.sid) smsSid = smsData.sid
+      } catch (_) {}
+    }
+    // Record dispatch
+    const dispResult = await db.prepare(`
+      INSERT INTO job_dispatches (job_site_id, job_name, job_address, maps_url, worker_id, worker_name, worker_phone,
+        dispatched_by, status, sms_sid, notes, tenant_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'API', ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `).bind(jobId, job.name, job.address, mapsUrl, worker.id || null, worker.name, workerPhone,
+      smsSid ? 'sent' : 'queued', smsSid, dispatchNotes, tenantId).run()
+    const dispatchId = dispResult.meta.last_row_id
+    // Fire webhook
+    await fireWebhook(db, tenantId, 'job.dispatched', {
+      dispatch_id: dispatchId, job_id: jobId, job_name: job.name,
+      worker_name: worker.name, worker_phone: workerPhone, sms_sent: !!smsSid
+    })
+    return c.json({ success: true, dispatch_id: dispatchId, job_id: jobId, worker: worker.name,
+      sms_sent: !!smsSid, sms_sid: smsSid, status: smsSid ? 'sent' : 'queued' }, 201)
+  } catch (e: any) { return c.json({ error: e.error || e.message || 'Server error' }, e.status || 500) }
+})
+
+// ============================================================
+// GET /api/v1/jobs/:id/timelog  — Hours logged for a job
+// Returns all sessions linked to this job_site, by worker
+// ============================================================
+app.get('/api/v1/jobs/:id/timelog', async (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  const db = c.env.DB
+  await ensureSchema(db)
+  try {
+    const { tenantId } = await verifyApiKey(c, db)
+    const jobId = parseInt(c.req.param('id'))
+    const job = await db.prepare(
+      'SELECT * FROM job_sites WHERE id = ? AND tenant_id = ?'
+    ).bind(jobId, tenantId).first<any>()
+    if (!job) return c.json({ error: 'Job not found' }, 404)
+    // Find sessions by job_location match OR via dispatches
+    const sessions = await db.prepare(`
+      SELECT s.id as session_id, w.name as worker_name, w.id as worker_id,
+             s.clock_in_time, s.clock_out_time, s.total_hours, s.earnings,
+             s.status, s.job_location, s.clock_in_address, s.auto_clockout
+      FROM sessions s
+      JOIN workers w ON s.worker_id = w.id
+      WHERE s.tenant_id = ?
+        AND (s.job_location = ? OR EXISTS (
+          SELECT 1 FROM job_dispatches d
+          WHERE d.session_id = s.id AND d.job_site_id = ?
+        ))
+      ORDER BY s.clock_in_time ASC
+    `).bind(tenantId, job.name, jobId).all()
+    const rows = sessions.results as any[]
+    const totalHours    = rows.reduce((sum, s) => sum + (s.total_hours || 0), 0)
+    const totalEarnings = rows.reduce((sum, s) => sum + (s.earnings || 0), 0)
+    const activeCount   = rows.filter(s => s.status === 'active').length
+    const workerSummary: Record<string, any> = {}
+    rows.forEach(s => {
+      if (!workerSummary[s.worker_id]) workerSummary[s.worker_id] = { worker_id: s.worker_id, worker_name: s.worker_name, sessions: 0, total_hours: 0, total_earnings: 0 }
+      workerSummary[s.worker_id].sessions++
+      workerSummary[s.worker_id].total_hours     += s.total_hours || 0
+      workerSummary[s.worker_id].total_earnings  += s.earnings || 0
+    })
+    return c.json({
+      job_id: jobId, job_name: job.name, job_address: job.address,
+      status: job.status, external_ref: job.external_ref,
+      summary: { total_sessions: rows.length, total_hours: +totalHours.toFixed(2),
+        total_earnings: +totalEarnings.toFixed(2), workers_onsite: activeCount },
+      by_worker: Object.values(workerSummary).map(w => ({
+        ...w, total_hours: +w.total_hours.toFixed(2), total_earnings: +w.total_earnings.toFixed(2)
+      })),
+      sessions: rows.map(s => ({
+        session_id: s.session_id, worker: s.worker_name,
+        clock_in: s.clock_in_time, clock_out: s.clock_out_time,
+        hours: s.total_hours ? +s.total_hours.toFixed(2) : null,
+        earnings: s.earnings ? +s.earnings.toFixed(2) : null,
+        status: s.status
+      }))
+    })
+  } catch (e: any) { return c.json({ error: e.error || 'Unauthorized' }, e.status || 401) }
+})
+
+// ============================================================
+// POST /api/v1/jobs/:id/close  — Close job + clock out all active workers
+// Body: { reason? }
+// ============================================================
+app.post('/api/v1/jobs/:id/close', async (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  const db = c.env.DB
+  await ensureSchema(db)
+  try {
+    const { tenantId } = await verifyApiKey(c, db)
+    const jobId = parseInt(c.req.param('id'))
+    const { reason } = await c.req.json().catch(() => ({})) as any
+    const closeReason = (reason || 'Job closed via API').toString().trim().slice(0, 200)
+    const job = await db.prepare(
+      'SELECT * FROM job_sites WHERE id = ? AND tenant_id = ?'
+    ).bind(jobId, tenantId).first<any>()
+    if (!job) return c.json({ error: 'Job not found' }, 404)
+    if (job.status === 'closed') return c.json({ error: 'Job is already closed', job_id: jobId }, 409)
+    // Find all active sessions for this job
+    const activeSessions = await db.prepare(`
+      SELECT s.id, s.worker_id, s.clock_in_time, s.total_hours, w.name as worker_name
+      FROM sessions s
+      JOIN workers w ON s.worker_id = w.id
+      WHERE s.tenant_id = ? AND s.status = 'active'
+        AND (s.job_location = ? OR EXISTS (
+          SELECT 1 FROM job_dispatches d WHERE d.session_id = s.id AND d.job_site_id = ?
+        ))
+    `).bind(tenantId, job.name, jobId).all()
+    const now          = new Date().toISOString()
+    const clockedOut: any[] = []
+    // Clock out each active session
+    for (const sess of (activeSessions.results as any[])) {
+      const clockInTime  = new Date(sess.clock_in_time).getTime()
+      const clockOutTime = Date.now()
+      const totalHours   = Math.max(0, (clockOutTime - clockInTime) / 3_600_000)
+      // Get worker pay rate
+      const worker = await db.prepare('SELECT hourly_rate FROM workers WHERE id = ?').bind(sess.worker_id).first<any>()
+      const rate   = worker?.hourly_rate || 0
+      const earnings = +(totalHours * rate).toFixed(2)
+      await db.prepare(`
+        UPDATE sessions SET status = 'completed', clock_out_time = ?, total_hours = ?, earnings = ?,
+          auto_clockout = 1, auto_clockout_reason = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND tenant_id = ?
+      `).bind(now, +totalHours.toFixed(2), earnings, `Auto: ${closeReason}`, sess.id, tenantId).run()
+      clockedOut.push({ session_id: sess.id, worker: sess.worker_name, hours: +totalHours.toFixed(2) })
+      // Fire per-worker webhook
+      await fireWebhook(db, tenantId, 'worker.clocked_out', {
+        session_id: sess.id, worker_id: sess.worker_id, worker_name: sess.worker_name,
+        job_id: jobId, reason: closeReason, auto: true
+      })
+    }
+    // Mark job closed
+    await db.prepare(
+      'UPDATE job_sites SET status = ?, closed_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND tenant_id = ?'
+    ).bind('closed', now, jobId, tenantId).run()
+    // Fire job.closed webhook
+    await fireWebhook(db, tenantId, 'job.closed', {
+      job_id: jobId, job_name: job.name, reason: closeReason,
+      workers_clocked_out: clockedOut.length, sessions: clockedOut
+    })
+    return c.json({
+      success: true, job_id: jobId, status: 'closed', closed_at: now,
+      workers_clocked_out: clockedOut.length, sessions_closed: clockedOut
+    })
+  } catch (e: any) { return c.json({ error: e.error || e.message || 'Server error' }, e.status || 500) }
+})
+
+// ============================================================
+// GET /api/v1/workers  — List workers available for dispatch
+// ============================================================
+app.get('/api/v1/workers', async (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  const db = c.env.DB
+  await ensureSchema(db)
+  try {
+    const { tenantId } = await verifyApiKey(c, db)
+    const rows = await db.prepare(`
+      SELECT w.id as worker_id, w.name, w.phone, w.job_title,
+             CASE WHEN s.id IS NOT NULL THEN 1 ELSE 0 END as currently_clocked_in,
+             s.job_location as current_job
+      FROM workers w
+      LEFT JOIN sessions s ON s.worker_id = w.id AND s.status = 'active' AND s.tenant_id = w.tenant_id
+      WHERE w.tenant_id = ? AND w.active = 1 AND w.status = 'active'
+      ORDER BY w.name ASC
+    `).bind(tenantId).all()
+    return c.json({ workers: rows.results, total: rows.results.length })
+  } catch (e: any) { return c.json({ error: e.error || 'Unauthorized' }, e.status || 401) }
+})
+
+// ============================================================
+// GET /api/v1/ping  — Health check / verify API key
+// ============================================================
+app.get('/api/v1/ping', async (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  const db = c.env.DB
+  await ensureSchema(db)
+  try {
+    const { tenantId, keyRow } = await verifyApiKey(c, db)
+    const tenant = await db.prepare('SELECT company_name, status, plan FROM tenants WHERE id = ?').bind(tenantId).first<any>()
+    return c.json({
+      ok: true, message: 'ClockInProof API v1',
+      tenant_id: tenantId, company: tenant?.company_name,
+      plan: tenant?.plan, integration: keyRow.integration,
+      timestamp: new Date().toISOString()
+    })
+  } catch (e: any) { return c.json({ error: e.error || 'Unauthorized' }, e.status || 401) }
+})
+
+// =============================================================================
+// End of v1 API
+// =============================================================================
+
 function getFreeTrialStep1HTML(): string {
   return `<!DOCTYPE html><html lang="en"><head>
   <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
@@ -10404,6 +11027,14 @@ function getAdminHTML(): string {
           <span id="tenant-tickets-badge" class="hidden ml-auto bg-indigo-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center"></span>
         </button>
 
+        <button onclick="showTab('integrations')" data-tab="integrations"
+          class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+          <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-violet-100 text-violet-600 flex-shrink-0">
+            <i class="fas fa-plug text-sm"></i>
+          </span>
+          <span>Integrations</span>
+        </button>
+
         <button onclick="showTab('settings')" data-tab="settings"
           class="tab-btn sidebar-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
           <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-gray-100 text-gray-600 flex-shrink-0">
@@ -12189,11 +12820,167 @@ function getAdminHTML(): string {
 
     </div><!-- /tab-support-tickets -->
 
+    <!-- ═══════════════════ INTEGRATIONS TAB ═══════════════════ -->
+    <div id="tab-integrations" class="tab-content hidden">
+      <div class="mb-6">
+        <h2 class="text-xl font-bold text-gray-800">Integrations &amp; API</h2>
+        <p class="text-sm text-gray-500 mt-1">Connect ClockInProof to external platforms like RoomLens Pro, your own tools, or any REST-capable system.</p>
+      </div>
+
+      <!-- RoomLens Pro callout -->
+      <div class="bg-gradient-to-r from-violet-50 to-indigo-50 border border-violet-200 rounded-2xl p-5 mb-6 flex items-start gap-4">
+        <div class="w-12 h-12 rounded-xl bg-violet-600 text-white flex items-center justify-center flex-shrink-0">
+          <i class="fas fa-home text-xl"></i>
+        </div>
+        <div class="flex-1">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="font-bold text-gray-800">RoomLens Pro</span>
+            <span class="text-[11px] bg-violet-100 text-violet-700 font-semibold px-2 py-0.5 rounded-full">Partner Add-on</span>
+          </div>
+          <p class="text-sm text-gray-600">Automatically create job sites, dispatch technicians, and log hours from inside RoomLens. Add-on billed at <strong>+$29/mo</strong> per connected account.</p>
+          <a href="https://roomlenspro.com" target="_blank" class="inline-flex items-center gap-1 text-violet-600 text-sm font-semibold mt-2 hover:underline">
+            Learn more <i class="fas fa-external-link-alt text-xs"></i>
+          </a>
+        </div>
+      </div>
+
+      <!-- Two-column grid -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        <!-- API Keys card -->
+        <div class="bg-white border border-gray-200 rounded-2xl shadow-sm p-5">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h3 class="font-bold text-gray-800">API Keys</h3>
+              <p class="text-xs text-gray-500 mt-0.5">Use these keys to authenticate external requests.</p>
+            </div>
+            <button onclick="openGenerateKeyModal()"
+              class="flex items-center gap-1.5 bg-indigo-600 text-white text-sm font-semibold px-3 py-2 rounded-lg hover:bg-indigo-700 transition-colors">
+              <i class="fas fa-plus text-xs"></i> Generate Key
+            </button>
+          </div>
+          <div id="api-keys-list" class="space-y-2">
+            <div class="text-center py-6 text-gray-400 text-sm">
+              <i class="fas fa-spinner fa-spin text-xl mb-2 block"></i> Loading keys...
+            </div>
+          </div>
+        </div>
+
+        <!-- Webhook config card -->
+        <div class="bg-white border border-gray-200 rounded-2xl shadow-sm p-5">
+          <h3 class="font-bold text-gray-800 mb-1">Webhook Endpoint</h3>
+          <p class="text-xs text-gray-500 mb-4">We POST signed events (job.created, worker.clocked_in, job.closed) to your URL.</p>
+          <div id="webhook-status-banner" class="hidden mb-3"></div>
+          <label class="block text-xs font-semibold text-gray-600 mb-1 uppercase tracking-wide">Webhook URL</label>
+          <input id="webhook-url-input" type="url" placeholder="https://your-app.com/webhooks/clockinproof"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-3"/>
+          <label class="block text-xs font-semibold text-gray-600 mb-1 uppercase tracking-wide">Events to send</label>
+          <div class="flex flex-wrap gap-2 mb-4" id="webhook-events">
+            <label class="flex items-center gap-1.5 text-xs bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 cursor-pointer hover:bg-indigo-50">
+              <input type="checkbox" value="job.created" checked class="accent-indigo-600"/> job.created
+            </label>
+            <label class="flex items-center gap-1.5 text-xs bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 cursor-pointer hover:bg-indigo-50">
+              <input type="checkbox" value="job.closed" checked class="accent-indigo-600"/> job.closed
+            </label>
+            <label class="flex items-center gap-1.5 text-xs bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 cursor-pointer hover:bg-indigo-50">
+              <input type="checkbox" value="worker.clocked_in" checked class="accent-indigo-600"/> worker.clocked_in
+            </label>
+            <label class="flex items-center gap-1.5 text-xs bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 cursor-pointer hover:bg-indigo-50">
+              <input type="checkbox" value="worker.clocked_out" checked class="accent-indigo-600"/> worker.clocked_out
+            </label>
+            <label class="flex items-center gap-1.5 text-xs bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 cursor-pointer hover:bg-indigo-50">
+              <input type="checkbox" value="dispatch.sent" checked class="accent-indigo-600"/> dispatch.sent
+            </label>
+          </div>
+          <button onclick="saveWebhook()"
+            class="w-full bg-indigo-600 text-white text-sm font-semibold py-2.5 rounded-lg hover:bg-indigo-700 transition-colors">
+            <i class="fas fa-save mr-1"></i> Save Webhook
+          </button>
+        </div>
+
+        <!-- REST API Docs quick-reference card -->
+        <div class="bg-white border border-gray-200 rounded-2xl shadow-sm p-5 lg:col-span-2">
+          <h3 class="font-bold text-gray-800 mb-3">API Quick Reference</h3>
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-sm">
+            <div class="bg-gray-50 rounded-xl p-3 font-mono text-xs">
+              <span class="text-green-600 font-bold">GET</span> /api/v1/ping<br/>
+              <span class="text-gray-500 text-[11px] font-sans">Verify API key + connection</span>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-3 font-mono text-xs">
+              <span class="text-blue-600 font-bold">POST</span> /api/v1/jobs<br/>
+              <span class="text-gray-500 text-[11px] font-sans">Create a job site</span>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-3 font-mono text-xs">
+              <span class="text-blue-600 font-bold">POST</span> /api/v1/jobs/:id/dispatch<br/>
+              <span class="text-gray-500 text-[11px] font-sans">Dispatch worker via SMS</span>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-3 font-mono text-xs">
+              <span class="text-green-600 font-bold">GET</span> /api/v1/jobs/:id/timelog<br/>
+              <span class="text-gray-500 text-[11px] font-sans">Hours logged for a job</span>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-3 font-mono text-xs">
+              <span class="text-blue-600 font-bold">POST</span> /api/v1/jobs/:id/close<br/>
+              <span class="text-gray-500 text-[11px] font-sans">Close job + clock out all</span>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-3 font-mono text-xs">
+              <span class="text-green-600 font-bold">GET</span> /api/v1/workers<br/>
+              <span class="text-gray-500 text-[11px] font-sans">List available workers</span>
+            </div>
+          </div>
+          <p class="text-xs text-gray-400 mt-3">Base URL: <code class="bg-gray-100 px-1.5 py-0.5 rounded">https://admin.clockinproof.com</code>&nbsp;&nbsp;Auth: <code class="bg-gray-100 px-1.5 py-0.5 rounded">Authorization: Bearer &lt;key&gt;</code></p>
+        </div>
+
+      </div><!-- /grid -->
+    </div><!-- /tab-integrations -->
+
     </main><!-- /main content -->
   </div><!-- /flex body -->
 </div><!-- /admin-dashboard -->
 
-<!-- \u2500\u2500 Job Dispatch Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
+<!-- ── Generate API Key Modal ──────────────────────────────────────────────── -->
+<div id="gen-key-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 z-[100] flex items-center justify-center p-4" onclick="if(event.target===this)closeGenKeyModal()">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="font-bold text-lg text-gray-800">Generate API Key</h3>
+      <button onclick="closeGenKeyModal()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+    </div>
+    <div id="gen-key-form-section">
+      <label class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Label</label>
+      <input id="gen-key-label" type="text" placeholder="e.g. RoomLens Pro" maxlength="60"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-3"/>
+      <label class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Integration</label>
+      <select id="gen-key-integration"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4">
+        <option value="roomlens">RoomLens Pro</option>
+        <option value="custom">Custom / Other</option>
+        <option value="zapier">Zapier</option>
+        <option value="make">Make (Integromat)</option>
+      </select>
+      <div id="gen-key-error" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-3 py-2 mb-3"></div>
+      <button onclick="confirmGenerateKey()"
+        class="w-full bg-indigo-600 text-white font-semibold py-2.5 rounded-lg hover:bg-indigo-700 transition-colors">
+        <i class="fas fa-key mr-1"></i> Generate Key
+      </button>
+    </div>
+    <!-- Show newly generated key -->
+    <div id="gen-key-result-section" class="hidden">
+      <div class="bg-green-50 border border-green-200 rounded-xl p-4 mb-4">
+        <p class="text-xs font-semibold text-green-700 mb-1 uppercase tracking-wide"><i class="fas fa-check-circle mr-1"></i> Key Generated — Copy Now</p>
+        <p class="text-xs text-gray-500 mb-2">This key will only be shown once. Store it securely.</p>
+        <div class="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2">
+          <code id="new-key-display" class="flex-1 text-sm font-mono text-gray-800 break-all"></code>
+          <button onclick="copyNewKey()" class="text-indigo-600 hover:text-indigo-800 flex-shrink-0"><i class="fas fa-copy"></i></button>
+        </div>
+        <span id="copy-new-key-msg" class="hidden text-xs text-green-600 mt-1 block">Copied to clipboard!</span>
+      </div>
+      <button onclick="closeGenKeyModal()" class="w-full border border-gray-300 text-gray-700 font-semibold py-2.5 rounded-lg hover:bg-gray-50 transition-colors">
+        Done
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Job Dispatch Modal ──────────────────────────────────────────────────── -->
 <div id="dispatch-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 z-[90] flex items-start justify-center p-4 overflow-y-auto" onclick="if(event.target===this)closeDispatchModal()">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg my-6 overflow-hidden">
     <!-- Header -->
