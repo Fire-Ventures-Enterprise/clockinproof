@@ -1849,6 +1849,54 @@ app.post('/api/sessions/clock-in', async (c) => {
     // If no coords available \u2014 allow clock-in (fail open, log warning)
   }
 
+  // 2 block: if GPS is missing (poor reception / location off), block but allow admin override.
+  // This prevents “clocked in but not visible on map” (because map requires coordinates)
+  // while still supporting real-world edge cases via Overrides.
+  if (fraudCheckEnabled && !skipGeofence && (!latitude || !longitude)) {
+    const worker = await db.prepare('SELECT * FROM workers WHERE id = ?').bind(worker_id).first<any>()
+
+    const reqResult = await db.prepare(`
+      INSERT INTO clock_in_requests
+        (worker_id, worker_name, worker_phone, job_location, job_description,
+         worker_lat, worker_lng, worker_address,
+         job_lat, job_lng, distance_meters, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+    `).bind(
+      worker_id,
+      worker?.name || '',
+      worker?.phone || '',
+      job_location.trim(),
+      job_description.trim(),
+      null, null, address || null,
+      null, null,
+      null
+    ).run()
+
+    const requestId = reqResult.meta.last_row_id
+
+    sendOverrideNotification(settings, c.env as any, {
+      id: requestId as number,
+      worker_name: worker?.name || '',
+      worker_phone: worker?.phone || '',
+      job_location: job_location.trim(),
+      job_description: job_description.trim(),
+      distance_meters: null,
+      worker_address: address || null,
+      worker_lat: null,
+      worker_lng: null
+    }).catch(() => {})
+
+    return c.json({
+      error: 'no_gps',
+      blocked: true,
+      request_id: requestId,
+      message: 'No GPS signal detected. Clock-in blocked until your manager approves an override.',
+      override_pending: true,
+      override_message: 'An override request has been sent to your manager. You may only clock in after approval.',
+      geofence_radius_meters: geofenceRadius
+    }, 403)
+  }
+
   // \u2500\u2500 NORMAL CLOCK IN \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   const now = new Date().toISOString()
   const result = await db.prepare(
@@ -2970,14 +3018,7 @@ app.post('/api/dispatch', async (c) => {
   // Build Google Maps URL using the address string
   const mapsUrl = `https://maps.google.com/?q=${encodeURIComponent(job_address)}`
 
-  // Compose the SMS message
-  const notesLine = notes ? `\nNote: ${notes}` : ''
-  const smsText = `\uD83C\uDFE0 New Job Assignment\n${job_name}\n\uD83D\uDCCD ${job_address}\n\n\uD83D\uDC46 Tap for directions:\n${mapsUrl}${notesLine}\n\nReply "On my way" or any message when you're heading out. Clock in when you arrive.`
-
-  // Send via Twilio
-  const smsResult = await sendWorkerSms(c.env, worker.phone, smsText)
-
-  // Record the dispatch regardless of SMS result (so admin can see it)
+  // Record dispatch first so we can include a deep-link in the SMS (1A)
   const ins = await db.prepare(`
     INSERT INTO job_dispatches
       (job_site_id, encircle_claim_id, job_name, job_address, maps_url,
@@ -2992,27 +3033,49 @@ app.post('/api/dispatch', async (c) => {
     worker.id,
     worker.name,
     worker.phone,
-    smsResult.sent ? 'sent' : 'failed',
+    'queued',
     null,
     notes || null,
+    tenantId
+  ).run()
+
+  const dispatchId = ins.meta.last_row_id
+  const appHost = 'https://app.clockinproof.com'
+  const openAppUrl = `${appHost}/app?dispatch=${dispatchId}`
+
+  // Compose the SMS message (includes open-app deep link + maps)
+  const notesLine = notes ? `\nNote: ${notes}` : ''
+  const smsText = `🏠 New Job Assignment\n${job_name}\n📍 ${job_address}\n\n✅ Open app (auto-load this dispatch):\n${openAppUrl}\n\n👆 Directions:\n${mapsUrl}${notesLine}\n\nTip: Save ClockInProof on your phone: tap Share → “Add to Home Screen” (no download, no expiry).\n\nReply “On my way” when you’re heading out. Then clock in when you arrive.`
+
+  // Send via Twilio
+  const smsResult = await sendWorkerSms(c.env, worker.phone, smsText)
+
+  // Update dispatch status based on SMS result
+  await db.prepare(`UPDATE job_dispatches SET status = ? WHERE id = ? AND tenant_id = ?`).bind(
+    smsResult.sent ? 'sent' : 'failed',
+    dispatchId,
     tenantId
   ).run()
 
   if (!smsResult.sent) {
     return c.json({
       success: false,
-      dispatch_id: ins.meta.last_row_id,
+      dispatch_id: dispatchId,
       error: smsResult.error || 'SMS failed to send',
-      sms_sent: false
+      sms_sent: false,
+      open_app_url: openAppUrl,
+      maps_url: mapsUrl
     }, 200)
   }
 
   return c.json({
     success: true,
-    dispatch_id: ins.meta.last_row_id,
+    dispatch_id: dispatchId,
     sms_sent: true,
     worker_name: worker.name,
-    worker_phone: worker.phone
+    worker_phone: worker.phone,
+    open_app_url: openAppUrl,
+    maps_url: mapsUrl
   })
 })
 

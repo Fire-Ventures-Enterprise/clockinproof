@@ -2003,9 +2003,32 @@ async function loadMap() {
     const res = await fetch('/api/sessions/active')
     const data = await res.json()
     
-    const sessions = (data.sessions || []).filter(s => s.clock_in_lat && s.clock_in_lng)
-    
+    const all = (data.sessions || [])
+    const sessions = all.filter(s => s.clock_in_lat && s.clock_in_lng)
+    const noGps = all.filter(s => !s.clock_in_lat || !s.clock_in_lng)
+
+    // Update label to reflect any missing GPS
+    const mapHeader2 = document.getElementById('map-live-label')
+    if (mapHeader2) {
+      mapHeader2.textContent = noGps.length > 0
+        ? `Live -- Onsite (${noGps.length} no GPS)`
+        : 'Live -- Currently Onsite'
+    }
+
     if (sessions.length === 0) {
+      // If workers are clocked in but missing GPS, explain clearly.
+      if (noGps.length > 0) {
+        adminMap.setView([20, 0], 2)
+        const overlay = document.createElement('div')
+        overlay.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,0.92);padding:14px 20px;border-radius:14px;font-size:13px;color:#6b7280;pointer-events:none;z-index:999;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,0.12);max-width:320px'
+        overlay.innerHTML = `<div style="font-weight:800;color:#0f172a;margin-bottom:4px"><i class="fas fa-signal" style="color:#f59e0b;margin-right:6px"></i>${noGps.length} worker(s) clocked in with no GPS</div>
+          <div style="font-size:12px">They will not appear on the map until location is enabled.<br>Approve an override if reception is poor.</div>
+          <div style="margin-top:8px;font-size:12px;color:#0f172a">${noGps.slice(0,5).map(s => `• ${s.worker_name}`).join('<br>')}${noGps.length>5 ? '<br>…' : ''}</div>`
+        document.getElementById('admin-map').appendChild(overlay)
+        return
+      }
+    
+      if (sessions.length === 0 && noGps.length === 0) {
       adminMap.setView([20, 0], 2)
       const overlay = document.createElement('div')
       overlay.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,0.9);padding:12px 20px;border-radius:12px;font-size:13px;color:#6b7280;pointer-events:none;z-index:999;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.1)'
@@ -5254,14 +5277,15 @@ async function loadQbMapping() {
     }
 
     // Build employee dropdown options
-    const empOptions = qbEmployees.map(e => 
-      `<option value="${e.id}" data-name="${e.name}">${e.name} ${e.display_name && e.display_name !== e.name ? '('+e.display_name+')' : ''}</option>`
+    const empOptions = qbEmployees.map(e =>
+      `<option value="${e.id}" data-name="${e.name}">${e.name} ${e.display_name && e.display_name !== e.name ? '(' + e.display_name + ')' : ''}</option>`
     ).join('')
 
     list.innerHTML = qbWorkers.map(w => {
       const isMapped = !!w.qb_employee_id
       // Try to auto-suggest a QB employee with matching name
       const suggested = qbEmployees.find(e => e.name.toLowerCase().includes(w.name.toLowerCase().split(' ')[0]) || w.name.toLowerCase().includes(e.name.toLowerCase().split(' ')[0]))
+      const suggestedAttr = suggested ? ` data-suggested-id="${suggested.id}"` : ''
       return `
       <div class="flex items-center gap-3 p-3 rounded-xl border ${isMapped ? 'border-green-200 bg-green-50' : 'border-gray-100 bg-white'}" id="qb-worker-row-${w.id}">
         <div class="w-9 h-9 rounded-xl bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 font-bold text-sm">
@@ -5283,12 +5307,12 @@ async function loadQbMapping() {
             <div class="flex flex-col gap-1">
               <label class="text-xs text-gray-400">Link to QuickBooks employee:</label>
               <div class="flex items-center gap-2">
-                <select id="qb-emp-select-${w.id}"
+                <select id="qb-emp-select-${w.id}"${suggestedAttr}
                   class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-green-400 max-w-[200px]">
                   <option value="">-- Select QB employee --</option>
                   ${empOptions}
                 </select>
-                <button onclick="qbMapWorker(${w.id})" 
+                <button id="qb-link-btn-${w.id}" onclick="qbMapWorker(${w.id})" 
                   class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded-lg transition-colors whitespace-nowrap">
                   <i class="fas fa-link mr-1"></i>Link
                 </button>
@@ -5314,9 +5338,16 @@ async function loadQbMapping() {
 
 async function qbMapWorker(workerId) {
   const select = document.getElementById(`qb-emp-select-${workerId}`)
+  const btn = document.getElementById(`qb-link-btn-${workerId}`)
   if (!select?.value) { showAdminToast('Please select a QB employee', 'error'); return }
   const opt = select.options[select.selectedIndex]
   const empName = opt.dataset.name || opt.text
+
+  if (btn) {
+    btn.disabled = true
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Linking...'
+  }
+
   try {
     const res = await fetch('/api/qb/map', {
       method: 'POST',
@@ -5325,12 +5356,19 @@ async function qbMapWorker(workerId) {
     })
     const data = await res.json()
     if (data.success) {
-      showAdminToast(`[OK] Mapped to ${empName}`, 'success')
+      showAdminToast(`[OK] Linked to ${empName}`, 'success')
       loadQbMapping()
     } else {
       showAdminToast(data.error || 'Mapping failed', 'error')
     }
-  } catch (e) { showAdminToast(e.message, 'error') }
+  } catch (e) {
+    showAdminToast(e.message, 'error')
+  } finally {
+    if (btn) {
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-link mr-1"></i>Link'
+    }
+  }
 }
 
 async function qbUnmapWorker(workerId) {

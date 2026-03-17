@@ -46,6 +46,16 @@ let pendingDispatch = null
 
 // -- Init ----------------------------------------------------------------------
 window.onload = async () => {
+  // Deep-link: /app?dispatch=123
+  // If worker opens from SMS, remember the dispatch id (so we can prefill after login)
+  try {
+    const qs = new URLSearchParams(window.location.search || '')
+    const dispId = qs.get('dispatch')
+    if (dispId && /^\d+$/.test(dispId)) {
+      localStorage.setItem('wt_deeplink_dispatch_id', dispId)
+    }
+  } catch(_) {}
+
   const saved = localStorage.getItem('wt_worker')
   recentLocations = JSON.parse(localStorage.getItem('wt_recent_locations') || '[]')
   if (saved) {
@@ -603,6 +613,8 @@ async function initMain() {
   } catch(_) {}
   // Fetch pending dispatch for this worker -- used to pre-fill job modal
   await checkPendingDispatch()
+  // If they opened from a dispatch deep-link, try to load that dispatch now
+  await applyDispatchDeepLink().catch(() => {})
   await checkStatus()
   await loadStats()
   await loadWorkLog()
@@ -639,6 +651,37 @@ async function checkPendingDispatch() {
     renderDispatchBanner()
   } catch(_) {
     pendingDispatch = null
+  }
+}
+
+// Deep-link handler: if worker opened the app from SMS (?dispatch=123),
+// load that dispatch immediately and prefill the clock-in modal.
+async function applyDispatchDeepLink() {
+  if (!currentWorker?.id) return
+  const dispId = localStorage.getItem('wt_deeplink_dispatch_id')
+  if (!dispId) return
+
+  // If pendingDispatch already exists, we're done.
+  if (pendingDispatch && String(pendingDispatch.id) === String(dispId)) {
+    localStorage.removeItem('wt_deeplink_dispatch_id')
+    return
+  }
+
+  try {
+    // We don't have a /api/dispatch/:id endpoint yet. So force-refresh pending.
+    // If the deep-link dispatch is still active, it will become the pending dispatch.
+    await checkPendingDispatch()
+
+    if (pendingDispatch && String(pendingDispatch.id) === String(dispId)) {
+      // Auto-open the job modal once so it feels instant.
+      // (Worker can still cancel; it just pre-fills.)
+      setTimeout(() => {
+        try { openJobModal() } catch(_) {}
+      }, 250)
+    }
+  } finally {
+    // Don't keep re-opening on every refresh.
+    localStorage.removeItem('wt_deeplink_dispatch_id')
   }
 }
 
