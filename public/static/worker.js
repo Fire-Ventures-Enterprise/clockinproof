@@ -2524,89 +2524,307 @@ async function respondDispatch(id, response) {
   }
 }
 
-// -- Pay Period History Tab ----------------------------------------------------
-async function loadWkPayHistory() {
-  if (!currentWorker?.id) return
-  const periodLabel = document.getElementById('wk-hist-period-label')
-  const hoursEl     = document.getElementById('wk-hist-hours')
-  const grossEl     = document.getElementById('wk-hist-gross')
-  const paydayEl    = document.getElementById('wk-hist-payday')
-  const daysEl      = document.getElementById('wk-hist-days-left')
-  const sessionsEl  = document.getElementById('wk-hist-sessions')
-  const emptyEl     = document.getElementById('wk-hist-empty')
-  if (!sessionsEl) return
+// -- Earnings Tab --------------------------------------------------------------
+let _earnView = 'period'
+let _earnData = null
+let _earnHistData = null
+let _currentPayslipPeriod = null
 
+function wkEarnView(v) {
+  _earnView = v
+  const tabs = ['period','job','day','history']
+  tabs.forEach(t => {
+    const btn   = document.getElementById('wk-earn-tab-' + t)
+    const panel = document.getElementById('wk-earn-view-' + t)
+    if (btn) {
+      btn.style.background  = t === v ? '#4f46e5' : 'transparent'
+      btn.style.color       = t === v ? '#fff'    : '#64748b'
+      btn.style.fontWeight  = t === v ? '700'     : '600'
+    }
+    if (panel) panel.style.display = t === v ? 'block' : 'none'
+  })
+  if (v === 'history') loadWkEarningsHistory()
+  else loadWkEarnings(v)
+}
+
+async function loadWkPayHistory() {
+  // Delegates to the new earnings system
+  wkEarnView('period')
+}
+
+async function loadWkEarnings(view) {
+  if (!currentWorker?.id) return
+  const periodLabel = document.getElementById('wk-earn-period-label')
   if (periodLabel) periodLabel.textContent = 'Loading...'
-  sessionsEl.innerHTML = '<div style="text-align:center;padding:20px;color:#94a3b8;font-size:13px"><i class="fas fa-spinner fa-spin"></i> Loading...</div>'
 
   try {
-    const res  = await fetch('/api/sessions/worker/' + currentWorker.id + '/period')
+    const res  = await fetch('/api/worker/' + currentWorker.id + '/earnings?view=' + (view || 'period'))
     const data = await res.json()
-    const period   = data.period   || {}
-    const totals   = data.totals   || {}
-    const sessions = data.sessions || []
-    const showPay  = data.show_pay !== false
+    _earnData  = data
 
-    // Period label
-    const fmt = (s) => {
+    const period  = data.period  || {}
+    const totals  = data.totals  || {}
+    const showPay = data.show_pay !== false
+    const payroll = data.payroll
+
+    const fmt = s => {
       if (!s) return '-'
       const d = new Date(s + 'T00:00:00')
       return d.toLocaleDateString('en-CA',{month:'short',day:'numeric'})
     }
-    if (periodLabel) periodLabel.textContent = fmt(period.start) + ' - ' + fmt(period.end) + '  .  ' + (period.frequency || 'biweekly')
+    if (periodLabel) periodLabel.textContent = fmt(period.start) + ' \u2013 ' + fmt(period.end) + ' \u00b7 ' + (period.frequency || 'biweekly')
 
-    // Summary card
+    const hoursEl  = document.getElementById('wk-earn-hours')
+    const grossEl  = document.getElementById('wk-earn-gross')
+    const netEl    = document.getElementById('wk-earn-net')
+    const dedEl    = document.getElementById('wk-earn-deductions')
+    const netRow   = document.getElementById('wk-earn-net-row')
+    const paydayEl = document.getElementById('wk-earn-payday')
+    const daysEl   = document.getElementById('wk-earn-days-left')
+
     const hrs = parseFloat(totals.total_hours || 0)
     if (hoursEl) hoursEl.textContent = hrs.toFixed(1) + 'h'
-    if (grossEl) {
-      grossEl.textContent = showPay
-        ? '$' + parseFloat(totals.total_earnings || 0).toFixed(2)
-        : '--'
+    if (grossEl) grossEl.textContent = showPay ? '$' + parseFloat(totals.total_earnings || 0).toFixed(2) : '--'
+
+    if (payroll && showPay && netRow) {
+      netRow.style.display = 'flex'
+      if (netEl) netEl.textContent = '$' + payroll.netPay.toFixed(2)
+      if (dedEl) dedEl.textContent = '-$' + payroll.totalDeductions.toFixed(2)
+    } else if (netRow) {
+      netRow.style.display = 'none'
     }
 
-    // Payday countdown
-    const today   = new Date(); today.setHours(0,0,0,0)
-    const payday  = period.next_payday ? new Date(period.next_payday + 'T00:00:00') : null
+    const today    = new Date(); today.setHours(0,0,0,0)
+    const payday   = period.next_payday ? new Date(period.next_payday + 'T00:00:00') : null
     const daysLeft = payday ? Math.max(0, Math.round((payday - today) / 86400000)) : '-'
-    if (paydayEl) paydayEl.textContent = payday ? payday.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'}) : '-'
+    if (paydayEl) paydayEl.textContent = (period.start && period.end) ? fmt(period.start) + ' \u2013 ' + fmt(period.end) : '-'
     if (daysEl)   daysEl.textContent   = daysLeft
 
-    // Sessions list
-    if (sessions.length === 0) {
-      sessionsEl.innerHTML = ''
-      if (emptyEl) emptyEl.style.display = 'block'
-      return
-    }
-    if (emptyEl) emptyEl.style.display = 'none'
+    if (view === 'period' || !view) renderEarningsPeriod(data, showPay)
+    else if (view === 'job')        renderEarningsByJob(data, showPay)
+    else if (view === 'day')        renderEarningsByDay(data, showPay)
 
-    sessionsEl.innerHTML = sessions.map(s => {
-      const inTime  = s.clock_in_time  ? new Date(s.clock_in_time)  : null
-      const outTime = s.clock_out_time ? new Date(s.clock_out_time) : null
-      const dateStr = inTime ? inTime.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'}) : '-'
-      const inStr   = inTime  ? inTime.toLocaleTimeString('en-CA',{hour:'2-digit',minute:'2-digit'}) : '-'
-      const outStr  = outTime ? outTime.toLocaleTimeString('en-CA',{hour:'2-digit',minute:'2-digit'}) : 'Active'
-      const hrs     = parseFloat(s.total_hours || 0).toFixed(1)
-      const earn    = parseFloat(s.earnings    || 0).toFixed(2)
-      const statusColor = s.status === 'active' ? '#f59e0b' : '#10b981'
-      const editedBadge = s.edited ? '<span style="font-size:9px;background:#fef3c7;color:#d97706;padding:1px 5px;border-radius:10px;font-weight:700;margin-left:4px">EDITED</span>' : ''
+  } catch(e) {
+    const el = document.getElementById('wk-earn-period-label')
+    if (el) el.textContent = 'Error loading data'
+  }
+}
+
+function renderEarningsPeriod(data, showPay) {
+  const sessionsEl = document.getElementById('wk-earn-sessions')
+  const emptyEl    = document.getElementById('wk-earn-empty')
+  const dedCard    = document.getElementById('wk-earn-deductions-card')
+  const dedList    = document.getElementById('wk-earn-deductions-list')
+  const payroll    = data.payroll
+
+  if (payroll && showPay && dedCard && dedList) {
+    dedCard.style.display = 'block'
+    const rows = [
+      { label: 'Gross Pay',                         amount: payroll.grossPay,       color: '#1e293b', sign: '' },
+      { label: 'CPP',                               amount: payroll.cpp,            color: '#ef4444', sign: '-' },
+      { label: 'EI',                                amount: payroll.ei,             color: '#ef4444', sign: '-' },
+      { label: 'Federal Tax',                       amount: payroll.federalTax,     color: '#ef4444', sign: '-' },
+      { label: `Provincial Tax (${payroll.province})`, amount: payroll.provincialTax, color: '#ef4444', sign: '-' },
+    ]
+    dedList.innerHTML = rows.map((r, i) => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;${i < rows.length-1 ? 'border-bottom:1px solid #f1f5f9' : ''}">
+        <span style="font-size:13px;color:#64748b">${r.label}</span>
+        <span style="font-size:13px;font-weight:700;color:${r.color}">${r.sign}$${r.amount.toFixed(2)}</span>
+      </div>`).join('')
+  } else if (dedCard) {
+    dedCard.style.display = 'none'
+  }
+
+  const sessions = data.by_day || []
+  if (!sessionsEl) return
+  if (sessions.length === 0) {
+    sessionsEl.innerHTML = ''
+    if (emptyEl) emptyEl.style.display = 'block'
+    return
+  }
+  if (emptyEl) emptyEl.style.display = 'none'
+  sessionsEl.innerHTML = sessions.map(s => {
+    const inTime  = s.clock_in_time  ? new Date(s.clock_in_time)  : null
+    const outTime = s.clock_out_time ? new Date(s.clock_out_time) : null
+    const dateStr = inTime ? inTime.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'}) : '-'
+    const inStr   = inTime  ? inTime.toLocaleTimeString('en-CA',{hour:'2-digit',minute:'2-digit'})  : '-'
+    const outStr  = outTime ? outTime.toLocaleTimeString('en-CA',{hour:'2-digit',minute:'2-digit'}) : 'Active'
+    const hrs     = parseFloat(s.total_hours || 0).toFixed(1)
+    const earn    = parseFloat(s.earnings    || 0).toFixed(2)
+    const color   = s.status === 'active' ? '#f59e0b' : '#10b981'
+    const badge   = s.edited ? '<span style="font-size:9px;background:#fef3c7;color:#d97706;padding:1px 5px;border-radius:10px;font-weight:700;margin-left:4px">EDITED</span>' : ''
+    return `
+    <div style="background:#fff;border-radius:14px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid ${color}">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:4px">
+        <p style="font-size:13px;font-weight:800;color:#1e293b">${dateStr}${badge}</p>
+        <span style="font-size:12px;font-weight:700;color:#059669">${showPay ? '$'+earn : hrs+'h'}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;font-size:11px;color:#64748b">
+        <span><i class="fas fa-sign-in-alt" style="color:#10b981;margin-right:2px"></i>${inStr}</span>
+        <span style="color:#d1d5db">\u2192</span>
+        <span><i class="fas fa-sign-out-alt" style="color:#ef4444;margin-right:2px"></i>${outStr}</span>
+        <span style="margin-left:auto;font-weight:600;color:#1e293b">${hrs}h</span>
+      </div>
+      ${s.job_location ? `<p style="font-size:11px;color:#94a3b8;margin-top:4px"><i class="fas fa-map-marker-alt" style="margin-right:2px"></i>${s.job_location}</p>` : ''}
+      ${s.edit_reason  ? `<p style="font-size:10px;color:#d97706;margin-top:4px"><i class="fas fa-edit" style="margin-right:2px"></i>${s.edit_reason}</p>` : ''}
+    </div>`
+  }).join('')
+}
+
+function renderEarningsByJob(data, showPay) {
+  const el   = document.getElementById('wk-earn-by-job')
+  const jobs = data.by_job || []
+  if (!el) return
+  if (jobs.length === 0) { el.innerHTML = '<p style="text-align:center;color:#94a3b8;padding:24px;font-size:13px">No job data this period</p>'; return }
+  el.innerHTML = jobs.map(j => `
+    <div style="background:#fff;border-radius:14px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+        <div style="flex:1;margin-right:8px">
+          <p style="font-size:13px;font-weight:800;color:#1e293b">${j.job_location || 'Unknown site'}</p>
+          ${j.job_description ? `<p style="font-size:11px;color:#64748b;margin-top:2px">${j.job_description}</p>` : ''}
+        </div>
+        <span style="font-size:14px;font-weight:800;color:#059669">${showPay ? '$'+parseFloat(j.earnings||0).toFixed(2) : parseFloat(j.hours||0).toFixed(1)+'h'}</span>
+      </div>
+      <div style="display:flex;gap:12px;font-size:11px;color:#94a3b8">
+        <span><i class="fas fa-clock" style="margin-right:2px"></i>${parseFloat(j.hours||0).toFixed(1)}h</span>
+        <span><i class="fas fa-layer-group" style="margin-right:2px"></i>${j.shifts} shift${j.shifts!=1?'s':''}</span>
+      </div>
+    </div>`).join('')
+}
+
+function renderEarningsByDay(data, showPay) {
+  const el   = document.getElementById('wk-earn-by-day')
+  const days = data.by_day || []
+  if (!el) return
+  if (days.length === 0) { el.innerHTML = '<p style="text-align:center;color:#94a3b8;padding:24px;font-size:13px">No data this period</p>'; return }
+  el.innerHTML = days.map(d => {
+    const dateStr = d.day ? new Date(d.day + 'T00:00:00').toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'}) : '-'
+    return `
+    <div style="background:#fff;border-radius:14px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <p style="font-size:13px;font-weight:700;color:#1e293b">${dateStr}</p>
+        <p style="font-size:11px;color:#94a3b8;margin-top:2px">${d.shifts} shift${d.shifts!=1?'s':''} \u00b7 ${parseFloat(d.hours||0).toFixed(1)}h</p>
+      </div>
+      <span style="font-size:15px;font-weight:800;color:#059669">${showPay ? '$'+parseFloat(d.earnings||0).toFixed(2) : parseFloat(d.hours||0).toFixed(1)+'h'}</span>
+    </div>`
+  }).join('')
+}
+
+async function loadWkEarningsHistory() {
+  if (!currentWorker?.id) return
+  const histEl     = document.getElementById('wk-earn-history-list')
+  const ytdHrsEl   = document.getElementById('wk-earn-ytd-hours')
+  const ytdGrossEl = document.getElementById('wk-earn-ytd-gross')
+  if (histEl) histEl.innerHTML = '<div style="text-align:center;color:#94a3b8;font-size:13px;padding:20px"><i class="fas fa-spinner fa-spin"></i> Loading...</div>'
+  try {
+    const res  = await fetch('/api/worker/' + currentWorker.id + '/earnings/history')
+    const data = await res.json()
+    _earnHistData  = data
+    const showPay  = data.show_pay !== false
+    const ytd      = data.ytd || {}
+    if (ytdHrsEl)   ytdHrsEl.textContent   = parseFloat(ytd.hours||0).toFixed(1) + 'h'
+    if (ytdGrossEl) ytdGrossEl.textContent = showPay ? '$' + parseFloat(ytd.gross||0).toFixed(2) : '--'
+    const history  = data.history || []
+    if (!histEl) return
+    if (history.length === 0) { histEl.innerHTML = '<p style="text-align:center;color:#94a3b8;padding:24px;font-size:13px">No past pay periods found</p>'; return }
+    const fmt = s => {
+      if (!s) return '-'
+      return new Date(s + 'T00:00:00').toLocaleDateString('en-CA',{month:'short',day:'numeric'})
+    }
+    histEl.innerHTML = history.map(p => {
+      const pr = p.payroll
       return `
-      <div style="background:#fff;border-radius:14px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid ${statusColor}">
-        <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:4px">
-          <p style="font-size:13px;font-weight:800;color:#1e293b">${dateStr}${editedBadge}</p>
-          <span style="font-size:12px;font-weight:700;color:#059669">${showPay ? '$'+earn : hrs+'h'}</span>
+      <div style="background:#fff;border-radius:14px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+          <div>
+            <p style="font-size:13px;font-weight:700;color:#1e293b">${fmt(p.start)} \u2013 ${fmt(p.end)}</p>
+            <p style="font-size:11px;color:#94a3b8;margin-top:2px">${parseFloat(p.hours||0).toFixed(1)}h</p>
+          </div>
+          <div style="text-align:right">
+            <p style="font-size:14px;font-weight:800;color:#059669">${showPay ? '$'+parseFloat(p.gross||0).toFixed(2) : '--'}</p>
+            ${pr && showPay ? `<p style="font-size:11px;color:#4f46e5;font-weight:600">Net $${pr.netPay.toFixed(2)}</p>` : ''}
+          </div>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;font-size:11px;color:#64748b">
-          <span><i class="fas fa-sign-in-alt mr-1" style="color:#10b981"></i>${inStr}</span>
-          <span style="color:#d1d5db">-></span>
-          <span><i class="fas fa-sign-out-alt mr-1" style="color:#ef4444"></i>${outStr}</span>
-          <span style="margin-left:auto;font-weight:600;color:#1e293b">${hrs}h</span>
-        </div>
-        ${s.job_location ? `<p style="font-size:11px;color:#94a3b8;margin-top:4px"><i class="fas fa-map-marker-alt mr-1"></i>${s.job_location}</p>` : ''}
-        ${s.edit_reason  ? `<p style="font-size:10px;color:#d97706;margin-top:4px"><i class="fas fa-edit mr-1"></i>${s.edit_reason}</p>` : ''}
+        ${pr && showPay ? `<button onclick="openPayslipModal(${p.period_number})" style="width:100%;margin-top:4px;padding:8px;background:#f1f5f9;border:none;border-radius:10px;font-size:12px;font-weight:600;color:#4f46e5;cursor:pointer"><i class="fas fa-file-alt" style="margin-right:4px"></i>View Payslip</button>` : ''}
       </div>`
     }).join('')
   } catch(e) {
-    sessionsEl.innerHTML = '<p style="text-align:center;color:#ef4444;font-size:13px;padding:20px">Could not load pay history. Try refreshing.</p>'
+    if (histEl) histEl.innerHTML = '<p style="text-align:center;color:#ef4444;font-size:13px;padding:20px">Could not load history</p>'
+  }
+}
+
+async function openPayslipModal(periodNum) {
+  if (!currentWorker?.id) return
+  _currentPayslipPeriod = periodNum
+  const modal = document.getElementById('wk-payslip-modal')
+  if (!modal) return
+  modal.style.display = 'flex'
+  const slipRows = document.getElementById('wk-slip-earnings-rows')
+  document.getElementById('wk-slip-company').textContent = '-'
+  document.getElementById('wk-slip-period').textContent  = 'Loading...'
+  document.getElementById('wk-slip-name').textContent    = '-'
+  document.getElementById('wk-slip-meta').textContent    = '-'
+  document.getElementById('wk-slip-net').textContent     = '-'
+  if (slipRows) slipRows.innerHTML = '<p style="text-align:center;color:#94a3b8;padding:16px;font-size:13px"><i class="fas fa-spinner fa-spin"></i></p>'
+  try {
+    const res  = await fetch('/api/worker/' + currentWorker.id + '/payslip/' + periodNum)
+    const data = await res.json()
+    const fmt  = s => s ? new Date(s+'T00:00:00').toLocaleDateString('en-CA',{month:'short',day:'numeric',year:'numeric'}) : '-'
+    document.getElementById('wk-slip-company').textContent = data.company?.name || 'Company'
+    document.getElementById('wk-slip-period').textContent  = fmt(data.period?.start) + ' to ' + fmt(data.period?.end)
+    document.getElementById('wk-slip-name').textContent    = data.worker?.name || '-'
+    document.getElementById('wk-slip-meta').textContent    = (data.worker?.province || '') + ' \u00b7 ' + (data.worker?.pay_type || 'hourly')
+    const pr    = data.payroll
+    const gross = data.gross || 0
+    const rows  = [
+      { label: 'Hours Worked', val: (data.hours||0).toFixed(2) + 'h', color: '#1e293b' },
+      { label: 'Gross Pay',    val: '$' + gross.toFixed(2),           color: '#1e293b' },
+    ]
+    if (pr) rows.push(
+      { label: 'CPP',                              val: '-$' + pr.cpp.toFixed(2),           color: '#ef4444' },
+      { label: 'EI',                               val: '-$' + pr.ei.toFixed(2),            color: '#ef4444' },
+      { label: 'Federal Tax',                      val: '-$' + pr.federalTax.toFixed(2),    color: '#ef4444' },
+      { label: `Provincial Tax (${pr.province})`,  val: '-$' + pr.provincialTax.toFixed(2), color: '#ef4444' },
+    )
+    if (slipRows) slipRows.innerHTML = rows.map((r, i) => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;${i<rows.length-1?'border-bottom:1px solid #f8fafc':''}">
+        <span style="font-size:13px;color:#64748b">${r.label}</span>
+        <span style="font-size:13px;font-weight:700;color:${r.color}">${r.val}</span>
+      </div>`).join('')
+    document.getElementById('wk-slip-net').textContent = pr ? '$' + pr.netPay.toFixed(2) : '$' + gross.toFixed(2)
+  } catch(e) {
+    if (slipRows) slipRows.innerHTML = '<p style="color:#ef4444;text-align:center;font-size:13px">Error loading payslip</p>'
+  }
+}
+
+function closePayslipModal() {
+  const modal = document.getElementById('wk-payslip-modal')
+  if (modal) modal.style.display = 'none'
+}
+
+async function requestPayslipEmail() {
+  if (!currentWorker?.id || _currentPayslipPeriod === null) return
+  const btn = document.getElementById('wk-slip-email-btn')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...' }
+  // Prompt for email
+  const email = prompt('Enter your email address:')
+  if (!email) {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-envelope" style="margin-right:6px"></i>Email me this payslip' }
+    return
+  }
+  try {
+    const res  = await fetch('/api/worker/' + currentWorker.id + '/payslip/email', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ period_number: _currentPayslipPeriod, email }) })
+    const data = await res.json()
+    if (data.success) {
+      showToast('Payslip sent to ' + email, 'success')
+      closePayslipModal()
+    } else {
+      showToast(data.error || 'Failed to send', 'error')
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-envelope" style="margin-right:6px"></i>Email me this payslip' }
+    }
+  } catch(e) {
+    showToast('Connection error', 'error')
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-envelope" style="margin-right:6px"></i>Email me this payslip' }
   }
 }
 

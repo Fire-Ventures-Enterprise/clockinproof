@@ -4370,6 +4370,187 @@ app.get('/api/sessions/worker/:worker_id/period', async (c) => {
   })
 })
 
+// GET /api/pay-periods/current
+app.get('/api/pay-periods/current', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const settingsRows = await db.prepare(`SELECT key, value FROM settings WHERE key IN ('pay_frequency','pay_period_anchor')`).all()
+  const cfg: Record<string,string> = {}
+  settingsRows.results.forEach((r: any) => { cfg[r.key] = r.value })
+  const payFreq    = cfg.pay_frequency    || 'biweekly'
+  const anchor     = cfg.pay_period_anchor || '2026-03-06'
+  const periodDays = payFreq === 'weekly' ? 7 : payFreq === 'monthly' ? 30 : 14
+  const now        = new Date()
+  const anchorDate = new Date(anchor + 'T00:00:00')
+  const msPerDay   = 86400000
+  const daysSinceAnchor    = Math.floor((now.getTime() - anchorDate.getTime()) / msPerDay)
+  const periodsSinceAnchor = Math.floor(daysSinceAnchor / periodDays)
+  const periodStart = new Date(anchorDate.getTime() + periodsSinceAnchor * periodDays * msPerDay)
+  const periodEnd   = new Date(periodStart.getTime() + periodDays * msPerDay)
+  const fmtDate = (d: Date) => d.toISOString().split('T')[0]
+  return c.json({ start: fmtDate(periodStart), end: fmtDate(periodEnd), frequency: payFreq, next_payday: fmtDate(periodEnd), period_number: periodsSinceAnchor })
+})
+
+// GET /api/worker/:id/earnings?view=period|job|day
+app.get('/api/worker/:id/earnings', async (c) => {
+  const db       = c.env.DB
+  await ensureSchema(db)
+  const workerId = c.req.param('id')
+  const view     = c.req.query('view') || 'period'
+  const settingsRows = await db.prepare(`SELECT key, value FROM settings WHERE key IN ('pay_frequency','pay_period_anchor','show_pay_to_workers')`).all()
+  const cfg: Record<string,string> = {}
+  settingsRows.results.forEach((r: any) => { cfg[r.key] = r.value })
+  const payFreq    = cfg.pay_frequency    || 'biweekly'
+  const anchor     = cfg.pay_period_anchor || '2026-03-06'
+  const showPay    = cfg.show_pay_to_workers !== '0'
+  const periodDays = payFreq === 'weekly' ? 7 : payFreq === 'monthly' ? 30 : 14
+  const now        = new Date()
+  const anchorDate = new Date(anchor + 'T00:00:00')
+  const msPerDay   = 86400000
+  const daysSinceAnchor    = Math.floor((now.getTime() - anchorDate.getTime()) / msPerDay)
+  const periodsSinceAnchor = Math.floor(daysSinceAnchor / periodDays)
+  const periodStart = new Date(anchorDate.getTime() + periodsSinceAnchor * periodDays * msPerDay)
+  const periodEnd   = new Date(periodStart.getTime() + periodDays * msPerDay)
+  const fmtDate = (d: Date) => d.toISOString().split('T')[0]
+  const startStr = fmtDate(periodStart), endStr = fmtDate(periodEnd)
+  const worker   = await db.prepare(`SELECT name,phone,hourly_rate,pay_type,province FROM workers WHERE id=?`).bind(workerId).first() as any
+  const totals   = await db.prepare(`SELECT SUM(CASE WHEN status='completed' THEN total_hours ELSE 0 END) as total_hours, SUM(CASE WHEN status='completed' THEN earnings ELSE 0 END) as total_earnings, COUNT(*) as session_count FROM sessions WHERE worker_id=? AND date(clock_in_time)>=? AND date(clock_in_time)<?`).bind(workerId, startStr, endStr).first() as any
+  const grossPay   = parseFloat(totals?.total_earnings || 0)
+  const payPeriods = payFreq === 'weekly' ? 52 : payFreq === 'monthly' ? 12 : 26
+  const province   = (worker as any)?.province || 'ON'
+  const yearStart  = fmtDate(new Date(now.getFullYear() + '-01-01'))
+  const ytdResult  = await db.prepare(`SELECT SUM(earnings) as ytd_gross FROM sessions WHERE worker_id=? AND status='completed' AND date(clock_in_time)>=? AND date(clock_in_time)<?`).bind(workerId, yearStart, startStr).first() as any
+  const ytdGross   = parseFloat((ytdResult as any)?.ytd_gross || 0)
+  let payroll: any = null
+  if (showPay && grossPay > 0) payroll = calculateCanadianPayroll({ grossPay, province, payPeriods, ytdGross })
+  let byJob = null, byDay = null
+  if (view === 'job') {
+    const r = await db.prepare(`SELECT job_location, job_description, COUNT(*) as shifts, SUM(CASE WHEN status='completed' THEN total_hours ELSE 0 END) as hours, SUM(CASE WHEN status='completed' THEN earnings ELSE 0 END) as earnings FROM sessions WHERE worker_id=? AND date(clock_in_time)>=? AND date(clock_in_time)<? GROUP BY job_location,job_description ORDER BY earnings DESC`).bind(workerId, startStr, endStr).all()
+    byJob = r.results
+  } else if (view === 'day') {
+    const r = await db.prepare(`SELECT date(clock_in_time) as day, COUNT(*) as shifts, SUM(CASE WHEN status='completed' THEN total_hours ELSE 0 END) as hours, SUM(CASE WHEN status='completed' THEN earnings ELSE 0 END) as earnings FROM sessions WHERE worker_id=? AND date(clock_in_time)>=? AND date(clock_in_time)<? GROUP BY day ORDER BY day DESC`).bind(workerId, startStr, endStr).all()
+    byDay = r.results
+  } else {
+    const r = await db.prepare(`SELECT id,clock_in_time,clock_out_time,total_hours,earnings,job_location,job_description,status,edited,edit_reason FROM sessions WHERE worker_id=? AND date(clock_in_time)>=? AND date(clock_in_time)<? ORDER BY clock_in_time DESC`).bind(workerId, startStr, endStr).all()
+    byDay = r.results
+  }
+  return c.json({ period: { start: startStr, end: endStr, frequency: payFreq, next_payday: endStr }, show_pay: showPay, worker: { name: worker?.name, hourly_rate: worker?.hourly_rate, pay_type: worker?.pay_type, province }, totals: { total_hours: totals?.total_hours || 0, total_earnings: grossPay, session_count: totals?.session_count || 0 }, payroll, view, by_job: byJob, by_day: byDay })
+})
+
+// GET /api/worker/:id/earnings/history
+app.get('/api/worker/:id/earnings/history', async (c) => {
+  const db       = c.env.DB
+  await ensureSchema(db)
+  const workerId = c.req.param('id')
+  const settingsRows = await db.prepare(`SELECT key, value FROM settings WHERE key IN ('pay_frequency','pay_period_anchor','show_pay_to_workers')`).all()
+  const cfg: Record<string,string> = {}
+  settingsRows.results.forEach((r: any) => { cfg[r.key] = r.value })
+  const payFreq    = cfg.pay_frequency    || 'biweekly'
+  const anchor     = cfg.pay_period_anchor || '2026-03-06'
+  const showPay    = cfg.show_pay_to_workers !== '0'
+  const periodDays = payFreq === 'weekly' ? 7 : payFreq === 'monthly' ? 30 : 14
+  const now        = new Date()
+  const anchorDate = new Date(anchor + 'T00:00:00')
+  const msPerDay   = 86400000
+  const daysSince      = Math.floor((now.getTime() - anchorDate.getTime()) / msPerDay)
+  const currentPeriod  = Math.floor(daysSince / periodDays)
+  const fmtDate = (d: Date) => d.toISOString().split('T')[0]
+  const workerRow  = await db.prepare(`SELECT province FROM workers WHERE id=?`).bind(workerId).first() as any
+  const province   = (workerRow as any)?.province || 'ON'
+  const payPeriods = payFreq === 'weekly' ? 52 : payFreq === 'monthly' ? 12 : 26
+  const history: any[] = []
+  let runningYtd = 0
+  for (let i = currentPeriod - 1; i >= Math.max(0, currentPeriod - 6); i--) {
+    const pStart = new Date(anchorDate.getTime() + i * periodDays * msPerDay)
+    const pEnd   = new Date(pStart.getTime() + periodDays * msPerDay)
+    const s = fmtDate(pStart), e = fmtDate(pEnd)
+    const row = await db.prepare(`SELECT SUM(CASE WHEN status='completed' THEN total_hours ELSE 0 END) as hours, SUM(CASE WHEN status='completed' THEN earnings ELSE 0 END) as gross FROM sessions WHERE worker_id=? AND date(clock_in_time)>=? AND date(clock_in_time)<?`).bind(workerId, s, e).first() as any
+    const gross = parseFloat((row as any)?.gross || 0)
+    let pr: any = null
+    if (showPay && gross > 0) { pr = calculateCanadianPayroll({ grossPay: gross, province, payPeriods, ytdGross: runningYtd }); runningYtd += gross }
+    history.push({ period_number: i, start: s, end: e, hours: (row as any)?.hours || 0, gross, payroll: pr })
+  }
+  const yearStart = fmtDate(new Date(now.getFullYear() + '-01-01'))
+  const ytdRow    = await db.prepare(`SELECT SUM(CASE WHEN status='completed' THEN total_hours ELSE 0 END) as ytd_hours, SUM(CASE WHEN status='completed' THEN earnings ELSE 0 END) as ytd_gross FROM sessions WHERE worker_id=? AND date(clock_in_time)>=?`).bind(workerId, yearStart).first() as any
+  return c.json({ show_pay: showPay, history, ytd: { hours: (ytdRow as any)?.ytd_hours || 0, gross: (ytdRow as any)?.ytd_gross || 0 } })
+})
+
+// GET /api/worker/:id/payslip/:period
+app.get('/api/worker/:id/payslip/:period', async (c) => {
+  const db        = c.env.DB
+  await ensureSchema(db)
+  const workerId  = c.req.param('id')
+  const periodNum = parseInt(c.req.param('period'))
+  const settingsRows = await db.prepare(`SELECT key, value FROM settings WHERE key IN ('pay_frequency','pay_period_anchor','company_name','company_logo')`).all()
+  const cfg: Record<string,string> = {}
+  settingsRows.results.forEach((r: any) => { cfg[r.key] = r.value })
+  const payFreq    = cfg.pay_frequency    || 'biweekly'
+  const anchor     = cfg.pay_period_anchor || '2026-03-06'
+  const periodDays = payFreq === 'weekly' ? 7 : payFreq === 'monthly' ? 30 : 14
+  const anchorDate = new Date(anchor + 'T00:00:00')
+  const msPerDay   = 86400000
+  const pStart     = new Date(anchorDate.getTime() + periodNum * periodDays * msPerDay)
+  const pEnd       = new Date(pStart.getTime() + periodDays * msPerDay)
+  const fmtDate = (d: Date) => d.toISOString().split('T')[0]
+  const startStr   = fmtDate(pStart), endStr = fmtDate(pEnd)
+  const worker     = await db.prepare(`SELECT name,phone,hourly_rate,pay_type,province FROM workers WHERE id=?`).bind(workerId).first() as any
+  const province   = (worker as any)?.province || 'ON'
+  const payPeriods = payFreq === 'weekly' ? 52 : payFreq === 'monthly' ? 12 : 26
+  const sessions   = await db.prepare(`SELECT id,clock_in_time,clock_out_time,total_hours,earnings,job_location,job_description,status FROM sessions WHERE worker_id=? AND date(clock_in_time)>=? AND date(clock_in_time)<? ORDER BY clock_in_time ASC`).bind(workerId, startStr, endStr).all()
+  const gross  = (sessions.results as any[]).reduce((s, r) => s + parseFloat(r.earnings    || 0), 0)
+  const hours  = (sessions.results as any[]).reduce((s, r) => s + parseFloat(r.total_hours || 0), 0)
+  const yearStart = fmtDate(new Date(pStart.getFullYear() + '-01-01'))
+  const ytdRow    = await db.prepare(`SELECT SUM(earnings) as ytd FROM sessions WHERE worker_id=? AND status='completed' AND date(clock_in_time)>=? AND date(clock_in_time)<?`).bind(workerId, yearStart, startStr).first() as any
+  const ytdGross  = parseFloat((ytdRow as any)?.ytd || 0)
+  const payroll   = gross > 0 ? calculateCanadianPayroll({ grossPay: gross, province, payPeriods, ytdGross }) : null
+  return c.json({ company: { name: cfg.company_name || 'Company', logo: cfg.company_logo || '' }, worker: { name: (worker as any)?.name, phone: (worker as any)?.phone, hourly_rate: (worker as any)?.hourly_rate, pay_type: (worker as any)?.pay_type, province }, period: { start: startStr, end: endStr, frequency: payFreq, period_number: periodNum }, hours: _r2(hours), gross: _r2(gross), payroll, sessions: sessions.results })
+})
+
+// POST /api/worker/:id/payslip/email
+app.post('/api/worker/:id/payslip/email', async (c) => {
+  const db       = c.env.DB
+  await ensureSchema(db)
+  const workerId = c.req.param('id')
+  const body     = await c.req.json().catch(() => ({})) as any
+  const periodNum = body.period_number ?? null
+  const worker   = await db.prepare(`SELECT name,phone,hourly_rate,pay_type,province FROM workers WHERE id=?`).bind(workerId).first() as any
+  if (!worker) return c.json({ error: 'Worker not found' }, 404)
+  const settingsRows = await db.prepare(`SELECT key, value FROM settings WHERE key IN ('pay_frequency','pay_period_anchor','company_name','resend_api_key')`).all()
+  const cfg: Record<string,string> = {}
+  settingsRows.results.forEach((r: any) => { cfg[r.key] = r.value })
+  const resendKey = (c.env as any).RESEND_API_KEY || cfg.resend_api_key
+  if (!resendKey) return c.json({ error: 'Email not configured' }, 400)
+  const payFreq    = cfg.pay_frequency    || 'biweekly'
+  const anchor     = cfg.pay_period_anchor || '2026-03-06'
+  const periodDays = payFreq === 'weekly' ? 7 : payFreq === 'monthly' ? 30 : 14
+  const now        = new Date()
+  const anchorDate = new Date(anchor + 'T00:00:00')
+  const msPerDay   = 86400000
+  const daysSince  = Math.floor((now.getTime() - anchorDate.getTime()) / msPerDay)
+  const pNum       = periodNum !== null ? periodNum : Math.floor(daysSince / periodDays)
+  const pStart     = new Date(anchorDate.getTime() + pNum * periodDays * msPerDay)
+  const pEnd       = new Date(pStart.getTime() + periodDays * msPerDay)
+  const fmtDate = (d: Date) => d.toISOString().split('T')[0]
+  const startStr   = fmtDate(pStart), endStr = fmtDate(pEnd)
+  const sessions   = await db.prepare(`SELECT total_hours,earnings FROM sessions WHERE worker_id=? AND status='completed' AND date(clock_in_time)>=? AND date(clock_in_time)<?`).bind(workerId, startStr, endStr).all()
+  const gross      = (sessions.results as any[]).reduce((s, r) => s + parseFloat(r.earnings    || 0), 0)
+  const hours      = (sessions.results as any[]).reduce((s, r) => s + parseFloat(r.total_hours || 0), 0)
+  const province   = (worker as any).province || 'ON'
+  const payPeriods = payFreq === 'weekly' ? 52 : payFreq === 'monthly' ? 12 : 26
+  const yearStart  = fmtDate(new Date(pStart.getFullYear() + '-01-01'))
+  const ytdRow     = await db.prepare(`SELECT SUM(earnings) as ytd FROM sessions WHERE worker_id=? AND status='completed' AND date(clock_in_time)>=? AND date(clock_in_time)<?`).bind(workerId, yearStart, startStr).first() as any
+  const ytdGross   = parseFloat((ytdRow as any)?.ytd || 0)
+  const payroll    = gross > 0 ? calculateCanadianPayroll({ grossPay: gross, province, payPeriods, ytdGross }) : null
+  const emailTo    = body.email || null
+  if (!emailTo) return c.json({ error: 'No email address provided' }, 400)
+  const fm = (n: number) => '$' + n.toFixed(2)
+  const dedsHtml = payroll ? `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f1f5f9"><span style="font-size:13px;color:#64748b">CPP</span><span style="font-size:13px;color:#ef4444">-${fm(payroll.cpp)}</span></div><div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f1f5f9"><span style="font-size:13px;color:#64748b">EI</span><span style="font-size:13px;color:#ef4444">-${fm(payroll.ei)}</span></div><div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f1f5f9"><span style="font-size:13px;color:#64748b">Federal Tax</span><span style="font-size:13px;color:#ef4444">-${fm(payroll.federalTax)}</span></div><div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f1f5f9"><span style="font-size:13px;color:#64748b">Provincial Tax (${province})</span><span style="font-size:13px;color:#ef4444">-${fm(payroll.provincialTax)}</span></div><div style="display:flex;justify-content:space-between;padding:8px 0"><span style="font-size:14px;font-weight:800;color:#1e293b">Net Pay</span><span style="font-size:14px;font-weight:800;color:#059669">${fm(payroll.netPay)}</span></div>` : ''
+  const html = `<div style="font-family:sans-serif;max-width:500px;margin:0 auto;background:#f8fafc;padding:24px;border-radius:16px"><h2 style="font-size:20px;font-weight:800;color:#1e293b;margin:0 0 4px">${cfg.company_name || 'Company'} Payslip</h2><p style="font-size:13px;color:#64748b;margin:0 0 20px">Pay Period: ${startStr} to ${endStr}</p><div style="background:#fff;border-radius:12px;padding:16px;margin-bottom:12px"><p style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 8px">${(worker as any).name}</p><p style="font-size:12px;color:#64748b;margin:0">Province: ${province} &middot; Pay Type: ${(worker as any).pay_type || 'hourly'}</p></div><div style="background:#fff;border-radius:12px;padding:16px;margin-bottom:12px"><div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f1f5f9"><span style="font-size:13px;color:#64748b">Hours Worked</span><span style="font-size:13px;font-weight:700;color:#1e293b">${hours.toFixed(2)}h</span></div><div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f1f5f9"><span style="font-size:13px;color:#64748b">Gross Pay</span><span style="font-size:13px;font-weight:700;color:#1e293b">${fm(gross)}</span></div>${dedsHtml}</div><p style="font-size:11px;color:#94a3b8;text-align:center">Generated by ClockInProof</p></div>`
+  const emailRes = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: 'payroll@clockinproof.com', to: emailTo, subject: `Payslip: ${startStr} to ${endStr}`, html }) })
+  if (!emailRes.ok) return c.json({ error: 'Failed to send email' }, 500)
+  return c.json({ success: true })
+})
+
 // \u2500\u2500\u2500 SETTINGS API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 app.get('/api/settings', async (c) => {
@@ -10683,7 +10864,7 @@ function getWorkerHTML(tenant?: any): string {
       <span id="wk-dispatch-badge" style="display:none;position:absolute;top:8px;right:calc(50% - 16px);background:#ef4444;color:#fff;font-size:9px;font-weight:800;padding:1px 5px;border-radius:20px;line-height:1.4">0</span>
     </button>
     <button onclick="wkShowTab('history')" id="wk-nav-history" class="wk-nav-btn2">
-      <i class="fas fa-receipt" style="font-size:20px"></i>Pay Period
+      <i class="fas fa-wallet" style="font-size:20px"></i>Earnings
     </button>
     <button onclick="wkShowTab('profile')" id="wk-nav-profile" class="wk-nav-btn2">
       <i class="fas fa-user-circle" style="font-size:20px"></i>Profile
@@ -11013,50 +11194,124 @@ function getWorkerHTML(tenant?: any): string {
     </div>
   </div><!-- /wk-tab-dispatches -->
 
-  <!-- PAY HISTORY TAB -->
+  <!-- EARNINGS TAB -->
   <div id="wk-tab-history" style="display:none;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:80px">
-    <div class="p-4 max-w-lg mx-auto space-y-4">
-      <div style="padding-top:4px">
-        <h2 style="font-size:17px;font-weight:800;color:#1e293b">Pay Period</h2>
-        <p style="font-size:12px;color:#94a3b8;margin-top:1px" id="wk-hist-period-label">Loading...</p>
+    <div class="p-4 max-w-lg mx-auto">
+      <div style="padding-top:4px;margin-bottom:14px">
+        <h2 style="font-size:17px;font-weight:800;color:var(--wk-text)">Earnings</h2>
+        <p style="font-size:12px;color:#94a3b8;margin-top:1px" id="wk-earn-period-label">Loading...</p>
       </div>
 
-      <!-- Summary card -->
-      <div id="wk-hist-summary" style="background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:20px;padding:20px;color:#fff">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+      <!-- Sub-nav tabs -->
+      <div style="display:flex;background:#f1f5f9;border-radius:12px;padding:3px;margin-bottom:14px;gap:2px">
+        <button onclick="wkEarnView('period')" id="wk-earn-tab-period" style="flex:1;border:none;border-radius:10px;padding:7px 4px;font-size:11px;font-weight:700;cursor:pointer;background:#4f46e5;color:#fff;transition:all .15s">This Period</button>
+        <button onclick="wkEarnView('job')"    id="wk-earn-tab-job"    style="flex:1;border:none;border-radius:10px;padding:7px 4px;font-size:11px;font-weight:600;cursor:pointer;background:transparent;color:#64748b;transition:all .15s">By Job</button>
+        <button onclick="wkEarnView('day')"    id="wk-earn-tab-day"    style="flex:1;border:none;border-radius:10px;padding:7px 4px;font-size:11px;font-weight:600;cursor:pointer;background:transparent;color:#64748b;transition:all .15s">By Day</button>
+        <button onclick="wkEarnView('history')" id="wk-earn-tab-history" style="flex:1;border:none;border-radius:10px;padding:7px 4px;font-size:11px;font-weight:600;cursor:pointer;background:transparent;color:#64748b;transition:all .15s">History</button>
+      </div>
+
+      <!-- Summary card (shared across views) -->
+      <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:20px;padding:20px;color:#fff;margin-bottom:14px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px">
           <div style="background:rgba(255,255,255,.15);border-radius:14px;padding:14px;text-align:center">
             <p style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;opacity:.8;margin-bottom:4px">Total Hours</p>
-            <p style="font-size:28px;font-weight:800" id="wk-hist-hours">\u2013</p>
+            <p style="font-size:28px;font-weight:800" id="wk-earn-hours">\u2013</p>
           </div>
           <div style="background:rgba(255,255,255,.15);border-radius:14px;padding:14px;text-align:center">
             <p style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;opacity:.8;margin-bottom:4px">Gross Pay</p>
-            <p style="font-size:28px;font-weight:800" id="wk-hist-gross">\u2013</p>
+            <p style="font-size:28px;font-weight:800" id="wk-earn-gross">\u2013</p>
+          </div>
+        </div>
+        <div id="wk-earn-net-row" style="display:none;background:rgba(255,255,255,.1);border-radius:12px;padding:12px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <p style="font-size:10px;opacity:.7;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Net Pay</p>
+            <p style="font-size:22px;font-weight:800;margin-top:2px" id="wk-earn-net">\u2013</p>
+          </div>
+          <div style="text-align:right">
+            <p style="font-size:10px;opacity:.7;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Total Deductions</p>
+            <p style="font-size:16px;font-weight:800;color:rgba(255,255,255,.8)" id="wk-earn-deductions">\u2013</p>
           </div>
         </div>
         <div style="background:rgba(255,255,255,.1);border-radius:12px;padding:12px;display:flex;align-items:center;justify-content:space-between">
           <div>
-            <p style="font-size:10px;opacity:.7;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Next Payday</p>
-            <p style="font-size:16px;font-weight:800;margin-top:2px" id="wk-hist-payday">\u2013</p>
+            <p style="font-size:10px;opacity:.7;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Pay Period</p>
+            <p style="font-size:14px;font-weight:800;margin-top:2px" id="wk-earn-payday">\u2013</p>
           </div>
           <div style="text-align:right">
-            <p style="font-size:10px;opacity:.7;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Days Away</p>
-            <p style="font-size:22px;font-weight:800" id="wk-hist-days-left">\u2013</p>
+            <p style="font-size:10px;opacity:.7;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Days to Payday</p>
+            <p style="font-size:22px;font-weight:800" id="wk-earn-days-left">\u2013</p>
           </div>
         </div>
       </div>
 
-      <!-- Sessions list -->
-      <div>
+      <!-- This Period view -->
+      <div id="wk-earn-view-period">
+        <div id="wk-earn-deductions-card" style="display:none;background:#fff;border-radius:16px;padding:16px;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+          <p style="font-size:11px;font-weight:700;text-transform:uppercase;color:#94a3b8;letter-spacing:.05em;margin-bottom:10px">Deductions Breakdown</p>
+          <div id="wk-earn-deductions-list"></div>
+        </div>
         <p style="font-size:11px;font-weight:700;text-transform:uppercase;color:#94a3b8;letter-spacing:.05em;margin-bottom:10px">Shifts This Period</p>
-        <div id="wk-hist-sessions" class="space-y-2"></div>
-        <div id="wk-hist-empty" style="display:none;text-align:center;padding:32px 20px;color:#94a3b8">
+        <div id="wk-earn-sessions"></div>
+        <div id="wk-earn-empty" style="display:none;text-align:center;padding:32px 20px;color:#94a3b8">
           <i class="fas fa-calendar-times" style="font-size:36px;margin-bottom:10px;opacity:.4"></i>
           <p style="font-size:14px;font-weight:600">No shifts this period yet</p>
           <p style="font-size:12px;margin-top:4px">Clock in to start earning</p>
         </div>
       </div>
+
+      <!-- By Job view -->
+      <div id="wk-earn-view-job" style="display:none">
+        <p style="font-size:11px;font-weight:700;text-transform:uppercase;color:#94a3b8;letter-spacing:.05em;margin-bottom:10px">By Job Site</p>
+        <div id="wk-earn-by-job"></div>
+      </div>
+
+      <!-- By Day view -->
+      <div id="wk-earn-view-day" style="display:none">
+        <p style="font-size:11px;font-weight:700;text-transform:uppercase;color:#94a3b8;letter-spacing:.05em;margin-bottom:10px">By Day</p>
+        <div id="wk-earn-by-day"></div>
+      </div>
+
+      <!-- History view -->
+      <div id="wk-earn-view-history" style="display:none">
+        <div style="background:#fff;border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+          <p style="font-size:11px;font-weight:700;text-transform:uppercase;color:#94a3b8;letter-spacing:.05em;margin-bottom:8px">Year to Date</p>
+          <div style="display:flex;justify-content:space-between;align-items:flex-end">
+            <div><p style="font-size:11px;color:#94a3b8">Hours</p><p style="font-size:20px;font-weight:800;color:#1e293b" id="wk-earn-ytd-hours">\u2013</p></div>
+            <div style="text-align:right"><p style="font-size:11px;color:#94a3b8">Gross</p><p style="font-size:20px;font-weight:800;color:#059669" id="wk-earn-ytd-gross">\u2013</p></div>
+          </div>
+        </div>
+        <p style="font-size:11px;font-weight:700;text-transform:uppercase;color:#94a3b8;letter-spacing:.05em;margin-bottom:10px">Past Pay Periods</p>
+        <div id="wk-earn-history-list"></div>
+      </div>
     </div>
   </div><!-- /wk-tab-history -->
+
+  <!-- PAYSLIP MODAL -->
+  <div id="wk-payslip-modal" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.5);align-items:flex-end" onclick="if(event.target===this)closePayslipModal()">
+    <div style="background:#fff;border-radius:24px 24px 0 0;width:100%;max-height:90vh;overflow-y:auto;padding:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+        <div>
+          <p style="font-size:17px;font-weight:800;color:#1e293b" id="wk-slip-company">\u2013</p>
+          <p style="font-size:12px;color:#64748b;margin-top:2px" id="wk-slip-period">\u2013</p>
+        </div>
+        <button onclick="closePayslipModal()" style="width:32px;height:32px;border:none;background:#f1f5f9;border-radius:10px;cursor:pointer;color:#64748b;font-size:14px;display:flex;align-items:center;justify-content:center"><i class="fas fa-times"></i></button>
+      </div>
+      <div style="background:#f8fafc;border-radius:14px;padding:14px;margin-bottom:14px">
+        <p style="font-size:14px;font-weight:700;color:#1e293b" id="wk-slip-name">\u2013</p>
+        <p style="font-size:12px;color:#64748b;margin-top:2px" id="wk-slip-meta">\u2013</p>
+      </div>
+      <div style="background:#fff;border:1px solid #f1f5f9;border-radius:14px;padding:14px;margin-bottom:14px">
+        <div id="wk-slip-earnings-rows"></div>
+      </div>
+      <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:14px;padding:14px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:14px;font-weight:700;color:rgba(255,255,255,.8)">Net Pay</span>
+        <span style="font-size:24px;font-weight:900;color:#fff" id="wk-slip-net">\u2013</span>
+      </div>
+      <button id="wk-slip-email-btn" onclick="requestPayslipEmail()" style="width:100%;padding:14px;background:#f1f5f9;border:none;border-radius:14px;font-size:14px;font-weight:700;color:#4f46e5;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">
+        <i class="fas fa-envelope"></i> Email me this payslip
+      </button>
+    </div>
+  </div>
 
   <!-- PROFILE TAB -->
   <div id="wk-tab-profile" style="display:none;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:80px">
