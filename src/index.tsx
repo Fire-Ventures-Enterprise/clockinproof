@@ -81,6 +81,206 @@ async function resolveTenantId(c: any, db: D1Database): Promise<number> {
 // from every API call down to just once on cold start. Massive latency improvement.
 let _schemaInitialized = false
 
+// ─── Canadian Payroll Tax Rates 2024 (CRA) ────────────────────────────────
+const CANADA_PAYROLL_RATES = {
+  federal: {
+    brackets: [
+      { min: 0,      max: 55867,    rate: 0.15   },
+      { min: 55867,  max: 111733,   rate: 0.205  },
+      { min: 111733, max: 154906,   rate: 0.26   },
+      { min: 154906, max: 220000,   rate: 0.29   },
+      { min: 220000, max: 9999999,  rate: 0.33   },
+    ],
+    basicPersonal: 15705,
+    cpp:  { rate: 0.0595, maxEarnings: 68500, exemption: 3500 },
+    cpp2: { rate: 0.04,   minEarnings: 68500, maxEarnings: 73200 },
+    ei:   { rate: 0.0166, maxEarnings: 63200 },
+  },
+  provinces: {
+    AB: { name: 'Alberta', basicPersonal: 21003, brackets: [
+      { min: 0,      max: 148269,  rate: 0.10  },
+      { min: 148269, max: 177922,  rate: 0.12  },
+      { min: 177922, max: 237230,  rate: 0.13  },
+      { min: 237230, max: 355845,  rate: 0.14  },
+      { min: 355845, max: 9999999, rate: 0.15  },
+    ]},
+    BC: { name: 'British Columbia', basicPersonal: 11981, brackets: [
+      { min: 0,      max: 45654,   rate: 0.0506 },
+      { min: 45654,  max: 91310,   rate: 0.077  },
+      { min: 91310,  max: 104835,  rate: 0.105  },
+      { min: 104835, max: 127299,  rate: 0.1229 },
+      { min: 127299, max: 172602,  rate: 0.147  },
+      { min: 172602, max: 240716,  rate: 0.168  },
+      { min: 240716, max: 9999999, rate: 0.205  },
+    ]},
+    MB: { name: 'Manitoba', basicPersonal: 15780, brackets: [
+      { min: 0,     max: 36842,   rate: 0.108  },
+      { min: 36842, max: 79625,   rate: 0.1275 },
+      { min: 79625, max: 9999999, rate: 0.174  },
+    ]},
+    NB: { name: 'New Brunswick', basicPersonal: 12458, brackets: [
+      { min: 0,      max: 47715,   rate: 0.094  },
+      { min: 47715,  max: 95431,   rate: 0.14   },
+      { min: 95431,  max: 176756,  rate: 0.16   },
+      { min: 176756, max: 9999999, rate: 0.195  },
+    ]},
+    NL: { name: 'Newfoundland and Labrador', basicPersonal: 10818, brackets: [
+      { min: 0,      max: 43198,   rate: 0.087  },
+      { min: 43198,  max: 86395,   rate: 0.145  },
+      { min: 86395,  max: 154244,  rate: 0.158  },
+      { min: 154244, max: 215943,  rate: 0.178  },
+      { min: 215943, max: 275870,  rate: 0.198  },
+      { min: 275870, max: 551739,  rate: 0.208  },
+      { min: 551739, max: 9999999, rate: 0.213  },
+    ]},
+    NS: { name: 'Nova Scotia', basicPersonal: 8481, brackets: [
+      { min: 0,      max: 29590,   rate: 0.0879 },
+      { min: 29590,  max: 59180,   rate: 0.1495 },
+      { min: 59180,  max: 93000,   rate: 0.1667 },
+      { min: 93000,  max: 150000,  rate: 0.175  },
+      { min: 150000, max: 9999999, rate: 0.21   },
+    ]},
+    NT: { name: 'Northwest Territories', basicPersonal: 16593, brackets: [
+      { min: 0,      max: 50597,   rate: 0.059   },
+      { min: 50597,  max: 101198,  rate: 0.086   },
+      { min: 101198, max: 164525,  rate: 0.122   },
+      { min: 164525, max: 9999999, rate: 0.1405  },
+    ]},
+    NU: { name: 'Nunavut', basicPersonal: 17925, brackets: [
+      { min: 0,      max: 53268,   rate: 0.04   },
+      { min: 53268,  max: 106537,  rate: 0.07   },
+      { min: 106537, max: 173205,  rate: 0.09   },
+      { min: 173205, max: 9999999, rate: 0.115  },
+    ]},
+    ON: { name: 'Ontario', basicPersonal: 11865,
+      surtax: { threshold1: 5315, rate1: 0.20, threshold2: 6802, rate2: 0.36 },
+      brackets: [
+        { min: 0,      max: 51446,   rate: 0.0505 },
+        { min: 51446,  max: 102894,  rate: 0.0915 },
+        { min: 102894, max: 150000,  rate: 0.1116 },
+        { min: 150000, max: 220000,  rate: 0.1216 },
+        { min: 220000, max: 9999999, rate: 0.1316 },
+      ],
+    },
+    PE: { name: 'Prince Edward Island', basicPersonal: 12000, brackets: [
+      { min: 0,      max: 32656,   rate: 0.0965  },
+      { min: 32656,  max: 64313,   rate: 0.1363  },
+      { min: 64313,  max: 105000,  rate: 0.1665  },
+      { min: 105000, max: 140000,  rate: 0.18    },
+      { min: 140000, max: 9999999, rate: 0.1875  },
+    ]},
+    QC: { name: 'Quebec', basicPersonal: 17183, federalAbatement: 0.165, brackets: [
+      { min: 0,      max: 51780,   rate: 0.14   },
+      { min: 51780,  max: 103545,  rate: 0.19   },
+      { min: 103545, max: 126000,  rate: 0.24   },
+      { min: 126000, max: 9999999, rate: 0.2575 },
+    ]},
+    SK: { name: 'Saskatchewan', basicPersonal: 17661, brackets: [
+      { min: 0,      max: 49720,   rate: 0.105  },
+      { min: 49720,  max: 142058,  rate: 0.125  },
+      { min: 142058, max: 9999999, rate: 0.145  },
+    ]},
+    YT: { name: 'Yukon', basicPersonal: 15705, brackets: [
+      { min: 0,      max: 55867,   rate: 0.064  },
+      { min: 55867,  max: 111733,  rate: 0.09   },
+      { min: 111733, max: 154906,  rate: 0.109  },
+      { min: 154906, max: 500000,  rate: 0.128  },
+      { min: 500000, max: 9999999, rate: 0.15   },
+    ]},
+  }
+}
+
+function _bracketTax(income: number, brackets: {min:number,max:number,rate:number}[]): number {
+  let tax = 0
+  for (const b of brackets) {
+    if (income <= b.min) break
+    tax += (Math.min(income, b.max) - b.min) * b.rate
+  }
+  return tax
+}
+
+function _r2(n: number): number { return Math.round(n * 100) / 100 }
+
+function calculateCanadianPayroll(params: {
+  grossPay:    number
+  province:    string
+  payPeriods?: number
+  ytdGross?:   number
+  ytdCPP?:     number
+  ytdCPP2?:    number
+  ytdEI?:      number
+}) {
+  const { grossPay, province } = params
+  const payPeriods = params.payPeriods ?? 26
+  const ytdCPP  = params.ytdCPP  ?? 0
+  const ytdCPP2 = params.ytdCPP2 ?? 0
+  const ytdEI   = params.ytdEI   ?? 0
+
+  const fed  = CANADA_PAYROLL_RATES.federal
+  const prov = (CANADA_PAYROLL_RATES.provinces as any)[province] ?? CANADA_PAYROLL_RATES.provinces.ON
+
+  // ── CPP ──────────────────────────────────────────────────────────────────
+  const annualCPPMax = (fed.cpp.maxEarnings - fed.cpp.exemption) * fed.cpp.rate  // 3867.50
+  const periodExempt = fed.cpp.exemption / payPeriods
+  const rawCPP       = Math.max(0, (grossPay - periodExempt) * fed.cpp.rate)
+  const cpp          = _r2(Math.min(rawCPP, Math.max(0, annualCPPMax - ytdCPP)))
+
+  // ── CPP2 ─────────────────────────────────────────────────────────────────
+  const annualCPP2Max = (fed.cpp2.maxEarnings - fed.cpp2.minEarnings) * fed.cpp2.rate  // 188.00
+  const annualGross   = grossPay * payPeriods
+  const cpp2Eligible  = Math.max(0, Math.min(annualGross, fed.cpp2.maxEarnings) - fed.cpp2.minEarnings)
+  const rawCPP2       = (cpp2Eligible * fed.cpp2.rate) / payPeriods
+  const cpp2          = _r2(Math.min(rawCPP2, Math.max(0, annualCPP2Max - ytdCPP2)))
+
+  // ── EI ───────────────────────────────────────────────────────────────────
+  const annualEIMax = fed.ei.maxEarnings * fed.ei.rate  // 1049.12
+  const rawEI       = grossPay * fed.ei.rate
+  const ei          = _r2(Math.min(rawEI, Math.max(0, annualEIMax - ytdEI)))
+
+  // ── Income tax (annualized CRA method) ───────────────────────────────────
+  const annualCPPCredit = Math.min(annualCPPMax + annualCPP2Max, annualGross)
+  const annualEICredit  = Math.min(annualEIMax, annualGross * fed.ei.rate)
+
+  // Federal
+  const fedGross   = _bracketTax(annualGross, fed.brackets)
+  const fedCredits = (fed.basicPersonal + annualCPPCredit + annualEICredit) * 0.15
+  let   annFedTax  = Math.max(0, fedGross - fedCredits)
+  if (prov.federalAbatement) annFedTax *= (1 - prov.federalAbatement)
+  const federalTax = _r2(annFedTax / payPeriods)
+
+  // Provincial
+  const provBottomRate = prov.brackets[0].rate
+  const provGross      = _bracketTax(annualGross, prov.brackets)
+  const provCredits    = prov.basicPersonal * provBottomRate
+  let   annProvTax     = Math.max(0, provGross - provCredits)
+
+  // Ontario surtax
+  if (province === 'ON' && prov.surtax) {
+    const st = prov.surtax
+    if (annProvTax > st.threshold2) {
+      annProvTax += (annProvTax - st.threshold2) * st.rate2 + (st.threshold2 - st.threshold1) * st.rate1
+    } else if (annProvTax > st.threshold1) {
+      annProvTax += (annProvTax - st.threshold1) * st.rate1
+    }
+  }
+  const provincialTax = _r2(annProvTax / payPeriods)
+
+  // ── Summary ──────────────────────────────────────────────────────────────
+  const totalDeductions = _r2(cpp + cpp2 + ei + federalTax + provincialTax)
+  const netPay          = _r2(Math.max(0, grossPay - totalDeductions))
+
+  return {
+    grossPay: _r2(grossPay), cpp, cpp2, ei,
+    federalTax, provincialTax,
+    totalDeductions, netPay,
+    employerCPP:  _r2(cpp),
+    employerCPP2: _r2(cpp2),
+    employerEI:   _r2(ei * 1.4),
+    annualizedGross: _r2(annualGross),
+    province,
+  }
+}
+
 async function ensureSchema(db: D1Database) {
   if (_schemaInitialized) return  // \u2190 skip entirely after first run
   _schemaInitialized = true
@@ -664,6 +864,8 @@ async function ensureSchema(db: D1Database) {
     `INSERT OR IGNORE INTO settings (key, value) VALUES ('max_travel_hours_per_day', '2')`,
     // ── sessions.reassigned_at column ─────────────────────────────────────────
     `ALTER TABLE sessions ADD COLUMN reassigned_at DATETIME`,
+    // ── Canadian payroll: province override per worker ─────────────────────
+    `ALTER TABLE workers ADD COLUMN province TEXT DEFAULT 'ON'`,
   ]
   for (const sql of statements) {
     try {
@@ -5969,39 +6171,136 @@ app.get('/api/calendar/:year/:month', async (c) => {
 // \u2500\u2500\u2500 PAYROLL REPORT API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 app.get('/api/payroll/:year/:month', async (c) => {
   const db = c.env.DB
-  const tenantId = await resolveTenantId(c, db)
-  const year = parseInt(c.req.param('year'))
-  const month = parseInt(c.req.param('month'))
+  await ensureSchema(db)
+  const tenantId  = await resolveTenantId(c, db)
+  const year      = parseInt(c.req.param('year'))
+  const month     = parseInt(c.req.param('month'))
   const worker_id = c.req.query('worker_id')
 
+  // Canadian payroll params
+  const settings   = await getTenantSettings(db, tenantId)
+  const province   = c.req.query('province') || settings.province_code || 'ON'
+  const payPeriods = parseInt(c.req.query('pay_periods') || (settings.pay_frequency === 'weekly' ? '52' : '26'))
+
   const startDate = `${year}-${String(month).padStart(2,'0')}-01`
-  const endDate = new Date(year, month, 0).toISOString().split('T')[0] // last day of month
+  const endDate   = new Date(year, month, 0).toISOString().split('T')[0]
+  const ytdStart  = `${year}-01-01`
 
   let query = `
-    SELECT s.*, w.name as worker_name, w.phone as worker_phone, w.hourly_rate
+    SELECT s.*, w.name as worker_name, w.phone as worker_phone, w.hourly_rate,
+           COALESCE(w.province, ?) as worker_province
     FROM sessions s JOIN workers w ON s.worker_id = w.id
     WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) <= ?
     AND s.status = 'completed' AND s.tenant_id = ?
   `
-  const params: any[] = [startDate, endDate, tenantId]
+  const params: any[] = [province, startDate, endDate, tenantId]
   if (worker_id) { query += ' AND s.worker_id = ?'; params.push(parseInt(worker_id)) }
   query += ' ORDER BY w.name, s.clock_in_time ASC'
 
   const sessions = await db.prepare(query).bind(...params).all()
 
+  // YTD gross per worker (Jan 1 to start of current period, for CPP/EI cap tracking)
+  const ytdRows = await db.prepare(`
+    SELECT s.worker_id, SUM(s.earnings) as ytd_gross
+    FROM sessions s
+    WHERE DATE(s.clock_in_time) >= ? AND DATE(s.clock_in_time) < ?
+    AND s.status = 'completed' AND s.tenant_id = ?
+    GROUP BY s.worker_id
+  `).bind(ytdStart, startDate, tenantId).all()
+
+  const ytdByWorker: Record<number, number> = {}
+  ;(ytdRows.results as any[]).forEach((r: any) => { ytdByWorker[r.worker_id] = r.ytd_gross || 0 })
+
   // Group by worker
   const byWorker: Record<string, any> = {}
-  sessions.results.forEach((s: any) => {
+  ;(sessions.results as any[]).forEach((s: any) => {
     const wid = s.worker_id
     if (!byWorker[wid]) {
-      byWorker[wid] = { worker_id: wid, name: s.worker_name, phone: s.worker_phone, hourly_rate: s.hourly_rate, sessions: [], total_hours: 0, total_regular: 0, total_stat: 0, total_pay: 0 }
+      byWorker[wid] = {
+        worker_id: wid, name: s.worker_name, phone: s.worker_phone,
+        hourly_rate: s.hourly_rate, province: s.worker_province,
+        sessions: [], total_hours: 0, total_regular: 0, total_stat: 0, total_pay: 0
+      }
     }
     byWorker[wid].sessions.push(s)
     byWorker[wid].total_hours += s.total_hours || 0
-    byWorker[wid].total_pay += s.earnings || 0
+    byWorker[wid].total_pay   += s.earnings    || 0
+    if (s.session_type === 'stat') byWorker[wid].total_stat    += s.earnings || 0
+    else                            byWorker[wid].total_regular += s.earnings || 0
   })
 
-  return c.json({ payroll: Object.values(byWorker), period: `${year}-${String(month).padStart(2,'0')}`, start: startDate, end: endDate })
+  // Attach Canadian payroll calculations to each worker
+  const fed = CANADA_PAYROLL_RATES.federal
+  const payrollData = Object.values(byWorker).map((w: any) => {
+    const workerProvince = w.province || province
+    const ytdGross       = ytdByWorker[w.worker_id] || 0
+    const ytdCPP  = _r2(Math.min(ytdGross * fed.cpp.rate, (fed.cpp.maxEarnings - fed.cpp.exemption) * fed.cpp.rate))
+    const ytdEI   = _r2(Math.min(ytdGross * fed.ei.rate,   fed.ei.maxEarnings * fed.ei.rate))
+
+    const calc = calculateCanadianPayroll({
+      grossPay: w.total_pay, province: workerProvince, payPeriods,
+      ytdGross, ytdCPP, ytdEI,
+    })
+    return { ...w, ytd_gross: _r2(ytdGross), payroll: calc }
+  })
+
+  // Employer cost totals
+  const employerTotals = payrollData.reduce((acc: any, w: any) => {
+    acc.totalGross        = _r2(acc.totalGross        + w.payroll.grossPay)
+    acc.totalNetPay       = _r2(acc.totalNetPay       + w.payroll.netPay)
+    acc.totalCPP          = _r2(acc.totalCPP          + w.payroll.cpp)
+    acc.totalCPP2         = _r2(acc.totalCPP2         + w.payroll.cpp2)
+    acc.totalEI           = _r2(acc.totalEI           + w.payroll.ei)
+    acc.totalFedTax       = _r2(acc.totalFedTax       + w.payroll.federalTax)
+    acc.totalProvTax      = _r2(acc.totalProvTax      + w.payroll.provincialTax)
+    acc.totalDeductions   = _r2(acc.totalDeductions   + w.payroll.totalDeductions)
+    acc.totalEmployerCPP  = _r2(acc.totalEmployerCPP  + w.payroll.employerCPP)
+    acc.totalEmployerCPP2 = _r2(acc.totalEmployerCPP2 + w.payroll.employerCPP2)
+    acc.totalEmployerEI   = _r2(acc.totalEmployerEI   + w.payroll.employerEI)
+    acc.totalEmployerCost = _r2(acc.totalEmployerCost + w.payroll.grossPay + w.payroll.employerCPP + w.payroll.employerCPP2 + w.payroll.employerEI)
+    return acc
+  }, { totalGross:0, totalNetPay:0, totalCPP:0, totalCPP2:0, totalEI:0, totalFedTax:0, totalProvTax:0, totalDeductions:0, totalEmployerCPP:0, totalEmployerCPP2:0, totalEmployerEI:0, totalEmployerCost:0 })
+
+  return c.json({
+    payroll: payrollData,
+    period: `${year}-${String(month).padStart(2,'0')}`,
+    start: startDate, end: endDate,
+    province, payPeriods,
+    employerTotals,
+  })
+})
+
+// ─── POST /api/payroll/calculate — single worker on-the-fly calculation ──────
+app.post('/api/payroll/calculate', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
+  const settings = await getTenantSettings(db, tenantId)
+  const body = await c.req.json()
+  const { grossPay, province, payPeriods, ytdGross, ytdCPP, ytdCPP2, ytdEI } = body
+
+  if (!grossPay || grossPay < 0) return c.json({ error: 'grossPay required' }, 400)
+  const prov = province || settings.province_code || 'ON'
+  const pp   = parseInt(payPeriods) || 26
+
+  const result = calculateCanadianPayroll({ grossPay, province: prov, payPeriods: pp, ytdGross, ytdCPP, ytdCPP2, ytdEI })
+  return c.json({ result, province: prov, payPeriods: pp })
+})
+
+// ─── GET /api/payroll/rates/:province — return 2024 CRA rates for a province ─
+app.get('/api/payroll/rates/:province', async (c) => {
+  const pcode = c.req.param('province').toUpperCase()
+  const prov  = (CANADA_PAYROLL_RATES.provinces as any)[pcode]
+  if (!prov) return c.json({ error: `Unknown province: ${pcode}` }, 404)
+  return c.json({
+    province: pcode,
+    name: prov.name,
+    brackets: prov.brackets,
+    basicPersonal: prov.basicPersonal,
+    surtax: prov.surtax || null,
+    federalAbatement: prov.federalAbatement || null,
+    federal: CANADA_PAYROLL_RATES.federal,
+  })
 })
 
 // \u2500\u2500\u2500 WEEKLY EXPORT API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -12867,37 +13166,126 @@ function getAdminHTML(): string {
 
     <!-- \u2500\u2500 Tab: Payroll Totals \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
     <div id="tab-payroll" class="tab-content hidden bg-white rounded-2xl shadow-sm p-5">
-      <div class="flex items-center justify-between mb-5 flex-wrap gap-3">
+      <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
         <h3 class="font-bold text-gray-800 text-lg flex items-center gap-2">
-          <i class="fas fa-dollar-sign text-purple-500"></i> Payroll Totals
+          <i class="fas fa-dollar-sign text-purple-500"></i> Canadian Payroll
         </h3>
-        <div class="flex gap-2 flex-wrap">
-          <button onclick="changePeriod('today');loadPayrollTab()" class="px-3 py-1.5 text-xs rounded-xl bg-white border border-gray-200 text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 font-medium">Today</button>
-          <button onclick="changePeriod('week');loadPayrollTab()" class="px-3 py-1.5 text-xs rounded-xl bg-white border border-gray-200 text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 font-medium">This Week</button>
-          <button onclick="changePeriod('month');loadPayrollTab()" class="px-3 py-1.5 text-xs rounded-xl bg-white border border-gray-200 text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 font-medium">This Month</button>
-          <button onclick="changePeriod('all');loadPayrollTab()" class="px-3 py-1.5 text-xs rounded-xl bg-indigo-600 text-white font-medium">All Time</button>
+        <div class="flex gap-2 flex-wrap items-center">
+          <select id="payroll-province" onchange="loadPayrollTab()"
+            class="text-xs border border-gray-200 rounded-xl px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-purple-400 bg-white">
+            <option value="AB">AB \u2014 Alberta</option>
+            <option value="BC">BC \u2014 British Columbia</option>
+            <option value="MB">MB \u2014 Manitoba</option>
+            <option value="NB">NB \u2014 New Brunswick</option>
+            <option value="NL">NL \u2014 Newfoundland</option>
+            <option value="NS">NS \u2014 Nova Scotia</option>
+            <option value="NT">NT \u2014 Northwest Territories</option>
+            <option value="NU">NU \u2014 Nunavut</option>
+            <option value="ON" selected>ON \u2014 Ontario</option>
+            <option value="PE">PE \u2014 PEI</option>
+            <option value="QC">QC \u2014 Quebec</option>
+            <option value="SK">SK \u2014 Saskatchewan</option>
+            <option value="YT">YT \u2014 Yukon</option>
+          </select>
+          <select id="payroll-frequency" onchange="loadPayrollTab()"
+            class="text-xs border border-gray-200 rounded-xl px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-purple-400 bg-white">
+            <option value="26" selected>Biweekly (26)</option>
+            <option value="24">Semi-monthly (24)</option>
+            <option value="12">Monthly (12)</option>
+            <option value="52">Weekly (52)</option>
+          </select>
+          <input type="month" id="payroll-month"
+            class="text-xs border border-gray-200 rounded-xl px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-purple-400"
+            onchange="loadPayrollTab()"/>
+          <button onclick="loadPayrollTab()" class="px-3 py-1.5 text-xs rounded-xl bg-purple-600 text-white font-medium hover:bg-purple-700">
+            <i class="fas fa-calculator mr-1"></i>Calculate
+          </button>
         </div>
       </div>
 
       <!-- Summary totals banner -->
-      <div class="grid grid-cols-3 gap-3 mb-6">
-        <div class="bg-purple-50 border border-purple-100 rounded-2xl p-4 text-center">
-          <p class="text-2xl font-bold text-purple-700" id="pt-total-payroll">\u2013</p>
-          <p class="text-xs text-purple-500 mt-0.5 font-medium">Total Payroll</p>
+      <div class="grid grid-cols-3 sm:grid-cols-6 gap-2 mb-4">
+        <div class="bg-purple-50 border border-purple-100 rounded-xl p-3 text-center">
+          <p class="text-lg font-bold text-purple-700" id="pt-total-payroll">\u2013</p>
+          <p class="text-[10px] text-purple-500 mt-0.5 font-medium">Gross Pay</p>
         </div>
-        <div class="bg-blue-50 border border-blue-100 rounded-2xl p-4 text-center">
-          <p class="text-2xl font-bold text-blue-700" id="pt-total-hours">\u2013</p>
-          <p class="text-xs text-blue-500 mt-0.5 font-medium">Total Hours</p>
+        <div class="bg-blue-50 border border-blue-100 rounded-xl p-3 text-center">
+          <p class="text-lg font-bold text-blue-700" id="pt-total-hours">\u2013</p>
+          <p class="text-[10px] text-blue-500 mt-0.5 font-medium">Total Hours</p>
         </div>
-        <div class="bg-green-50 border border-green-100 rounded-2xl p-4 text-center">
-          <p class="text-2xl font-bold text-green-700" id="pt-total-workers">\u2013</p>
-          <p class="text-xs text-green-500 mt-0.5 font-medium">Workers Paid</p>
+        <div class="bg-green-50 border border-green-100 rounded-xl p-3 text-center">
+          <p class="text-lg font-bold text-green-700" id="pt-net-pay">\u2013</p>
+          <p class="text-[10px] text-green-500 mt-0.5 font-medium">Net Pay</p>
+        </div>
+        <div class="bg-orange-50 border border-orange-100 rounded-xl p-3 text-center">
+          <p class="text-lg font-bold text-orange-700" id="pt-total-cpp">\u2013</p>
+          <p class="text-[10px] text-orange-500 mt-0.5 font-medium">CPP</p>
+        </div>
+        <div class="bg-red-50 border border-red-100 rounded-xl p-3 text-center">
+          <p class="text-lg font-bold text-red-700" id="pt-total-ei">\u2013</p>
+          <p class="text-[10px] text-red-500 mt-0.5 font-medium">EI</p>
+        </div>
+        <div class="bg-gray-50 border border-gray-200 rounded-xl p-3 text-center">
+          <p class="text-lg font-bold text-gray-700" id="pt-total-workers">\u2013</p>
+          <p class="text-[10px] text-gray-500 mt-0.5 font-medium">Workers</p>
         </div>
       </div>
 
-      <!-- Per-worker breakdown -->
-      <div id="payroll-workers-list" class="space-y-3">
-        <p class="text-gray-400 text-center py-8"><i class="fas fa-spinner fa-spin mr-2"></i>Loading payroll data...</p>
+      <!-- Deductions table -->
+      <div class="overflow-x-auto mb-4 border border-gray-100 rounded-2xl">
+        <table class="w-full text-xs" id="payroll-table" style="min-width:700px">
+          <thead>
+            <tr class="bg-gray-50 border-b border-gray-200">
+              <th class="text-left px-3 py-2.5 font-semibold text-gray-600 rounded-tl-2xl">Name</th>
+              <th class="text-right px-3 py-2.5 font-semibold text-gray-600">Hours</th>
+              <th class="text-right px-3 py-2.5 font-semibold text-gray-600">Gross</th>
+              <th class="text-right px-3 py-2.5 font-semibold text-gray-600">CPP</th>
+              <th class="text-right px-3 py-2.5 font-semibold text-gray-600">EI</th>
+              <th class="text-right px-3 py-2.5 font-semibold text-gray-600">Fed Tax</th>
+              <th class="text-right px-3 py-2.5 font-semibold text-gray-600">Prov Tax</th>
+              <th class="text-right px-3 py-2.5 font-semibold text-green-700 rounded-tr-2xl">Net Pay</th>
+            </tr>
+          </thead>
+          <tbody id="payroll-workers-list">
+            <tr><td colspan="8" class="text-center py-10 text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Loading payroll data...</td></tr>
+          </tbody>
+          <tfoot id="payroll-employer-totals" class="hidden">
+            <tr class="bg-indigo-50 border-t-2 border-indigo-200 font-semibold">
+              <td class="px-3 py-2 text-indigo-700 text-xs" colspan="2">Employee Totals</td>
+              <td class="px-3 py-2 text-right text-indigo-700" id="et-gross"></td>
+              <td class="px-3 py-2 text-right text-indigo-700" id="et-cpp"></td>
+              <td class="px-3 py-2 text-right text-indigo-700" id="et-ei"></td>
+              <td class="px-3 py-2 text-right text-indigo-700" id="et-fedtax"></td>
+              <td class="px-3 py-2 text-right text-indigo-700" id="et-provtax"></td>
+              <td class="px-3 py-2 text-right text-green-700" id="et-netpay"></td>
+            </tr>
+            <tr class="bg-amber-50 border-t border-amber-200">
+              <td colspan="8" class="px-3 py-2.5 text-xs text-amber-800">
+                <span class="font-semibold">Employer Cost Breakdown:</span>
+                &nbsp;CPP Match: <span id="et-emp-cpp" class="font-bold"></span>
+                &nbsp;CPP2 Match: <span id="et-emp-cpp2" class="font-bold"></span>
+                &nbsp;EI (1.4x): <span id="et-emp-ei" class="font-bold"></span>
+                &nbsp;&mdash;&nbsp;<strong>Total Employer Cost: <span id="et-emp-total" class="text-amber-900"></span></strong>
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <!-- Export / Action buttons -->
+      <div class="flex gap-2 flex-wrap">
+        <button onclick="exportPayrollCSV()"
+          class="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded-xl shadow-sm">
+          <i class="fas fa-file-csv"></i> Export CSV
+        </button>
+        <button onclick="exportT4Summary()"
+          class="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm">
+          <i class="fas fa-file-alt"></i> Export T4 Summary
+        </button>
+        <button onclick="showTab('quickbooks')"
+          class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-bold rounded-xl">
+          <i class="fas fa-sync-alt text-green-600"></i> Sync to QuickBooks
+        </button>
       </div>
     </div>
 
