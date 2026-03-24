@@ -9,6 +9,7 @@ function _updateThemeIcon() {
   // Admin navbar icon
   const icon = document.getElementById('admin-theme-icon')
   if (icon) {
+    // dark mode → show ☀️ (click to go light); light mode → show 🌙 (click to go dark)
     icon.className = isDark ? 'fas fa-sun text-sm' : 'fas fa-moon text-sm'
   }
   const btn = document.getElementById('admin-theme-toggle')
@@ -2029,14 +2030,15 @@ async function loadMap() {
       }
     
       if (sessions.length === 0 && noGps.length === 0) {
-      adminMap.setView([20, 0], 2)
-      const overlay = document.createElement('div')
-      overlay.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,0.9);padding:12px 20px;border-radius:12px;font-size:13px;color:#6b7280;pointer-events:none;z-index:999;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.1)'
-      overlay.innerHTML = '<i class="fas fa-hard-hat" style="color:#9ca3af;margin-right:6px"></i>No workers currently onsite'
-      document.getElementById('admin-map').appendChild(overlay)
-      return
-    }
-    
+        adminMap.setView([20, 0], 2)
+        const overlay = document.createElement('div')
+        overlay.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,0.9);padding:12px 20px;border-radius:12px;font-size:13px;color:#6b7280;pointer-events:none;z-index:999;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.1)'
+        overlay.innerHTML = '<i class="fas fa-hard-hat" style="color:#9ca3af;margin-right:6px"></i>No workers currently onsite'
+        document.getElementById('admin-map').appendChild(overlay)
+        return
+      }
+    } // end if (sessions.length === 0)
+
     const bounds = []
     sessions.forEach(s => {
       // All markers are green -- map only shows live workers
@@ -7039,3 +7041,37 @@ async function saveWebhook() {
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
 // Helper: format ISO date
 function fmtDate(s) { if (!s) return ''; try { return new Date(s).toLocaleDateString('en-CA', { year:'numeric',month:'short',day:'numeric' }) } catch { return s } }
+
+// ── Travel Settings ───────────────────────────────────────────────────────────
+async function saveTravelSettings() {
+  const decision = document.getElementById('setting-travel-pay-decision')?.value
+  const rateMode = document.getElementById('setting-travel-pay-rate-mode')?.value
+  const maxHours = document.getElementById('setting-max-travel-hours')?.value
+
+  try {
+    await apiFetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        travel_pay_decision: decision,
+        travel_pay_rate_mode: rateMode,
+        max_travel_hours_per_day: maxHours
+      })
+    })
+    showToast('Travel settings saved!', 'success')
+  } catch(e) {
+    showToast('Failed to save settings', 'error')
+  }
+}
+
+async function loadTravelSettings() {
+  try {
+    const res = await apiFetch('/api/settings')
+    const data = await res.json()
+    const settings = data.settings || {}
+    const el = (id) => document.getElementById(id)
+    if (el('setting-travel-pay-decision')) el('setting-travel-pay-decision').value = settings.travel_pay_decision || 'pending'
+    if (el('setting-travel-pay-rate-mode')) el('setting-travel-pay-rate-mode').value = settings.travel_pay_rate_mode || 'same'
+    if (el('setting-max-travel-hours')) el('setting-max-travel-hours').value = settings.max_travel_hours_per_day || '2'
+  } catch(e) {}
+}

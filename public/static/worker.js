@@ -6,18 +6,15 @@ function toggleTheme() {
 }
 function _updateWorkerThemeUI() {
   const isDark = document.documentElement.classList.contains('dark')
-  const icon  = document.getElementById('wk-theme-icon')
+  const icon       = document.getElementById('wk-theme-icon')
+  const headerIcon = document.getElementById('wk-header-theme-icon')
   const label = document.getElementById('wk-theme-label')
   const btn   = document.getElementById('wk-theme-btn')
-  if (icon)  icon.className  = isDark ? 'fas fa-sun' : 'fas fa-moon'
-  if (label) label.textContent = isDark ? 'Light Mode' : 'Dark Mode'
-  if (btn)   btn.style.background = isDark ? '#1e293b' : '#f0f9ff'
-  // Also update bottom nav bg
-  const nav = document.getElementById('wk-bottom-nav')
-  if (nav) {
-    nav.style.background = isDark ? '#1e293b' : '#fff'
-    nav.style.borderTopColor = isDark ? '#334155' : '#e5e7eb'
-  }
+  // dark mode → show ☀️ (click to go light); light mode → show 🌙 (click to go dark)
+  if (icon)       icon.className  = isDark ? 'fas fa-sun' : 'fas fa-moon'
+  if (headerIcon) headerIcon.className = isDark ? 'fas fa-sun text-xs' : 'fas fa-moon text-xs'
+  if (label) label.textContent = isDark ? 'Dark Mode' : 'Light Mode'
+  if (btn)   btn.style.background = isDark ? 'rgba(255,255,255,.05)' : '#f0f9ff'
 }
 document.addEventListener('DOMContentLoaded', _updateWorkerThemeUI)
 // -----------------------------------------------------------------------------
@@ -475,6 +472,57 @@ function showDeviceMismatchScreen(phone) {
   m.style.display = 'flex'
 }
 
+// Change PIN modal
+function openChangePinModal() {
+  const modal = document.createElement('div')
+  modal.id = 'change-pin-modal'
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:flex-end;justify-content:center;z-index:9999;padding:0 0 0 0'
+  modal.innerHTML = `
+    <div style="background:var(--wk-card);width:100%;max-width:480px;border-radius:28px 28px 0 0;padding:24px 24px 40px">
+      <div style="width:36px;height:4px;background:var(--wk-border);border-radius:2px;margin:0 auto 20px"></div>
+      <h3 style="font-size:18px;font-weight:800;color:var(--wk-text);margin-bottom:4px">Change PIN</h3>
+      <p style="font-size:13px;color:var(--wk-text3);margin-bottom:20px">Enter a new 4-8 digit PIN</p>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div class="wk-icon-input">
+          <div class="ico"><i class="fas fa-lock"></i></div>
+          <input id="cp-new" type="password" placeholder="New PIN (4-8 digits)" maxlength="8" inputmode="numeric"/>
+        </div>
+        <div class="wk-icon-input">
+          <div class="ico"><i class="fas fa-check"></i></div>
+          <input id="cp-confirm" type="password" placeholder="Confirm new PIN" maxlength="8" inputmode="numeric"/>
+        </div>
+        <button onclick="doChangePin()" style="background:linear-gradient(135deg,#7c3aed,#4f46e5);color:#fff;border:none;border-radius:16px;padding:16px;font-size:16px;font-weight:700;cursor:pointer;margin-top:4px">
+          <i class="fas fa-key" style="margin-right:8px"></i>Update PIN
+        </button>
+        <button onclick="document.getElementById('change-pin-modal').remove()" style="background:none;border:none;color:var(--wk-text3);font-size:14px;font-weight:600;padding:8px;cursor:pointer;text-align:center">
+          Cancel
+        </button>
+      </div>
+    </div>`
+  modal.onclick = (e) => { if (e.target === modal) modal.remove() }
+  document.body.appendChild(modal)
+}
+
+async function doChangePin() {
+  const np = document.getElementById('cp-new')?.value
+  const cp = document.getElementById('cp-confirm')?.value
+  if (!np || np.length < 4) { showToast('PIN must be at least 4 digits', 'error'); return }
+  if (np !== cp) { showToast('PINs do not match', 'error'); return }
+  if (!currentWorker?.id) { showToast('Not signed in', 'error'); return }
+  try {
+    const res = await apiFetch('/api/workers/' + currentWorker.id + '/change-pin', { method:'POST', body: JSON.stringify({ new_pin: np }) })
+    const data = await res.json()
+    if (data.ok) {
+      document.getElementById('change-pin-modal')?.remove()
+      showToast('PIN updated successfully!', 'success')
+    } else {
+      showToast(data.error || 'Failed to update PIN', 'error')
+    }
+  } catch(e) {
+    showToast('Network error', 'error')
+  }
+}
+
 // Called from Profile tab "Register New Device" button -- worker is already logged in
 async function requestDeviceResetFromProfile() {
   if (!currentWorker?.phone) { showToast('Not signed in', 'error'); return }
@@ -590,6 +638,7 @@ function logout() {
 // -- Main Init -----------------------------------------------------------------
 async function initMain() {
   showScreen('main')
+  window.__WK_WORKER_NAME = currentWorker.name || ''
   document.getElementById('worker-name-display').textContent = currentWorker.name
   document.getElementById('worker-phone-display').textContent = currentWorker.phone
   document.getElementById('worker-rate-display').textContent = '$' + (currentWorker.hourly_rate || 0).toFixed(2) + '/hr'
@@ -1703,6 +1752,8 @@ function startPingInterval() {
           ? (pingData.drift_distance_meters / 1000).toFixed(1) + ' km'
           : pingData.drift_distance_meters + ' m'
         showGuardrailBanner('drift', 'You are ' + distTxt + ' away from "' + (activeSession.job_location || 'the job site') + '".')
+        // Also show travel modal so worker can indicate where they are going
+        showTravelModal()
       }
       getLocation()
     } catch(e) {}
@@ -2327,9 +2378,7 @@ function wkShowTab(tab) {
     // Use flex so the panel fills available height in the flex-column screen-main
     panel.style.display  = active ? 'flex' : 'none'
     panel.style.flexDirection = active ? 'column' : ''
-    btn.style.color      = active ? WK_ACCENT : '#9ca3af'
-    btn.style.fontWeight = active ? '700' : '600'
-    btn.style.borderTop  = active ? '2px solid ' + WK_ACCENT : '2px solid transparent'
+    btn.classList.toggle('wk-nav-active', active)
   })
   // Lazy-load data when tab is first opened
   if (tab === 'dispatches') loadWkDispatches()
@@ -2582,5 +2631,97 @@ async function loadWkProfile() {
     if (sessionsEl) sessionsEl.textContent = st.total_sessions ?? '-'
     if (hoursEl)    hoursEl.textContent    = st.total_hours ? parseFloat(st.total_hours).toFixed(1) + 'h' : '-'
   } catch(_) {}
+}
+
+// ── Travel Segment Tracking ─────────────────────────────────────────────────
+let currentSegmentType = null  // 'on_site' | 'travel' | 'pickup' | 'shop'
+
+function showTravelModal() {
+  document.getElementById('travel-modal')?.classList.remove('hidden')
+}
+function closeTravelModal() {
+  document.getElementById('travel-modal')?.classList.add('hidden')
+}
+function closeTravelNotesModal() {
+  document.getElementById('travel-notes-modal')?.classList.add('hidden')
+}
+function openArrivedModal() {
+  document.getElementById('arrived-modal')?.classList.remove('hidden')
+}
+
+function startTravelSegment(type) {
+  currentSegmentType = type
+  closeTravelModal()
+  const titleMap = { pickup: 'Picking Up Materials', travel: 'Going to Another Job', shop: 'Going to Shop/Office' }
+  const btnMap = { pickup: 'Start Pickup Run', travel: 'Start Travel', shop: 'Head to Shop' }
+  const t = document.getElementById('travel-notes-title')
+  const b = document.getElementById('travel-notes-btn-text')
+  if (t) t.textContent = titleMap[type] || 'Add a Note'
+  if (b) b.textContent = btnMap[type] || 'Start Travel'
+  document.getElementById('travel-notes-input').value = ''
+  document.getElementById('travel-notes-modal')?.classList.remove('hidden')
+}
+
+async function confirmTravelSegment() {
+  if (!activeSession?.id || !currentWorker?.id) return
+  const notes = document.getElementById('travel-notes-input')?.value || ''
+  closeTravelNotesModal()
+  try {
+    await apiFetch('/api/sessions/' + activeSession.id + '/segments/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        worker_id: currentWorker.id,
+        segment_type: currentSegmentType,
+        start_lat: currentLat,
+        start_lng: currentLng,
+        location_name: currentSegmentType === 'shop' ? 'Shop/Office' : currentSegmentType === 'pickup' ? 'Material Pickup' : 'In Transit',
+        notes
+      })
+    })
+    // Show transit banner
+    showTransitBanner(currentSegmentType, notes)
+    // Clear drift warning banner since we have acknowledged the departure
+    document.getElementById('banner-drift')?.classList.add('hidden')
+    showToast('Travel segment started', 'success')
+  } catch(e) {
+    showToast('Could not start travel segment', 'error')
+  }
+}
+
+function showTransitBanner(type, notes) {
+  const banner = document.getElementById('transit-banner')
+  const label = document.getElementById('transit-banner-label')
+  if (!banner) return
+  const labelMap = { pickup: 'Picking up materials', travel: 'Travelling to next job', shop: 'Heading to shop/office' }
+  if (label) label.textContent = notes || labelMap[type] || 'Travelling...'
+  banner.style.display = 'flex'
+}
+
+function hideTransitBanner() {
+  const banner = document.getElementById('transit-banner')
+  if (banner) banner.style.display = 'none'
+}
+
+async function confirmArrived() {
+  if (!activeSession?.id || !currentWorker?.id) return
+  const locationName = document.getElementById('arrived-location-input')?.value || 'Job Site'
+  document.getElementById('arrived-modal')?.classList.add('hidden')
+  try {
+    await apiFetch('/api/sessions/' + activeSession.id + '/segments/arrive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        worker_id: currentWorker.id,
+        end_lat: currentLat,
+        end_lng: currentLng,
+        new_location_name: locationName
+      })
+    })
+    hideTransitBanner()
+    showToast('Welcome to ' + locationName + '!', 'success')
+  } catch(e) {
+    showToast('Could not record arrival', 'error')
+  }
 }
 

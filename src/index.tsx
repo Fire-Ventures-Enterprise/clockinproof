@@ -107,13 +107,6 @@ async function ensureSchema(db: D1Database) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`,
-    // Insert Tenant #1 \u2014 911 Restoration of Ottawa (your company)
-    `INSERT OR IGNORE INTO tenants
-      (id, slug, company_name, company_address, admin_email, plan, status, max_workers)
-     VALUES
-      (1, '911restoration-ottawa', '911 Restoration of Ottawa',
-       '11 Trustan Court #4, Ottawa, Ontario K2E 8B9',
-       'Nasser.o@911restoration.com', 'pro', 'active', 999)`,
     // \u2500\u2500 TENANT SETTINGS (per-tenant key/value, mirrors global settings) \u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `CREATE TABLE IF NOT EXISTS tenant_settings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -641,6 +634,36 @@ async function ensureSchema(db: D1Database) {
     `ALTER TABLE tenants ADD COLUMN company_website TEXT`,
     // \u2500\u2500 Archived tenant guardrail (90-day purge) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     `ALTER TABLE tenants ADD COLUMN archived_at DATETIME`,
+    `ALTER TABLE tenants ADD COLUMN onboarding_token TEXT`,
+    `ALTER TABLE tenants ADD COLUMN onboarding_completed INTEGER DEFAULT 0`,
+    // ── Session Segments (multi-location + travel time tracking) ─────────────
+    `CREATE TABLE IF NOT EXISTS session_segments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      worker_id INTEGER NOT NULL,
+      segment_type TEXT NOT NULL DEFAULT 'on_site',
+      start_time TEXT NOT NULL,
+      end_time TEXT,
+      start_lat REAL, start_lng REAL,
+      end_lat REAL, end_lng REAL,
+      location_name TEXT DEFAULT 'Job Site',
+      notes TEXT,
+      hours REAL DEFAULT 0,
+      pay_rate REAL DEFAULT 0,
+      earnings REAL DEFAULT 0,
+      pay_decision TEXT DEFAULT 'pending',
+      approved_by TEXT,
+      approved_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_segments_session ON session_segments(session_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_segments_tenant ON session_segments(tenant_id)`,
+    // ── Travel settings defaults ──────────────────────────────────────────────
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('travel_pay_decision', 'pending')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('travel_pay_rate_mode', 'same')`,
+    `INSERT OR IGNORE INTO settings (key, value) VALUES ('max_travel_hours_per_day', '2')`,
+    // ── sessions.reassigned_at column ─────────────────────────────────────────
+    `ALTER TABLE sessions ADD COLUMN reassigned_at DATETIME`,
   ]
   for (const sql of statements) {
     try {
@@ -663,6 +686,7 @@ async function ensureSchema(db: D1Database) {
 app.post('/api/workers/register', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
   const { name, phone: rawPhone, pin, device_id, consent_given } = await c.req.json()
   // Normalize phone: digits only for consistent storage and lookup
   const phone = rawPhone ? rawPhone.replace(/\D/g, '') : rawPhone
@@ -676,25 +700,25 @@ app.post('/api/workers/register', async (c) => {
     return c.json({ error: 'consent_required', message: 'Device consent is required to register.' }, 400)
   }
 
-  // Check if worker already exists \u2014 try digits-only match against stored phone
+  // Check if worker already exists within this tenant
   const digitsOnly = phone.replace(/\D/g, '')
   let existing = await db.prepare(
-    "SELECT * FROM workers WHERE REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ','') = ?"
-  ).bind(digitsOnly).first<any>()
+    "SELECT * FROM workers WHERE tenant_id = ? AND REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ','') = ?"
+  ).bind(tenantId, digitsOnly).first<any>()
   // Also try with leading 1 stripped
   if (!existing && digitsOnly.startsWith('1') && digitsOnly.length === 11) {
     existing = await db.prepare(
-      "SELECT * FROM workers WHERE REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ','') = ?"
-    ).bind(digitsOnly.slice(1)).first<any>()
+      "SELECT * FROM workers WHERE tenant_id = ? AND REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ','') = ?"
+    ).bind(tenantId, digitsOnly.slice(1)).first<any>()
   }
   if (!existing && !digitsOnly.startsWith('1') && digitsOnly.length === 10) {
     existing = await db.prepare(
-      "SELECT * FROM workers WHERE REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ','') = ?"
-    ).bind('1' + digitsOnly).first<any>()
+      "SELECT * FROM workers WHERE tenant_id = ? AND REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ','') = ?"
+    ).bind(tenantId, '1' + digitsOnly).first<any>()
   }
 
   if (existing) {
-    // \u2500\u2500 Admin path: no device_id sent \u2192 admin is trying to create a duplicate \u2500\u2500
+    // Admin path: no device_id sent -> admin is trying to create a duplicate
     // Block it explicitly so the admin UI can show a clear error.
     if (!device_id) {
       return c.json({
@@ -725,16 +749,17 @@ app.post('/api/workers/register', async (c) => {
 
   // New worker \u2014 create with locked device + consent recorded
   const defaultRate = await db.prepare(
-    "SELECT value FROM settings WHERE key = 'default_hourly_rate'"
-  ).first<{ value: string }>()
+    "SELECT value FROM settings WHERE key = 'default_hourly_rate' AND tenant_id = ?"
+  ).bind(tenantId).first<{ value: string }>()
 
   // is_temp_pin=1 when admin creates worker (no device_id sent), =0 when worker self-registers
   const isTempPin = device_id ? 0 : 1
 
   const result = await db.prepare(
-    `INSERT INTO workers (name, phone, pin, device_id, device_consent_given, device_consent_at, hourly_rate, is_temp_pin)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO workers (tenant_id, name, phone, pin, device_id, device_consent_given, device_consent_at, hourly_rate, is_temp_pin)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
+    tenantId,
     name,
     phone,
     pin || '0000',
@@ -2400,6 +2425,102 @@ app.get('/api/sessions/last/:worker_id', async (c) => {
   if (!session) return c.json({ error: 'No completed session found' }, 404)
   return c.json(session)
 })
+
+// ── SESSION SEGMENTS API (multi-location + travel time tracking) ─────────────
+
+// POST /api/sessions/:id/segments/start — start a new segment (travel, pickup, shop, on_site)
+app.post('/api/sessions/:id/segments/start', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
+  const sessionId = parseInt(c.req.param('id'))
+  const { segment_type, start_lat, start_lng, location_name, notes, worker_id } = await c.req.json()
+
+  // End any currently open segment for this session
+  await db.prepare(
+    `UPDATE session_segments SET end_time = datetime('now'),
+     hours = ROUND((julianday('now') - julianday(start_time)) * 24, 4)
+     WHERE session_id = ? AND end_time IS NULL`
+  ).bind(sessionId).run()
+
+  // Get worker's pay rate
+  const worker = await db.prepare('SELECT hourly_rate FROM workers WHERE id = ?').bind(worker_id).first<any>()
+  const payRate = worker?.hourly_rate || 0
+
+  await db.prepare(
+    `INSERT INTO session_segments (session_id, tenant_id, worker_id, segment_type, start_time, start_lat, start_lng, location_name, notes, pay_rate, pay_decision)
+     VALUES (?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'pending')`
+  ).bind(sessionId, tenantId, worker_id, segment_type || 'on_site', start_lat || null, start_lng || null, location_name || 'Job Site', notes || null, payRate).run()
+
+  return c.json({ ok: true })
+})
+
+// POST /api/sessions/:id/segments/arrive — end travel segment, start new on_site segment
+app.post('/api/sessions/:id/segments/arrive', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
+  const sessionId = parseInt(c.req.param('id'))
+  const { end_lat, end_lng, new_location_name, worker_id } = await c.req.json()
+
+  // Close current travel segment with coordinates + hours + earnings
+  await db.prepare(
+    `UPDATE session_segments SET end_time = datetime('now'), end_lat = ?, end_lng = ?,
+     hours = ROUND((julianday('now') - julianday(start_time)) * 24, 4),
+     earnings = ROUND((julianday('now') - julianday(start_time)) * 24 * pay_rate, 2)
+     WHERE session_id = ? AND end_time IS NULL`
+  ).bind(end_lat || null, end_lng || null, sessionId).run()
+
+  // Start new on_site segment at arrived location
+  const worker = await db.prepare('SELECT hourly_rate FROM workers WHERE id = ?').bind(worker_id).first<any>()
+  const payRate = worker?.hourly_rate || 0
+
+  await db.prepare(
+    `INSERT INTO session_segments (session_id, tenant_id, worker_id, segment_type, start_time, start_lat, start_lng, location_name, pay_rate, pay_decision)
+     VALUES (?, ?, ?, 'on_site', datetime('now'), ?, ?, ?, ?, 'paid')`
+  ).bind(sessionId, tenantId, worker_id, end_lat || null, end_lng || null, new_location_name || 'Job Site', payRate).run()
+
+  return c.json({ ok: true })
+})
+
+// GET /api/sessions/:id/segments — list all segments for a session
+app.get('/api/sessions/:id/segments', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const sessionId = parseInt(c.req.param('id'))
+  const segments = await db.prepare(
+    'SELECT * FROM session_segments WHERE session_id = ? ORDER BY start_time ASC'
+  ).bind(sessionId).all()
+  return c.json({ segments: segments.results })
+})
+
+// PATCH /api/segments/:id/pay-decision — admin approves/rejects travel pay
+app.patch('/api/segments/:id/pay-decision', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const segId = parseInt(c.req.param('id'))
+  const { pay_decision } = await c.req.json()
+  await db.prepare(
+    `UPDATE session_segments SET pay_decision = ?, approved_at = datetime('now') WHERE id = ?`
+  ).bind(pay_decision, segId).run()
+  return c.json({ ok: true })
+})
+
+// POST /api/sessions/:id/reassign — admin reassigns worker to a new job location
+app.post('/api/sessions/:id/reassign', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const tenantId = await resolveTenantId(c, db)
+  const sessionId = parseInt(c.req.param('id'))
+  const { new_job_location, job_description } = await c.req.json()
+
+  await db.prepare(
+    `UPDATE sessions SET job_site = ?, job_description = ?, reassigned_at = datetime('now') WHERE id = ?`
+  ).bind(new_job_location, job_description || null, sessionId).run()
+
+  return c.json({ ok: true, message: 'Worker reassigned to new location' })
+})
+
 
 // \u2500\u2500\u2500 LOCATION PINGS API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
@@ -4136,13 +4257,13 @@ app.post('/api/tenant/logo', async (c) => {
   const db = c.env.DB
   await ensureSchema(db)
   const body = await c.req.json() as any
-  const { data_url, tenant_id } = body
+  const { data_url } = body
   if (!data_url) return c.json({ error: 'data_url required' }, 400)
   // Basic validation
   if (!data_url.startsWith('data:image/')) return c.json({ error: 'Invalid image format' }, 400)
   // Enforce ~500KB limit (base64 strings are ~1.37x raw size)
   if (data_url.length > 700000) return c.json({ error: 'Image too large \u2014 please use an image under 500KB' }, 400)
-  const id = tenant_id || 1
+  const id = await resolveTenantId(c, db)
   await db.prepare(`UPDATE tenants SET logo_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(data_url, id).run()
   return c.json({ success: true, logo_url: data_url })
 })
@@ -4415,10 +4536,11 @@ app.post('/api/super/tenants', async (c) => {
   if (existing) return c.json({ error: `Subdomain "${cleanSlug}" is already taken` }, 409)
   const planLimits: Record<string, number> = { starter: 10, growth: 25, pro: 999 }
   const maxWorkers = planLimits[plan || 'starter'] || 10
+  const onboardingToken = Array.from(crypto.getRandomValues(new Uint8Array(24))).map((b: number) => b.toString(16).padStart(2,'0')).join('')
   const result = await db.prepare(
-    `INSERT INTO tenants (slug, company_name, company_address, admin_email, admin_pin, plan, status, max_workers)
-     VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`
-  ).bind(cleanSlug, company_name, company_address || '', resolvedEmail, admin_pin || '1234', plan || 'starter', maxWorkers).run()
+    `INSERT INTO tenants (slug, company_name, company_address, admin_email, admin_pin, plan, status, max_workers, onboarding_token)
+     VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`
+  ).bind(cleanSlug, company_name, company_address || '', resolvedEmail, admin_pin || '1234', plan || 'starter', maxWorkers, onboardingToken).run()
   const tenantId = (result.meta as any).last_row_id
   const defaults = [
     ['app_name', company_name], ['country_code', 'CA'], ['province_code', 'ON'],
@@ -4435,30 +4557,47 @@ app.post('/api/super/tenants', async (c) => {
     await db.prepare(`INSERT OR IGNORE INTO tenant_settings (tenant_id, key, value) VALUES (?, ?, ?)`)
       .bind(tenantId, key, value).run()
   }
-  // Send welcome email to new tenant admin
+  // Send welcome email with secure onboarding link (no PIN in email)
   const resendKey = (c.env.RESEND_API_KEY || '').trim()
-  if (resendKey) {
+  const sendWelcome = body.send_welcome !== false
+  if (resendKey && sendWelcome) {
+    const onboardingUrl = `https://${cleanSlug}.clockinproof.com/onboarding?token=${onboardingToken}`
+    const planLabel = (plan || 'starter').charAt(0).toUpperCase() + (plan || 'starter').slice(1)
     await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         from: 'ClockInProof <alerts@clockinproof.com>',
         to: [resolvedEmail],
-        subject: `Welcome to ClockInProof \u2014 Your account is ready`,
-        html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto">
-          <h2 style="color:#4F46E5">Welcome to ClockInProof! \uD83C\uDF89</h2>
-          <p>Your company <strong>${company_name}</strong> has been set up successfully.</p>
-          <p><strong>Your login details:</strong></p>
-          <ul>
-            <li><strong>Admin email:</strong> ${resolvedEmail}</li>
-            <li><strong>Admin dashboard:</strong> <a href="https://admin.clockinproof.com">admin.clockinproof.com</a></li>
-            <li><strong>Worker app:</strong> <a href="https://${cleanSlug}.clockinproof.com">${cleanSlug}.clockinproof.com</a></li>
-            <li><strong>Admin PIN:</strong> ${admin_pin || '1234'}</li>
-            <li><strong>Plan:</strong> ${(plan || 'starter').charAt(0).toUpperCase() + (plan || 'starter').slice(1)}</li>
-          </ul>
-          <p>If you have any questions, reply to this email.</p>
-          <p style="color:#888;font-size:12px">\u2014 ClockInProof Team</p>
-        </div>`
+        subject: `Your ClockInProof account is ready \u2014 complete your setup`,
+        html: `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#f1f5f9;font-family:'Segoe UI',Arial,sans-serif">
+<div style="max-width:560px;margin:40px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08)">
+  <div style="background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);padding:36px 40px;text-align:center">
+    <div style="font-size:32px;margin-bottom:8px">\u23F0</div>
+    <h1 style="color:#ffffff;margin:0;font-size:24px;font-weight:700;letter-spacing:-0.5px">Welcome to ClockInProof</h1>
+    <p style="color:#c7d2fe;margin:8px 0 0;font-size:15px">Your account for <strong style="color:#fff">${company_name}</strong> is ready</p>
+  </div>
+  <div style="padding:36px 40px">
+    <p style="color:#374151;font-size:15px;line-height:1.6;margin:0 0 24px">Hi there! Your ClockInProof account has been created and is ready to go. Click the button below to set your PIN and complete your account setup.</p>
+    <div style="text-align:center;margin:32px 0">
+      <a href="${onboardingUrl}" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;font-weight:700;font-size:16px;padding:16px 40px;border-radius:12px;letter-spacing:0.2px">Set Up Your Account \u2192</a>
+    </div>
+    <p style="color:#6b7280;font-size:13px;text-align:center;margin:0 0 32px">This link is unique to your account. If you didn\u2019t request this, you can safely ignore this email.</p>
+    <div style="background:#f8fafc;border-radius:12px;padding:20px 24px;border:1px solid #e2e8f0">
+      <p style="margin:0 0 12px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#9ca3af">Account Details</p>
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="color:#6b7280;font-size:14px;padding:4px 0;width:40%">Company</td><td style="color:#111827;font-size:14px;font-weight:600">${company_name}</td></tr>
+        <tr><td style="color:#6b7280;font-size:14px;padding:4px 0">Admin email</td><td style="color:#111827;font-size:14px;font-weight:600">${resolvedEmail}</td></tr>
+        <tr><td style="color:#6b7280;font-size:14px;padding:4px 0">Worker app</td><td style="font-size:14px"><a href="https://${cleanSlug}.clockinproof.com" style="color:#4f46e5;font-weight:600">${cleanSlug}.clockinproof.com</a></td></tr>
+        <tr><td style="color:#6b7280;font-size:14px;padding:4px 0">Plan</td><td style="color:#111827;font-size:14px;font-weight:600">${planLabel}</td></tr>
+      </table>
+    </div>
+  </div>
+  <div style="background:#f8fafc;padding:20px 40px;border-top:1px solid #e2e8f0;text-align:center">
+    <p style="color:#9ca3af;font-size:12px;margin:0">ClockInProof \u2014 GPS-Verified Time Tracking<br>Questions? Reply to this email and we\u2019ll help.</p>
+  </div>
+</div>
+</body></html>`
       })
     })
   }
@@ -7451,47 +7590,67 @@ app.get('/', async (c) => {
     await ensureSchema(db)
     const tenant = await getTenantBySlug(db, sub) as any
     if (tenant && tenant.status === 'active') {
+      const initials = (tenant.company_name || 'C').split(' ').map((w: string) => w[0]).join('').slice(0,2).toUpperCase()
       const logoHtml = tenant.logo_url
-        ? `<img src="${tenant.logo_url}" alt="${tenant.company_name}" class="h-14 w-auto object-contain mx-auto mb-2">`
-        : `<div class="w-14 h-14 rounded-2xl bg-indigo-600 flex items-center justify-center mx-auto mb-2 text-white text-2xl font-black">${(tenant.company_name||'C')[0].toUpperCase()}</div>`
+        ? `<img src="${tenant.logo_url}" alt="${tenant.company_name}" style="height:72px;width:auto;object-fit:contain;margin:0 auto 12px;display:block;border-radius:12px">`
+        : `<div style="width:72px;height:72px;border-radius:22px;background:linear-gradient(135deg,#4f46e5,#7c3aed);display:flex;align-items:center;justify-content:center;margin:0 auto 12px;color:#fff;font-size:26px;font-weight:900;letter-spacing:-1px;box-shadow:0 8px 24px rgba(79,70,229,.4)">${initials}</div>`
       return c.html(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>${tenant.company_name} \u2014 ClockInProof</title>
-  <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
   <link rel="manifest" href="/manifest.json"/>
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#030712;min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+    .card{width:100%;max-width:360px;text-align:center}
+    .btn{display:flex;align-items:center;justify-content:space-between;width:100%;border-radius:18px;padding:18px 22px;margin-bottom:12px;text-decoration:none;transition:opacity .15s,transform .1s;border:none;cursor:pointer}
+    .btn:active{transform:scale(0.98);opacity:.9}
+    .btn-primary{background:linear-gradient(135deg,#4f46e5,#4338ca);box-shadow:0 8px 24px rgba(79,70,229,.35)}
+    .btn-secondary{background:#111827;border:1px solid #1f2937}
+    .btn-label{text-align:left}
+    .btn-title{font-size:16px;font-weight:800;color:#fff;line-height:1.2}
+    .btn-sub{font-size:12px;margin-top:3px;color:rgba(255,255,255,.55)}
+    .powered-badge{display:inline-flex;align-items:center;gap:7px;background:#4f46e5;color:#fff;padding:7px 14px;border-radius:20px;font-size:12px;font-weight:700;margin-top:28px;text-decoration:none}
+    .powered-badge img{width:16px;height:16px;border-radius:3px}
+  </style>
 </head>
-<body class="bg-gray-950 min-h-screen flex items-center justify-center px-4">
-  <div class="w-full max-w-sm text-center">
-    <!-- Logo / company initial -->
+<body>
+  <div class="card">
+    <!-- Tenant branding -->
     ${logoHtml}
-    <h1 class="text-2xl font-black text-white mb-1">${tenant.company_name}</h1>
-    <p class="text-gray-400 text-sm mb-10">Powered by <span class="text-indigo-400 font-semibold">ClockInProof</span></p>
+    <h1 style="font-size:22px;font-weight:900;color:#fff;letter-spacing:-0.5px;margin-bottom:4px">${tenant.company_name}</h1>
+    <p style="font-size:13px;color:#6b7280;margin-bottom:28px">GPS-verified time tracking</p>
 
     <!-- Worker clock-in -->
-    <a href="/app" class="flex items-center justify-between w-full bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white rounded-2xl px-6 py-5 mb-4 transition group shadow-lg shadow-indigo-900/40">
-      <div class="text-left">
-        <p class="font-bold text-lg leading-tight">Clock In / Clock Out</p>
-        <p class="text-indigo-200 text-sm mt-0.5">For workers \u2014 track your time</p>
+    <a href="/app" class="btn btn-primary">
+      <div class="btn-label">
+        <p class="btn-title">Clock In / Clock Out</p>
+        <p class="btn-sub">For workers &mdash; track your time</p>
       </div>
-      <i class="fas fa-clock text-2xl text-indigo-200 group-hover:scale-110 transition-transform"></i>
+      <i class="fas fa-clock" style="font-size:22px;color:rgba(255,255,255,.7)"></i>
     </a>
 
     <!-- Admin panel -->
-    <a href="/admin" class="flex items-center justify-between w-full bg-gray-800 hover:bg-gray-700 active:bg-gray-600 text-white rounded-2xl px-6 py-5 transition group shadow-lg shadow-gray-900/40 border border-gray-700">
-      <div class="text-left">
-        <p class="font-bold text-lg leading-tight">Admin Panel</p>
-        <p class="text-gray-400 text-sm mt-0.5">For managers \u2014 view sessions &amp; workers</p>
+    <a href="/admin" class="btn btn-secondary">
+      <div class="btn-label">
+        <p class="btn-title">Admin Panel</p>
+        <p class="btn-sub">For managers &mdash; view sessions &amp; workers</p>
       </div>
-      <i class="fas fa-shield-alt text-2xl text-gray-400 group-hover:scale-110 transition-transform"></i>
+      <i class="fas fa-shield-alt" style="font-size:22px;color:#4b5563"></i>
     </a>
 
-    <p class="text-gray-600 text-xs mt-8">\u00A9 ${new Date().getFullYear()} ClockInProof</p>
+    <!-- Powered by badge -->
+    <div style="margin-top:28px">
+      <a href="https://clockinproof.com" class="powered-badge">
+        <img src="/static/icon-192.png" alt="ClockInProof"/>
+        Powered by ClockInProof
+      </a>
+    </div>
   </div>
 </body>
 </html>`)
@@ -7556,6 +7715,89 @@ app.get('/landing', (c) => {
 app.get('/free-trial', (c) => { return c.html(getFreeTrialStep1HTML()) })
 app.get('/free-trial/verify', (c) => { return c.html(getFreeTrialStep2HTML()) })
 app.get('/free-trial/setup', (c) => { return c.html(getFreeTrialStep3HTML()) })
+app.get('/signup', (c) => { const plan = c.req.query('plan') || 'starter'; return c.html(getSignupHTML(plan)) })
+app.get('/onboarding', (c) => { return c.html(getOnboardingHTML()) })
+
+// ─── ONBOARDING API ──────────────────────────────────────────────────────────
+
+// POST /api/onboarding/verify — validate a one-time onboarding token
+app.post('/api/onboarding/verify', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const { token } = await c.req.json() as any
+  if (!token) return c.json({ error: 'Token required' }, 400)
+  const tenant = await db.prepare(
+    `SELECT id, slug, company_name, plan, onboarding_completed FROM tenants WHERE onboarding_token = ? AND status = 'active'`
+  ).bind(token).first() as any
+  if (!tenant) return c.json({ error: 'Invalid or expired setup link' }, 404)
+  if (tenant.onboarding_completed) return c.json({ error: 'This setup link has already been used. Please log in to your dashboard.' }, 410)
+  return c.json({ valid: true, tenant_id: tenant.id, slug: tenant.slug, company_name: tenant.company_name, plan: tenant.plan })
+})
+
+// POST /api/onboarding/set-pin — set the admin PIN (step 1)
+app.post('/api/onboarding/set-pin', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const { token, pin } = await c.req.json() as any
+  if (!token || !pin) return c.json({ error: 'Token and PIN required' }, 400)
+  if (!/^\d{4,6}$/.test(pin)) return c.json({ error: 'PIN must be 4-6 digits' }, 400)
+  const tenant = await db.prepare(
+    `SELECT id FROM tenants WHERE onboarding_token = ? AND status = 'active' AND onboarding_completed = 0`
+  ).bind(token).first() as any
+  if (!tenant) return c.json({ error: 'Invalid or expired setup link' }, 404)
+  await db.prepare(`UPDATE tenants SET admin_pin = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(pin, tenant.id).run()
+  return c.json({ success: true })
+})
+
+// POST /api/onboarding/job-site — create the first job site (step 2)
+app.post('/api/onboarding/job-site', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const { token, name, address } = await c.req.json() as any
+  if (!token || !name || !address) return c.json({ error: 'Token, name and address required' }, 400)
+  const tenant = await db.prepare(
+    `SELECT id FROM tenants WHERE onboarding_token = ? AND status = 'active' AND onboarding_completed = 0`
+  ).bind(token).first() as any
+  if (!tenant) return c.json({ error: 'Invalid or expired setup link' }, 404)
+  const res = await db.prepare(
+    `INSERT INTO job_sites (name, address, active, tenant_id) VALUES (?, ?, 1, ?)`
+  ).bind(name.trim(), address.trim(), tenant.id).run()
+  return c.json({ success: true, job_site_id: (res.meta as any).last_row_id })
+})
+
+// POST /api/onboarding/worker — add the first worker (step 3)
+app.post('/api/onboarding/worker', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const { token, name, phone } = await c.req.json() as any
+  if (!token || !name || !phone) return c.json({ error: 'Token, name and phone required' }, 400)
+  const tenant = await db.prepare(
+    `SELECT id FROM tenants WHERE onboarding_token = ? AND status = 'active' AND onboarding_completed = 0`
+  ).bind(token).first() as any
+  if (!tenant) return c.json({ error: 'Invalid or expired setup link' }, 404)
+  const existing = await db.prepare(`SELECT id FROM workers WHERE phone = ? AND tenant_id = ?`).bind(phone.trim(), tenant.id).first()
+  if (existing) return c.json({ error: 'A worker with this phone number already exists' }, 409)
+  const res = await db.prepare(
+    `INSERT INTO workers (name, phone, active, tenant_id, pin) VALUES (?, ?, 1, ?, '0000')`
+  ).bind(name.trim(), phone.trim(), tenant.id).run()
+  return c.json({ success: true, worker_id: (res.meta as any).last_row_id })
+})
+
+// POST /api/onboarding/complete — mark onboarding done, invalidate token (step 4)
+app.post('/api/onboarding/complete', async (c) => {
+  const db = c.env.DB
+  await ensureSchema(db)
+  const { token } = await c.req.json() as any
+  if (!token) return c.json({ error: 'Token required' }, 400)
+  const tenant = await db.prepare(
+    `SELECT id, slug FROM tenants WHERE onboarding_token = ? AND status = 'active'`
+  ).bind(token).first() as any
+  if (!tenant) return c.json({ error: 'Invalid token' }, 404)
+  await db.prepare(
+    `UPDATE tenants SET onboarding_completed = 1, onboarding_token = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+  ).bind(tenant.id).run()
+  return c.json({ success: true, slug: tenant.slug })
+})
 
 // POST /api/free-trial/start \u2014 capture lead + send 6-digit auth code
 app.post('/api/free-trial/start', async (c) => {
@@ -8789,6 +9031,213 @@ document.getElementById('form').addEventListener('submit', async function(e) {
 // \u2500\u2500\u2500 HTML Templates \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 // \u2500\u2500\u2500 SIGNUP PAGE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ─── ONBOARDING PORTAL ───────────────────────────────────────────────────────
+function getOnboardingHTML(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Set Up Your ClockInProof Account</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f172a;font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;color:#e2e8f0}
+.wrap{max-width:560px;margin:0 auto;padding:40px 20px 80px}
+.logo{text-align:center;margin-bottom:32px}
+.logo-inner{display:inline-flex;align-items:center;gap:10px}
+.logo-badge{width:44px;height:44px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px}
+.logo-name{font-size:20px;font-weight:800;color:#fff;letter-spacing:-.5px}
+.progress-wrap{margin-bottom:32px}
+.progress-steps{display:flex;align-items:center;justify-content:center;margin-bottom:10px}
+.bub{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;transition:all .3s}
+.bub.done{background:#22c55e;color:#fff}
+.bub.active{background:#4f46e5;color:#fff;box-shadow:0 0 0 4px rgba(79,70,229,.25)}
+.bub.pending{background:#1e293b;color:#475569;border:2px solid #334155}
+.pline{flex:1;height:2px;background:#1e293b;max-width:64px;transition:background .3s}
+.pline.done{background:#22c55e}
+.step-labels{display:flex;justify-content:space-between;padding:0 2px}
+.slbl{font-size:11px;color:#475569;text-align:center;flex:1;transition:color .3s}
+.slbl.active{color:#a5b4fc;font-weight:600}
+.slbl.done{color:#4ade80}
+.card{background:#1e293b;border-radius:20px;padding:32px;border:1px solid #334155;display:none;animation:fadeUp .3s ease}
+.card.vis{display:block}
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.card-ico{width:56px;height:56px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:26px;margin-bottom:20px}
+.card h2{font-size:22px;font-weight:800;color:#f8fafc;margin-bottom:6px;letter-spacing:-.3px}
+.sub{color:#64748b;font-size:14px;line-height:1.6;margin-bottom:24px}
+.field{margin-bottom:18px}
+.lbl{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin-bottom:6px}
+input[type=text],input[type=tel],input[type=password]{width:100%;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:10px;padding:12px 14px;font-size:15px;outline:none;transition:border-color .2s}
+input:focus{border-color:#4f46e5;box-shadow:0 0 0 3px rgba(79,70,229,.15)}
+input::placeholder{color:#475569}
+.pin-in{text-align:center;font-size:24px;font-weight:700;letter-spacing:6px}
+.btn-p{width:100%;border:none;border-radius:12px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;background:#4f46e5;color:#fff;transition:background .2s;display:flex;align-items:center;justify-content:center;gap:8px}
+.btn-p:hover{background:#4338ca}
+.btn-p:disabled{background:#334155;color:#475569;cursor:not-allowed}
+.btn-sk{background:none;border:none;color:#475569;font-size:13px;cursor:pointer;margin-top:12px;width:100%;padding:8px;border-radius:8px;transition:color .2s}
+.btn-sk:hover{color:#94a3b8}
+.alert{padding:12px 16px;border-radius:10px;font-size:13px;margin-bottom:16px;display:none;background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #ef4444;color:#b91c1c}
+.checklist{list-style:none;margin:0 0 28px}
+.checklist li{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #334155;font-size:14px;color:#cbd5e1}
+.checklist li:last-child{border-bottom:none}
+.ck{width:22px;height:22px;background:#22c55e;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.lrow{display:flex;gap:10px;margin-bottom:16px}
+.lbtn{flex:1;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:14px 10px;text-align:center;text-decoration:none;color:#e2e8f0;font-size:13px;font-weight:600;transition:all .2s}
+.lbtn:hover{border-color:#4f46e5;color:#a5b4fc}
+.lbtn i{display:block;font-size:22px;margin-bottom:6px;color:#818cf8}
+#loading{position:fixed;inset:0;background:#0f172a;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:99;gap:16px}
+.spinner{width:40px;height:40px;border:3px solid #1e293b;border-top-color:#4f46e5;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="loading">
+  <div class="spinner"></div>
+  <p style="color:#475569;font-size:14px">Verifying your setup link...</p>
+</div>
+<div class="wrap" id="main-wrap" style="display:none">
+  <div class="logo"><div class="logo-inner"><div class="logo-badge">\u23F0</div><span class="logo-name">ClockInProof</span></div></div>
+  <div class="progress-wrap">
+    <div class="progress-steps">
+      <div class="bub active" id="b1">1</div><div class="pline" id="l1"></div>
+      <div class="bub pending" id="b2">2</div><div class="pline" id="l2"></div>
+      <div class="bub pending" id="b3">3</div><div class="pline" id="l3"></div>
+      <div class="bub pending" id="b4"><i class="fas fa-check" style="font-size:11px"></i></div>
+    </div>
+    <div class="step-labels">
+      <span class="slbl active" id="lb1">Set PIN</span>
+      <span class="slbl" id="lb2">Job Site</span>
+      <span class="slbl" id="lb3">Add Worker</span>
+      <span class="slbl" id="lb4">Done!</span>
+    </div>
+  </div>
+
+  <!-- Step 1: Set PIN -->
+  <div class="card vis" id="s1">
+    <div class="card-ico" style="background:rgba(79,70,229,.15)">\uD83D\uDD10</div>
+    <h2>Set Your Admin PIN</h2>
+    <p class="sub">Choose a 4\u20136 digit PIN you\u2019ll use to log in to your admin dashboard. Keep it somewhere safe.</p>
+    <div id="e1" class="alert"></div>
+    <div class="field"><label class="lbl">New PIN</label><input class="pin-in" type="password" id="p1" inputmode="numeric" maxlength="6" placeholder="\u2022 \u2022 \u2022 \u2022"></div>
+    <div class="field"><label class="lbl">Confirm PIN</label><input class="pin-in" type="password" id="p2" inputmode="numeric" maxlength="6" placeholder="\u2022 \u2022 \u2022 \u2022"></div>
+    <button class="btn-p" id="btn1" onclick="doPin()"><i class="fas fa-arrow-right"></i> Set PIN &amp; Continue</button>
+  </div>
+
+  <!-- Step 2: Job Site -->
+  <div class="card" id="s2">
+    <div class="card-ico" style="background:rgba(20,184,166,.15)">\uD83D\uDCCD</div>
+    <h2>Add Your First Job Site</h2>
+    <p class="sub">Add the main location your team works at. Workers will clock in and out here.</p>
+    <div id="e2" class="alert"></div>
+    <div class="field"><label class="lbl">Site Name</label><input type="text" id="sn" placeholder="e.g. Main Office, Warehouse"></div>
+    <div class="field"><label class="lbl">Full Address</label><input type="text" id="sa" placeholder="123 Main St, Ottawa, ON K1A 0A6"></div>
+    <button class="btn-p" id="btn2" onclick="doSite()"><i class="fas fa-arrow-right"></i> Add Site &amp; Continue</button>
+    <button class="btn-sk" onclick="skip(2)">Skip \u2014 I\u2019ll add job sites from my dashboard</button>
+  </div>
+
+  <!-- Step 3: Add Worker -->
+  <div class="card" id="s3">
+    <div class="card-ico" style="background:rgba(139,92,246,.15)">\uD83D\uDC77</div>
+    <h2>Add Your First Worker</h2>
+    <p class="sub">Add a team member so they can start clocking in right away. You can add more from your dashboard.</p>
+    <div id="e3" class="alert"></div>
+    <div class="field"><label class="lbl">Full Name</label><input type="text" id="wn" placeholder="e.g. Ahmed Hassan"></div>
+    <div class="field"><label class="lbl">Mobile Number</label><input type="tel" id="wp" placeholder="+1 613 555 0100"></div>
+    <button class="btn-p" id="btn3" onclick="doWorker()"><i class="fas fa-arrow-right"></i> Add Worker &amp; Continue</button>
+    <button class="btn-sk" onclick="skip(3)">Skip \u2014 I\u2019ll add workers from my dashboard</button>
+  </div>
+
+  <!-- Step 4: All done -->
+  <div class="card" id="s4">
+    <div style="text-align:center;margin-bottom:28px">
+      <div style="width:72px;height:72px;background:linear-gradient(135deg,#22c55e,#16a34a);border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:34px;margin:0 auto 20px">\uD83C\uDF89</div>
+      <h2 style="text-align:center;margin-bottom:8px">You\u2019re all set!</h2>
+      <p style="color:#64748b;font-size:14px">Your ClockInProof account is fully configured and ready to go.</p>
+    </div>
+    <ul class="checklist" id="cl"></ul>
+    <div class="lrow">
+      <a href="https://admin.clockinproof.com" class="lbtn"><i class="fas fa-chart-line"></i>Admin Dashboard</a>
+      <a id="link-worker" href="#" class="lbtn"><i class="fas fa-mobile-alt"></i>Worker App</a>
+    </div>
+    <button class="btn-p" onclick="location.href='https://admin.clockinproof.com'"><i class="fas fa-rocket"></i> Go to Admin Dashboard</button>
+  </div>
+</div>
+<script>
+const TOKEN = new URLSearchParams(location.search).get('token')||''
+let slug='', done=[]
+const api=(b)=>fetch('/api/onboarding/'+b.path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>r.json())
+const err=(n,m)=>{const e=document.getElementById('e'+n);e.textContent=m;e.style.display='block'}
+const clrErr=(n)=>document.getElementById('e'+n).style.display='none'
+function progress(a){
+  for(let i=1;i<=4;i++){
+    const b=document.getElementById('b'+i),l=document.getElementById('lb'+i)
+    if(i<a){b.className='bub done';b.innerHTML='<i class="fas fa-check" style="font-size:11px"></i>';l.className='slbl done'}
+    else if(i===a){b.className='bub active';b.innerHTML=i<4?i:'<i class="fas fa-check" style="font-size:11px"></i>';l.className='slbl active'}
+    else{b.className='bub pending';b.innerHTML=i<4?i:'<i class="fas fa-check" style="font-size:11px"></i>';l.className='slbl'}
+    if(i<4)document.getElementById('l'+i).className='pline'+(i<a?' done':'')
+  }
+}
+function show(n){
+  [1,2,3,4].forEach(i=>document.getElementById('s'+i).classList.toggle('vis',i===n))
+  progress(n);window.scrollTo({top:0,behavior:'smooth'})
+}
+async function init(){
+  if(!TOKEN){document.getElementById('loading').innerHTML='<div style="text-align:center"><div style="font-size:48px;margin-bottom:16px">\uD83D\uDD12</div><h2 style="color:#f8fafc">Invalid Setup Link</h2><p style="color:#64748b;margin-top:8px">Please use the link from your welcome email.</p></div>';return}
+  const d=await api({path:'verify',token:TOKEN})
+  document.getElementById('loading').style.display='none'
+  document.getElementById('main-wrap').style.display='block'
+  if(!d.valid){document.getElementById('main-wrap').innerHTML='<div style="text-align:center;padding:40px"><div style="font-size:48px;margin-bottom:16px">\u26D4</div><h2 style="color:#f8fafc;margin-bottom:8px">Link Expired or Already Used</h2><p style="color:#64748b;line-height:1.6;max-width:360px;margin:0 auto">'+(d.error||'This setup link is no longer valid.')+'</p><br><a href="https://admin.clockinproof.com" style="color:#818cf8">Go to Admin Dashboard \u2192</a></div>';return}
+  slug=d.slug
+  document.getElementById('link-worker').href='https://'+slug+'.clockinproof.com'
+  show(1)
+}
+async function doPin(){
+  clrErr(1)
+  const a=document.getElementById('p1').value.trim(),b=document.getElementById('p2').value.trim()
+  if(!a)return err(1,'Please enter a PIN.')
+  if(!/^\\d{4,6}$/.test(a))return err(1,'PIN must be 4\u20136 digits only.')
+  if(a!==b)return err(1,'PINs do not match. Try again.')
+  const btn=document.getElementById('btn1');btn.disabled=true;btn.textContent='Saving...'
+  const d=await api({path:'set-pin',token:TOKEN,pin:a})
+  if(!d.success){btn.disabled=false;btn.innerHTML='<i class="fas fa-arrow-right"></i> Set PIN & Continue';return err(1,d.error||'Failed to set PIN.')}
+  done.push('\uD83D\uDD10 Admin PIN set')
+  show(2)
+}
+async function doSite(){
+  clrErr(2)
+  const n=document.getElementById('sn').value.trim(),a=document.getElementById('sa').value.trim()
+  if(!n||!a)return err(2,'Please enter a site name and address.')
+  const btn=document.getElementById('btn2');btn.disabled=true;btn.textContent='Saving...'
+  const d=await api({path:'job-site',token:TOKEN,name:n,address:a})
+  if(!d.success){btn.disabled=false;btn.innerHTML='<i class="fas fa-arrow-right"></i> Add Site & Continue';return err(2,d.error||'Failed to save job site.')}
+  done.push('\uD83D\uDCCD Job site added: '+n)
+  show(3)
+}
+async function doWorker(){
+  clrErr(3)
+  const n=document.getElementById('wn').value.trim(),p=document.getElementById('wp').value.trim()
+  if(!n||!p)return err(3,'Please enter a name and phone number.')
+  const btn=document.getElementById('btn3');btn.disabled=true;btn.textContent='Saving...'
+  const d=await api({path:'worker',token:TOKEN,name:n,phone:p})
+  if(!d.success){btn.disabled=false;btn.innerHTML='<i class="fas fa-arrow-right"></i> Add Worker & Continue';return err(3,d.error||'Failed to add worker.')}
+  done.push('\uD83D\uDC77 Worker added: '+n)
+  await finish()
+}
+async function skip(n){
+  if(n===2)done.push('\uD83D\uDCCD Job site: skipped')
+  if(n===3){done.push('\uD83D\uDC77 Workers: skipped');await finish();return}
+  show(n+1)
+}
+async function finish(){
+  await api({path:'complete',token:TOKEN})
+  document.getElementById('cl').innerHTML=done.map(s=>'<li><span class="ck"><i class="fas fa-check" style="color:#fff;font-size:9px"></i></span>'+s+'</li>').join('')
+  show(4)
+}
+init()
+</script>
+</body></html>`
+}
+
 function getSignupHTML(plan: string): string {
   // plan name passed as URL param \u2014 page loads plan details dynamically from /api/plans
   return `<!DOCTYPE html>
@@ -9035,6 +9484,7 @@ function getLandingHTML(): string {
   <meta property="og:description" content="GPS-verified clock-ins for trades, restoration, HVAC, construction & field teams. Catch fraud before it happens."/>
   <meta property="og:image" content="/static/icon-512.png"/>
   <link rel="icon" href="/static/icon-180.png"/>
+  <script>(function(){var s=localStorage.getItem('cip_theme');if(s!=='light')document.documentElement.classList.add('dark')})();</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
   <style>
@@ -9060,6 +9510,25 @@ function getLandingHTML(): string {
     .float { animation: float 3s ease-in-out infinite; }
     @keyframes pulse-ring { 0%{transform:scale(1);opacity:0.6} 100%{transform:scale(1.8);opacity:0} }
     .pulse-ring::before { content:''; position:absolute; inset:-6px; border-radius:50%; border:2px solid #22c55e; animation: pulse-ring 1.5s ease-out infinite; }
+    /* ── SMOOTH TRANSITIONS ── */
+    body, nav, section, footer { transition: background 0.3s ease, color 0.3s ease, border-color 0.3s ease; }
+    /* ── LIGHT MODE overrides (dark is default via html.dark class) ── */
+    html:not(.dark) body { background: #f8fafc !important; color: #1e293b !important; }
+    html:not(.dark) .gradient-hero { background: linear-gradient(135deg, #eef2ff 0%, #dbeafe 50%, #eef2ff 100%) !important; }
+    html:not(.dark) .nav-blur { background: rgba(248,250,252,0.95) !important; }
+    html:not(.dark) .stat-card { background: #ffffff !important; border-color: #e2e8f0 !important; }
+    html:not(.dark) .industry-pill { background: #f1f5f9 !important; border-color: #e2e8f0 !important; color: #374151 !important; }
+    html:not(.dark) .text-white { color: #0f172a !important; }
+    html:not(.dark) .text-gray-300 { color: #374151 !important; }
+    html:not(.dark) .text-gray-400 { color: #4b5563 !important; }
+    html:not(.dark) .text-gray-500 { color: #6b7280 !important; }
+    html:not(.dark) .text-gray-600 { color: #4b5563 !important; }
+    html:not(.dark) .bg-gray-900 { background: #f1f5f9 !important; }
+    html:not(.dark) .bg-gray-950 { background: #f8fafc !important; }
+    html:not(.dark) .bg-gray-800 { background: #e8edf5 !important; }
+    html:not(.dark) .border-white\/10 { border-color: rgba(0,0,0,0.1) !important; }
+    html:not(.dark) .border-white\/5  { border-color: rgba(0,0,0,0.05) !important; }
+    #lp-theme-toggle { transition: all 0.2s; }
   </style>
 </head>
 <body class="bg-gray-950 text-white">
@@ -9079,6 +9548,9 @@ function getLandingHTML(): string {
       <a href="#faq" class="hover:text-white transition">FAQ</a>
     </div>
     <div class="flex items-center gap-2">
+      <button id="lp-theme-toggle" onclick="toggleLpTheme()" title="Switch to Light Mode" class="w-9 h-9 flex items-center justify-center rounded-lg border border-white/20 hover:border-white/40 hover:bg-white/10 transition text-gray-300 hover:text-white">
+        <i id="lp-theme-icon" class="fas fa-sun text-sm"></i>
+      </button>
       <a href="https://admin.clockinproof.com" class="text-sm text-gray-400 hover:text-white transition px-3 py-2 rounded-lg border border-white/20 hover:border-white/40 hover:bg-white/10">
         <i class="fas fa-sign-in-alt mr-1.5"></i>Sign In
       </a>
@@ -9597,6 +10069,21 @@ function getLandingHTML(): string {
 </footer>
 
 <script>
+function toggleLpTheme() {
+  const isDark = document.documentElement.classList.toggle('dark')
+  localStorage.setItem('cip_theme', isDark ? 'dark' : 'light')
+  _updateLpThemeIcon()
+}
+function _updateLpThemeIcon() {
+  const isDark = document.documentElement.classList.contains('dark')
+  const icon = document.getElementById('lp-theme-icon')
+  const btn  = document.getElementById('lp-theme-toggle')
+  // dark mode → show ☀️ (click to go light); light mode → show 🌙 (click to go dark)
+  if (icon) icon.className = isDark ? 'fas fa-sun text-sm' : 'fas fa-moon text-sm'
+  if (btn)  btn.title = isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'
+}
+document.addEventListener('DOMContentLoaded', _updateLpThemeIcon)
+
 function toggleFaq(btn) {
   const body = btn.nextElementSibling
   const icon = btn.querySelector('i.fa-chevron-down')
@@ -9733,13 +10220,27 @@ function getWorkerHTML(tenant?: any): string {
     @keyframes spin { to{transform:rotate(360deg)} }
     .modal-bg { backdrop-filter: blur(4px); }
     .day-group { border-left: 3px solid #3b82f6; }
+    /* ── Premium mobile UI ───────────────────────────────────────── */
+    .wk-icon-input { display:flex;align-items:center;background:var(--wk-input-bg);border:1.5px solid var(--wk-border);border-radius:14px;overflow:hidden;min-height:54px;transition:border-color .2s }
+    .wk-icon-input:focus-within { border-color:var(--primary) }
+    .wk-icon-input .ico { width:52px;display:flex;align-items:center;justify-content:center;flex-shrink:0;border-right:1.5px solid var(--wk-border);align-self:stretch;color:var(--primary);font-size:16px }
+    .wk-icon-input input { flex:1;background:transparent;border:none;outline:none;padding:14px 16px;font-size:16px;color:var(--wk-text) }
+    .wk-icon-input input::placeholder { color:var(--wk-text3) }
+    .wk-btn-hero { width:100%;border:none;border-radius:20px;padding:20px;font-size:20px;font-weight:800;cursor:pointer;min-height:68px;display:flex;align-items:center;justify-content:center;gap:12px;letter-spacing:-0.3px;transition:all .2s ease }
+    .wk-btn-hero:active { transform:scale(0.98) }
+    .wk-card2 { background:var(--wk-card);border-radius:20px;padding:20px;box-shadow:0 1px 8px rgba(0,0,0,.07) }
+    .wk-nav-btn2 { flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 4px 14px;border:none;background:none;cursor:pointer;font-size:10px;font-weight:600;gap:4px;border-top:2.5px solid transparent;transition:all .2s;color:var(--wk-text3) }
+    .wk-nav-btn2.wk-nav-active { color:var(--primary);border-top-color:var(--primary) }
+    @keyframes screenFadeIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+    .screen-animate { animation:screenFadeIn .25s ease }
+    /* live clock font */
+    #wk-live-clock { font-variant-numeric:tabular-nums;font-feature-settings:'tnum' }
   </style>
   <script>window.__TENANT__ = ${JSON.stringify({ company_name: companyName, primary_color: primaryColor, logo_url: logoUrl })};
-    // Init theme before paint to prevent flash
+    // Init theme before paint to prevent flash — default dark
     (function(){
       const saved = localStorage.getItem('cip_theme');
-      const sysDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      if (saved === 'dark' || (!saved && sysDark)) document.documentElement.classList.add('dark');
+      if (saved !== 'light') document.documentElement.classList.add('dark');
     })();
   </script>
 </head>
@@ -9763,113 +10264,130 @@ function getWorkerHTML(tenant?: any): string {
 </div>
 
 <!-- Register Screen -->
-<div id="screen-register" class="min-h-screen flex items-center justify-center p-4">
-  <div class="w-full max-w-sm slide-up">
-    <div class="text-center mb-8">
-      <div class="w-20 h-20 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
-        <i class="fas fa-clock text-white text-3xl"></i>
+<div id="screen-register" style="min-height:100dvh;min-height:100vh;background:linear-gradient(160deg,#4f46e5 0%,#2563eb 100%);display:flex;flex-direction:column;align-items:stretch">
+  <!-- Hero area -->
+  <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 24px 24px">
+    ${logoUrl
+      ? `<div style="width:88px;height:88px;background:rgba(255,255,255,.95);border-radius:24px;display:flex;align-items:center;justify-content:center;margin-bottom:18px;box-shadow:0 8px 32px rgba(0,0,0,.25);overflow:hidden;padding:10px">
+           <img src="${logoUrl}" alt="${companyName}" style="width:100%;height:100%;object-fit:contain"/>
+         </div>`
+      : `<div style="width:88px;height:88px;background:rgba(255,255,255,.2);border-radius:28px;display:flex;align-items:center;justify-content:center;margin-bottom:18px;box-shadow:0 8px 32px rgba(0,0,0,.2);backdrop-filter:blur(10px)">
+           <i class="fas fa-clock" style="font-size:38px;color:#fff"></i>
+         </div>`}
+    <h1 style="font-size:28px;font-weight:900;color:#fff;letter-spacing:-0.5px;margin:0">${companyName}</h1>
+    <p style="font-size:14px;color:rgba(255,255,255,.75);margin-top:8px">GPS-verified time tracking</p>
+  </div>
+  <!-- Bottom sheet -->
+  <div style="background:var(--wk-card);border-radius:32px 32px 0 0;padding:28px 24px 44px;box-shadow:0 -8px 40px rgba(0,0,0,.2)">
+    <div style="width:40px;height:4px;background:var(--wk-border);border-radius:2px;margin:0 auto 24px"></div>
+    <h2 style="font-size:20px;font-weight:800;color:var(--wk-text);margin:0 0 4px">Create Account</h2>
+    <p style="font-size:13px;color:var(--wk-text3);margin:0 0 20px">Enter your details to get started</p>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div class="wk-icon-input">
+        <div class="ico"><i class="fas fa-user"></i></div>
+        <input id="reg-name" type="text" placeholder="Your full name"/>
       </div>
-      <h1 class="text-2xl font-bold text-gray-800">ClockInProof</h1>
-      <p class="text-gray-500 text-sm mt-1">Track your work hours & location</p>
-    </div>
-    <div class="bg-white rounded-2xl shadow-sm p-6 space-y-4">
-      <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Your Name</label>
-        <input id="reg-name" type="text" placeholder="Enter your full name"
-          class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800"/>
+      <div class="wk-icon-input">
+        <div class="ico"><i class="fas fa-phone"></i></div>
+        <input id="reg-phone" type="tel" placeholder="+1 234 567 8900"/>
       </div>
-      <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
-        <input id="reg-phone" type="tel" placeholder="+1 234 567 8900"
-          class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800"/>
+      <div class="wk-icon-input">
+        <div class="ico"><i class="fas fa-lock"></i></div>
+        <input id="reg-pin" type="password" placeholder="Create a 4-8 digit PIN" maxlength="8" inputmode="numeric" pattern="[0-9]{4,8}"/>
       </div>
-      <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">PIN (4\u20138 digits)</label>
-        <input id="reg-pin" type="password" placeholder="Create a 4\u20138 digit PIN" maxlength="8"
-          inputmode="numeric" pattern="[0-9]{4,8}"
-          class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800"/>
-      </div>
-      <button onclick="registerWorker()" id="reg-btn"
-        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl clock-btn shadow-md">
-        <i class="fas fa-user-plus mr-2"></i>Get Started
+      <button onclick="registerWorker()" id="reg-btn" class="wk-btn-hero screen-animate" style="background:linear-gradient(135deg,#4f46e5,#2563eb);color:#fff;margin-top:4px">
+        <i class="fas fa-user-plus"></i>Get Started
       </button>
-      <button onclick="showLogin()" class="w-full bg-gray-100 hover:bg-gray-200 text-blue-700 font-semibold py-3 rounded-xl text-sm border border-blue-200">
-        <i class="fas fa-sign-in-alt mr-2"></i>Already registered? Sign In
+      <button onclick="showLogin()" style="background:none;border:none;color:var(--primary);font-size:14px;font-weight:600;padding:10px;cursor:pointer;text-align:center;width:100%">
+        Already registered? <span style="text-decoration:underline">Sign In</span>
       </button>
     </div>
   </div>
 </div>
 
 <!-- Login Screen -->
-<div id="screen-login" class="hidden min-h-screen flex items-center justify-center p-4">
-  <div class="w-full max-w-sm slide-up">
-    <div class="text-center mb-8">
-      <div class="w-20 h-20 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
-        <i class="fas fa-clock text-white text-3xl"></i>
+<div id="screen-login" class="hidden" style="min-height:100dvh;min-height:100vh;background:linear-gradient(160deg,#4f46e5 0%,#2563eb 100%);display:flex;flex-direction:column;align-items:stretch">
+  <!-- Hero area -->
+  <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 24px 24px">
+    ${logoUrl
+      ? `<div style="width:88px;height:88px;background:rgba(255,255,255,.95);border-radius:24px;display:flex;align-items:center;justify-content:center;margin-bottom:18px;box-shadow:0 8px 32px rgba(0,0,0,.25);overflow:hidden;padding:10px">
+           <img src="${logoUrl}" alt="${companyName}" style="width:100%;height:100%;object-fit:contain"/>
+         </div>`
+      : `<div style="width:88px;height:88px;background:rgba(255,255,255,.2);border-radius:28px;display:flex;align-items:center;justify-content:center;margin-bottom:18px;box-shadow:0 8px 32px rgba(0,0,0,.2);backdrop-filter:blur(10px)">
+           <i class="fas fa-clock" style="font-size:38px;color:#fff"></i>
+         </div>`}
+    <h1 style="font-size:28px;font-weight:900;color:#fff;letter-spacing:-0.5px;margin:0">Welcome Back</h1>
+    <p style="font-size:14px;color:rgba(255,255,255,.75);margin-top:8px">${companyName}</p>
+  </div>
+  <!-- Bottom sheet -->
+  <div style="background:var(--wk-card);border-radius:32px 32px 0 0;padding:28px 24px 44px;box-shadow:0 -8px 40px rgba(0,0,0,.2)">
+    <div style="width:40px;height:4px;background:var(--wk-border);border-radius:2px;margin:0 auto 24px"></div>
+    <h2 style="font-size:20px;font-weight:800;color:var(--wk-text);margin:0 0 4px">Sign In</h2>
+    <p style="font-size:13px;color:var(--wk-text3);margin:0 0 20px">Enter your phone number and PIN</p>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div class="wk-icon-input">
+        <div class="ico"><i class="fas fa-phone"></i></div>
+        <input id="login-phone" type="tel" placeholder="+1 234 567 8900"/>
       </div>
-      <h1 class="text-2xl font-bold text-gray-800">Welcome Back</h1>
-      <p class="text-gray-500 text-sm mt-1">Sign in to track your time</p>
-    </div>
-    <div class="bg-white rounded-2xl shadow-sm p-6 space-y-4">
-      <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
-        <input id="login-phone" type="tel" placeholder="+1 234 567 8900"
-          class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+      <div class="wk-icon-input">
+        <div class="ico"><i class="fas fa-lock"></i></div>
+        <input id="login-pin" type="password" placeholder="Your PIN" maxlength="8" inputmode="numeric" pattern="[0-9]{4,8}"/>
       </div>
-      <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">PIN</label>
-        <input id="login-pin" type="password" placeholder="Enter your PIN" maxlength="8"
-          inputmode="numeric" pattern="[0-9]{4,8}"
-          class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"/>
-      </div>
-      <button onclick="loginWorker()" id="login-btn"
-        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl clock-btn shadow-md">
-        <i class="fas fa-sign-in-alt mr-2"></i>Sign In
+      <button onclick="loginWorker()" id="login-btn" class="wk-btn-hero screen-animate" style="background:linear-gradient(135deg,#4f46e5,#2563eb);color:#fff;margin-top:4px">
+        <i class="fas fa-sign-in-alt"></i>Sign In
       </button>
-      <button onclick="showForgotPin()" class="w-full text-gray-500 hover:text-blue-600 font-medium py-2 text-sm transition-colors">
-        <i class="fas fa-key mr-1"></i>Forgot PIN?
+      <button onclick="showForgotPin()" style="background:none;border:none;color:var(--wk-text3);font-size:13px;font-weight:600;padding:8px;cursor:pointer;text-align:center;width:100%">
+        <i class="fas fa-key" style="margin-right:4px"></i>Forgot PIN?
       </button>
-      <button onclick="showRegister()" class="w-full text-blue-600 font-medium py-2 text-sm">
-        New user? Register here
+      <button onclick="showRegister()" style="background:none;border:none;color:var(--primary);font-size:14px;font-weight:600;padding:6px;cursor:pointer;text-align:center;width:100%">
+        New user? <span style="text-decoration:underline">Register here</span>
       </button>
     </div>
   </div>
 </div>
 
 <!-- Main Worker Screen -->
-<div id="screen-main" class="hidden bg-gray-50" style="display:none;flex-direction:column;height:100dvh;height:100vh;overflow:hidden">
+<div id="screen-main" class="hidden" style="display:none;flex-direction:column;height:100dvh;height:100vh;overflow:hidden;background:var(--wk-bg)">
   <!-- Header -->
-  <div class="bg-blue-600 text-white px-4 py-5 shadow-md">
-    <div class="flex items-center justify-between">
+  <div style="background:var(--wk-card);border-bottom:1px solid var(--wk-border);padding:14px 20px 10px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+    <div style="display:flex;align-items:center;gap:10px">
+      ${logoUrl
+        ? `<div style="width:36px;height:36px;background:#fff;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:hidden;padding:3px;border:1px solid var(--wk-border)">
+             <img src="${logoUrl}" alt="${companyName}" style="width:100%;height:100%;object-fit:contain"/>
+           </div>`
+        : `<div style="width:36px;height:36px;background:linear-gradient(135deg,#4f46e5,#2563eb);border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+             <i class="fas fa-clock" style="color:#fff;font-size:14px"></i>
+           </div>`}
       <div>
-        <p class="text-blue-200 text-xs uppercase tracking-wider">Logged in as</p>
-        <h2 id="worker-name-display" class="text-xl font-bold"></h2>
-        <p id="worker-phone-display" class="text-blue-200 text-sm"></p>
+        <p id="worker-name-display" style="font-size:15px;font-weight:800;color:var(--wk-text);line-height:1.2"></p>
+        <p id="worker-phone-display" style="font-size:11px;color:var(--wk-text3);margin-top:1px"></p>
       </div>
-      <div class="text-right">
-        <p class="text-blue-200 text-xs">Rate</p>
-        <p id="worker-rate-display" class="text-lg font-bold"></p>
-        <button onclick="logout()" class="text-blue-200 text-xs mt-1 hover:text-white">
-          <i class="fas fa-sign-out-alt mr-1"></i>Logout
-        </button>
-      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <p id="worker-rate-display" style="display:none;font-size:12px;font-weight:700;color:var(--primary)"></p>
+      <button onclick="toggleTheme()" style="width:34px;height:34px;border:none;background:var(--wk-bg);border-radius:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--wk-text2);font-size:14px">
+        <i id="wk-header-theme-icon" class="fas fa-sun"></i>
+      </button>
+      <button onclick="logout()" style="width:34px;height:34px;border:none;background:var(--wk-bg);border-radius:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#ef4444;font-size:14px">
+        <i class="fas fa-sign-out-alt"></i>
+      </button>
     </div>
   </div>
 
   <!-- \u2500\u2500 Bottom Tab Navigation \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 -->
-  <nav id="wk-bottom-nav" style="position:fixed;bottom:0;left:0;right:0;z-index:100;background:#fff;border-top:1px solid #e5e7eb;display:flex;align-items:stretch;box-shadow:0 -2px 12px rgba(0,0,0,0.08)">
-    <button onclick="wkShowTab('clock')" id="wk-nav-clock" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px 10px;border:none;background:none;cursor:pointer;color:#4f46e5;font-size:10px;font-weight:700;gap:3px;border-top:2px solid #4f46e5">
-      <i class="fas fa-clock" style="font-size:18px"></i>Clock In
+  <nav id="wk-bottom-nav" style="position:fixed;bottom:0;left:0;right:0;z-index:100;background:var(--wk-card);border-top:1px solid var(--wk-border);display:flex;align-items:stretch;box-shadow:0 -2px 12px rgba(0,0,0,0.08)">
+    <button onclick="wkShowTab('clock')" id="wk-nav-clock" class="wk-nav-btn2 wk-nav-active">
+      <i class="fas fa-clock" style="font-size:20px"></i>Clock In
     </button>
-    <button onclick="wkShowTab('dispatches')" id="wk-nav-dispatches" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px 10px;border:none;background:none;cursor:pointer;color:#9ca3af;font-size:10px;font-weight:600;gap:3px;border-top:2px solid transparent;position:relative">
-      <i class="fas fa-truck" style="font-size:18px"></i>Jobs
-      <span id="wk-dispatch-badge" style="display:none;position:absolute;top:6px;right:calc(50% - 14px);background:#ef4444;color:#fff;font-size:9px;font-weight:800;padding:1px 5px;border-radius:20px;line-height:1.4">0</span>
+    <button onclick="wkShowTab('dispatches')" id="wk-nav-dispatches" class="wk-nav-btn2" style="position:relative">
+      <i class="fas fa-truck" style="font-size:20px"></i>Jobs
+      <span id="wk-dispatch-badge" style="display:none;position:absolute;top:8px;right:calc(50% - 16px);background:#ef4444;color:#fff;font-size:9px;font-weight:800;padding:1px 5px;border-radius:20px;line-height:1.4">0</span>
     </button>
-    <button onclick="wkShowTab('history')" id="wk-nav-history" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px 10px;border:none;background:none;cursor:pointer;color:#9ca3af;font-size:10px;font-weight:600;gap:3px;border-top:2px solid transparent">
-      <i class="fas fa-receipt" style="font-size:18px"></i>Pay Period
+    <button onclick="wkShowTab('history')" id="wk-nav-history" class="wk-nav-btn2">
+      <i class="fas fa-receipt" style="font-size:20px"></i>Pay Period
     </button>
-    <button onclick="wkShowTab('profile')" id="wk-nav-profile" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px 10px;border:none;background:none;cursor:pointer;color:#9ca3af;font-size:10px;font-weight:600;gap:3px;border-top:2px solid transparent">
-      <i class="fas fa-user-circle" style="font-size:18px"></i>Profile
+    <button onclick="wkShowTab('profile')" id="wk-nav-profile" class="wk-nav-btn2">
+      <i class="fas fa-user-circle" style="font-size:20px"></i>Profile
     </button>
   </nav>
 
@@ -9877,9 +10395,14 @@ function getWorkerHTML(tenant?: any): string {
 
   <!-- CLOCK TAB -->
   <div id="wk-tab-clock" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:80px">
-  <div class="p-4 space-y-4 max-w-lg mx-auto">
+  <div class="p-4 space-y-4 max-w-lg mx-auto screen-animate">
+    <!-- Greeting + Live Clock -->
+    <div style="padding:8px 4px 0">
+      <p id="wk-greeting" style="font-size:13px;font-weight:600;color:var(--wk-text3)">Good morning</p>
+      <p id="wk-live-clock" style="font-size:36px;font-weight:900;color:var(--wk-text);letter-spacing:-1px;line-height:1.1;margin-top:2px">--:--</p>
+    </div>
     <!-- Status Card -->
-    <div id="status-card" class="bg-white rounded-2xl shadow-sm p-5 slide-up">
+    <div id="status-card" class="wk-card2 slide-up">
       <div class="flex items-center gap-3 mb-3">
         <div id="status-dot" class="w-3 h-3 rounded-full bg-gray-300"></div>
         <span id="status-text" class="font-semibold text-gray-700">Not Clocked In</span>
@@ -10002,9 +10525,8 @@ function getWorkerHTML(tenant?: any): string {
     </div>
 
     <!-- Clock In/Out Button -->
-    <button id="clock-btn" onclick="handleClockBtn()"
-      class="w-full py-5 rounded-2xl text-white text-xl font-bold shadow-lg clock-btn flex items-center justify-center gap-3 bg-green-500 hover:bg-green-600">
-      <i id="clock-btn-icon" class="fas fa-play-circle text-2xl"></i>
+    <button id="clock-btn" onclick="handleClockBtn()" class="wk-btn-hero clock-btn" style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff">
+      <i id="clock-btn-icon" class="fas fa-play-circle" style="font-size:24px"></i>
       <span id="clock-btn-text">Clock In</span>
     </button>
 
@@ -10241,7 +10763,7 @@ function getWorkerHTML(tenant?: any): string {
   <div id="wk-tab-profile" style="display:none;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:80px">
     <div class="p-4 max-w-lg mx-auto space-y-4">
       <div style="padding-top:4px">
-        <h2 style="font-size:17px;font-weight:800;color:#1e293b">My Profile</h2>
+        <h2 style="font-size:17px;font-weight:800;color:var(--wk-text)">My Profile</h2>
       </div>
       <!-- Worker info card -->
       <div style="background:#fff;border-radius:20px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
@@ -10286,17 +10808,25 @@ function getWorkerHTML(tenant?: any): string {
             <i class="fas fa-chevron-right" style="color:#d1d5db;margin-left:auto;font-size:12px"></i>
           </button>
           <button onclick="toggleTheme()" id="wk-theme-btn" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px;background:#f0f9ff;border:1.5px solid #bae6fd;border-radius:14px;cursor:pointer;text-align:left">
-            <i id="wk-theme-icon" class="fas fa-moon" style="color:#0ea5e9;font-size:16px;width:20px;text-align:center"></i>
+            <i id="wk-theme-icon" class="fas fa-sun" style="color:#0ea5e9;font-size:16px;width:20px;text-align:center"></i>
             <div>
               <p id="wk-theme-label" style="font-size:13px;font-weight:700;color:#1e293b">Dark Mode</p>
               <p style="font-size:11px;color:#94a3b8;margin-top:1px">Switch between light and dark</p>
             </div>
             <i class="fas fa-chevron-right" style="color:#d1d5db;margin-left:auto;font-size:12px"></i>
           </button>
+          <button onclick="openChangePinModal()" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px;background:#f5f3ff;border:1.5px solid #ddd6fe;border-radius:14px;cursor:pointer;text-align:left">
+            <i class="fas fa-key" style="color:#7c3aed;font-size:16px;width:20px;text-align:center"></i>
+            <div>
+              <p style="font-size:13px;font-weight:700;color:var(--wk-text)">Change PIN</p>
+              <p style="font-size:11px;color:#94a3b8;margin-top:1px">Update your 4-8 digit PIN</p>
+            </div>
+            <i class="fas fa-chevron-right" style="color:#d1d5db;margin-left:auto;font-size:12px"></i>
+          </button>
           <button onclick="requestDeviceResetFromProfile()" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px;background:#fff7ed;border:1.5px solid #fed7aa;border-radius:14px;cursor:pointer;text-align:left">
             <i class="fas fa-mobile-alt" style="color:#f97316;font-size:16px;width:20px;text-align:center"></i>
             <div>
-              <p style="font-size:13px;font-weight:700;color:#1e293b">Register New Device</p>
+              <p style="font-size:13px;font-weight:700;color:var(--wk-text)">Register New Device</p>
               <p style="font-size:11px;color:#94a3b8;margin-top:1px">New phone or tablet? Request a device reset</p>
             </div>
             <i class="fas fa-chevron-right" style="color:#d1d5db;margin-left:auto;font-size:12px"></i>
@@ -10311,10 +10841,11 @@ function getWorkerHTML(tenant?: any): string {
           </button>
         </div>
       </div>
-      <div class="text-center pb-2">
-        <a href="/admin" class="text-gray-400 text-xs hover:text-gray-600">
-          <i class="fas fa-shield-alt mr-1"></i>Admin Panel
+      <div style="text-align:center;padding-bottom:8px">
+        <a href="/admin" style="color:var(--wk-text3);font-size:12px;text-decoration:none">
+          <i class="fas fa-shield-alt" style="margin-right:4px"></i>Admin Panel
         </a>
+        <p style="font-size:10px;color:var(--wk-text3);margin-top:6px;opacity:.5">ClockInProof v2.0</p>
       </div>
     </div>
   </div><!-- /wk-tab-profile -->
@@ -10352,6 +10883,109 @@ function getWorkerHTML(tenant?: any): string {
       </div>
       <p class="text-center text-xs text-gray-400 pb-1">Tap Cancel if you pressed this by accident</p>
     </div>
+  </div>
+</div>
+
+<!-- Travel/Leave Site Modal -->
+<div id="travel-modal" class="hidden fixed inset-0 bg-black/60 flex items-end justify-center z-50" onclick="if(event.target===this)closeTravelModal()">
+  <div class="bg-white w-full max-w-lg rounded-t-3xl shadow-2xl slide-up overflow-hidden" style="background:var(--wk-card)">
+    <div class="bg-gradient-to-r from-orange-500 to-amber-500 px-6 pt-5 pb-6 text-center">
+      <div style="width:40px;height:4px;background:rgba(255,255,255,.3);border-radius:2px;margin:0 auto 16px"></div>
+      <div style="width:56px;height:56px;background:rgba(255,255,255,.2);border-radius:18px;display:flex;align-items:center;justify-content:center;margin:0 auto 12px">
+        <i class="fas fa-map-marker-alt" style="font-size:24px;color:#fff"></i>
+      </div>
+      <h2 style="color:#fff;font-size:18px;font-weight:800;margin:0">You've Left the Job Site</h2>
+      <p style="color:rgba(255,255,255,.85);font-size:13px;margin-top:6px">Where are you going?</p>
+    </div>
+    <div style="padding:20px 20px 36px;display:flex;flex-direction:column;gap:10px">
+      <button onclick="startTravelSegment('pickup')" style="display:flex;align-items:center;gap:14px;padding:14px 16px;background:#fef9f0;border:1.5px solid #fde68a;border-radius:16px;cursor:pointer;text-align:left;width:100%">
+        <div style="width:42px;height:42px;background:#fef3c7;border-radius:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-shopping-basket" style="color:#d97706;font-size:18px"></i>
+        </div>
+        <div>
+          <p style="font-size:14px;font-weight:700;color:var(--wk-text);margin:0">Picking Up Materials</p>
+          <p style="font-size:12px;color:#94a3b8;margin-top:2px">Hardware store, supply pickup, etc.</p>
+        </div>
+      </button>
+      <button onclick="startTravelSegment('travel')" style="display:flex;align-items:center;gap:14px;padding:14px 16px;background:#eff6ff;border:1.5px solid #bfdbfe;border-radius:16px;cursor:pointer;text-align:left;width:100%">
+        <div style="width:42px;height:42px;background:#dbeafe;border-radius:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-car" style="color:#2563eb;font-size:18px"></i>
+        </div>
+        <div>
+          <p style="font-size:14px;font-weight:700;color:var(--wk-text);margin:0">Going to Another Job</p>
+          <p style="font-size:12px;color:#94a3b8;margin-top:2px">Travelling to a different work site</p>
+        </div>
+      </button>
+      <button onclick="startTravelSegment('shop')" style="display:flex;align-items:center;gap:14px;padding:14px 16px;background:#f5f3ff;border:1.5px solid #ddd6fe;border-radius:16px;cursor:pointer;text-align:left;width:100%">
+        <div style="width:42px;height:42px;background:#ede9fe;border-radius:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-warehouse" style="color:#7c3aed;font-size:18px"></i>
+        </div>
+        <div>
+          <p style="font-size:14px;font-weight:700;color:var(--wk-text);margin:0">Going to Shop / Office</p>
+          <p style="font-size:12px;color:#94a3b8;margin-top:2px">Returning to base / office / yard</p>
+        </div>
+      </button>
+      <button onclick="openClockoutConfirm();closeTravelModal()" style="display:flex;align-items:center;gap:14px;padding:14px 16px;background:#fff5f5;border:1.5px solid #fecaca;border-radius:16px;cursor:pointer;text-align:left;width:100%">
+        <div style="width:42px;height:42px;background:#fee2e2;border-radius:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-stop-circle" style="color:#ef4444;font-size:18px"></i>
+        </div>
+        <div>
+          <p style="font-size:14px;font-weight:700;color:var(--wk-text);margin:0">Clock Out</p>
+          <p style="font-size:12px;color:#94a3b8;margin-top:2px">End your shift now</p>
+        </div>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Travel Notes Modal -->
+<div id="travel-notes-modal" class="hidden fixed inset-0 bg-black/60 flex items-end justify-center z-50">
+  <div class="w-full max-w-lg rounded-t-3xl shadow-2xl slide-up" style="background:var(--wk-card);padding:24px 24px 40px">
+    <div style="width:36px;height:4px;background:var(--wk-border);border-radius:2px;margin:0 auto 20px"></div>
+    <h3 id="travel-notes-title" style="font-size:17px;font-weight:800;color:var(--wk-text);margin-bottom:4px">Add a Note</h3>
+    <p style="font-size:13px;color:var(--wk-text3);margin-bottom:16px">Optional — describe where you're going</p>
+    <div class="wk-icon-input" style="margin-bottom:16px">
+      <div class="ico"><i class="fas fa-sticky-note"></i></div>
+      <input id="travel-notes-input" type="text" placeholder="e.g. Picking up lumber from Home Depot"/>
+    </div>
+    <button onclick="confirmTravelSegment()" style="width:100%;background:linear-gradient(135deg,#f97316,#ea580c);color:#fff;border:none;border-radius:16px;padding:16px;font-size:16px;font-weight:700;cursor:pointer;margin-bottom:10px">
+      <i class="fas fa-car" style="margin-right:8px"></i><span id="travel-notes-btn-text">Start Travel</span>
+    </button>
+    <button onclick="closeTravelNotesModal()" style="background:none;border:none;color:var(--wk-text3);font-size:14px;font-weight:600;padding:8px;cursor:pointer;text-align:center;width:100%">Cancel</button>
+  </div>
+</div>
+
+<!-- In Transit Banner (shown during travel segments) -->
+<div id="transit-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:200;background:linear-gradient(135deg,#f97316,#ea580c);color:#fff;padding:12px 16px;align-items:center;gap:10px;box-shadow:0 2px 12px rgba(249,115,22,.4)">
+  <i class="fas fa-car" style="font-size:18px;flex-shrink:0"></i>
+  <div style="flex:1">
+    <p style="font-size:13px;font-weight:800;margin:0">IN TRANSIT</p>
+    <p id="transit-banner-label" style="font-size:11px;opacity:.85;margin:0">Travelling to next location</p>
+  </div>
+  <button onclick="openArrivedModal()" style="background:rgba(255,255,255,.2);border:none;color:#fff;padding:8px 14px;border-radius:10px;font-size:12px;font-weight:700;cursor:pointer;flex-shrink:0">
+    I've Arrived
+  </button>
+</div>
+
+<!-- Arrived Modal -->
+<div id="arrived-modal" class="hidden fixed inset-0 bg-black/60 flex items-end justify-center z-50">
+  <div class="w-full max-w-lg rounded-t-3xl shadow-2xl slide-up" style="background:var(--wk-card);padding:24px 24px 40px">
+    <div style="width:36px;height:4px;background:var(--wk-border);border-radius:2px;margin:0 auto 20px"></div>
+    <div style="width:56px;height:56px;background:#dcfce7;border-radius:18px;display:flex;align-items:center;justify-content:center;margin-bottom:14px">
+      <i class="fas fa-map-marker-alt" style="color:#16a34a;font-size:24px"></i>
+    </div>
+    <h3 style="font-size:17px;font-weight:800;color:var(--wk-text);margin-bottom:4px">You've Arrived!</h3>
+    <p style="font-size:13px;color:var(--wk-text3);margin-bottom:16px">Where are you now?</p>
+    <div class="wk-icon-input" style="margin-bottom:16px">
+      <div class="ico"><i class="fas fa-map-marker-alt"></i></div>
+      <input id="arrived-location-input" type="text" placeholder="Location name (e.g. Client Site, Home Depot)"/>
+    </div>
+    <button onclick="confirmArrived()" style="width:100%;background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;border:none;border-radius:16px;padding:16px;font-size:16px;font-weight:700;cursor:pointer;margin-bottom:10px">
+      <i class="fas fa-check" style="margin-right:8px"></i>Start Working Here
+    </button>
+    <button onclick="document.getElementById('arrived-modal').classList.add('hidden');openClockoutConfirm()" style="background:none;border:none;color:#ef4444;font-size:14px;font-weight:600;padding:8px;cursor:pointer;text-align:center;width:100%">
+      Clock Out Instead
+    </button>
   </div>
 </div>
 
@@ -10692,6 +11326,32 @@ if (isIOS && !isInStandalone) {
 }
 </script>
 
+<script>
+// Live clock + greeting on the Clock tab
+(function() {
+  function pad(n) { return n < 10 ? '0' + n : '' + n; }
+  function tick() {
+    const now = new Date();
+    const clockEl = document.getElementById('wk-live-clock');
+    const greetEl = document.getElementById('wk-greeting');
+    if (clockEl) {
+      const h = now.getHours(), m = now.getMinutes();
+      const h12 = h % 12 || 12;
+      const ampm = h < 12 ? 'AM' : 'PM';
+      clockEl.textContent = pad(h12) + ':' + pad(m) + ' ' + ampm;
+    }
+    if (greetEl) {
+      const h = now.getHours();
+      const name = (window.__WK_WORKER_NAME || '').split(' ')[0];
+      const greeting = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+      greetEl.textContent = name ? greeting + ', ' + name : greeting;
+    }
+  }
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>
+
 </body>
 </html>`
 }
@@ -10779,11 +11439,10 @@ function getAdminHTML(): string {
     @keyframes spin { to{transform:rotate(360deg)} }
   </style>
   <script>
-    // Init theme immediately to avoid flash
+    // Init theme immediately to avoid flash — default dark
     (function(){
       const saved = localStorage.getItem('cip_theme');
-      const sysDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      if (saved === 'dark' || (!saved && sysDark)) document.documentElement.classList.add('dark');
+      if (saved !== 'light') document.documentElement.classList.add('dark');
     })();
   </script>
 </head>
@@ -10887,8 +11546,8 @@ function getAdminHTML(): string {
         <button onclick="refreshAll()" class="w-9 h-9 flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-colors">
           <i class="fas fa-sync-alt text-sm"></i>
         </button>
-        <button id="admin-theme-toggle" onclick="toggleTheme()" title="Toggle dark/light mode" class="w-9 h-9 flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-colors">
-          <i id="admin-theme-icon" class="fas fa-moon text-sm"></i>
+        <button id="admin-theme-toggle" onclick="toggleTheme()" title="Switch to Light Mode" class="w-9 h-9 flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-colors">
+          <i id="admin-theme-icon" class="fas fa-sun text-sm"></i>
         </button>
         <button onclick="adminLogout()" class="w-9 h-9 flex items-center justify-center bg-indigo-800 hover:bg-indigo-900 rounded-xl transition-colors">
           <i class="fas fa-sign-out-alt text-sm"></i>
@@ -12017,6 +12676,39 @@ function getAdminHTML(): string {
         <div class="bg-indigo-50 border border-indigo-100 rounded-xl p-3 text-xs text-indigo-600 flex items-start gap-2">
           <i class="fas fa-shield-halved text-indigo-400 mt-0.5 flex-shrink-0"></i>
           <span>All messaging is handled by the ClockInProof platform \u2014 no external accounts or API keys required. Email and SMS are included in your plan.</span>
+        </div>
+      </div>
+
+
+      <!-- Travel Time Settings Card -->
+      <div style="background:var(--bg-card);border-radius:16px;padding:20px;margin-top:16px;box-shadow:var(--shadow)">
+        <h3 style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:14px;display:flex;align-items:center;gap:8px">
+          <i class="fas fa-car" style="color:#f97316"></i> Travel Time Settings
+        </h3>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div>
+            <label style="font-size:12px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:6px">Default Travel Pay Decision</label>
+            <select id="setting-travel-pay-decision" style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-input);color:var(--text-primary);font-size:14px">
+              <option value="pending">Always Ask (Pending)</option>
+              <option value="paid">Auto-Approve (Pay All Travel)</option>
+              <option value="unpaid">Auto-Unpay (Don't Pay Travel)</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:6px">Travel Pay Rate</label>
+            <select id="setting-travel-pay-rate-mode" style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-input);color:var(--text-primary);font-size:14px">
+              <option value="same">Same as regular rate</option>
+              <option value="zero">$0 (Unpaid travel)</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:6px">Max Travel Hours/Day (flag for review)</label>
+            <input type="number" id="setting-max-travel-hours" min="0" max="24" step="0.5" value="2"
+              style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-input);color:var(--text-primary);font-size:14px"/>
+          </div>
+          <button onclick="saveTravelSettings()" style="background:#f97316;color:#fff;border:none;border-radius:10px;padding:10px 20px;font-size:14px;font-weight:600;cursor:pointer">
+            Save Travel Settings
+          </button>
         </div>
       </div>
 
@@ -14302,6 +14994,69 @@ select.input option{background:#1e293b}
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#334155;border-radius:4px}
+/* -- Theme transition -- */
+body,#topbar,#sidebar,#content,.card,.stat-card,.input,.tbl td,.tbl th,#toast,.btn-ghost,.nav-item{transition:background 200ms ease,color 200ms ease,border-color 200ms ease}
+/* -- Light mode -- */
+body.light{background:#f8fafc;color:#0f172a}
+body.light #topbar{background:#ffffff;border-bottom-color:#e2e8f0}
+body.light #sidebar{background:#f1f5f9;border-right-color:#e2e8f0}
+body.light #content{background:#f8fafc}
+body.light .card{background:#ffffff;border-color:#e2e8f0}
+body.light .stat-card{background:linear-gradient(135deg,#ffffff,#f1f5f9);border-color:#e2e8f0}
+body.light .section-header{color:#94a3b8}
+body.light .nav-item{color:#475569}
+body.light .nav-item:hover{background:#e2e8f0;color:#0f172a}
+body.light .nav-item.active{background:#e0e7ff;color:#4f46e5}
+body.light .input{background:#ffffff;border-color:#cbd5e1;color:#0f172a}
+body.light select.input option{background:#ffffff;color:#0f172a}
+body.light .tbl th{color:#64748b;border-bottom-color:#e2e8f0}
+body.light .tbl td{border-bottom-color:#f1f5f9}
+body.light .tbl tr:hover td{background:rgba(241,245,249,.6)}
+body.light .btn-ghost{background:#f1f5f9;color:#475569;border-color:#e2e8f0}
+body.light .btn-ghost:hover{background:#e2e8f0;color:#0f172a}
+body.light #toast{background:#ffffff;border-color:#4f46e5;color:#0f172a}
+body.light ::-webkit-scrollbar-thumb{background:#cbd5e1}
+/* -- Light mode: inputs -- */
+body.light .input{background:#ffffff!important;border-color:#e2e8f0!important;color:#0f172a!important}
+body.light .input::placeholder{color:#94a3b8!important}
+body.light select.input option{background:#ffffff!important;color:#0f172a!important}
+/* -- Light mode: table headers -- */
+body.light .tbl th{background:#f8fafc!important;color:#64748b!important;border-bottom-color:#e2e8f0!important}
+body.light .tbl td{color:#1e293b}
+/* -- Light mode: page headings (override inline color:#fff) -- */
+body.light #content h1,body.light #content h2,body.light #content h3{color:#0f172a!important}
+body.light #content .page > div > p[style]{color:#64748b!important}
+/* -- Light mode: stat card labels -- */
+body.light .stat-card > div:first-child{color:#64748b!important}
+/* -- Light mode: tab pill buttons (tax tabs etc) -- */
+body.light .btn-ghost{background:#ffffff!important;color:#475569!important;border-color:#e2e8f0!important}
+body.light .btn-ghost:hover{background:#f1f5f9!important;color:#0f172a!important}
+/* -- Light mode: section/card labels -- */
+body.light .section-header{color:#94a3b8!important}
+body.light .card h3[style]{color:#475569!important}
+/* -- Light mode: modals -- */
+body.light .modal-bg > div[style]{background:#ffffff!important;border:1px solid #e2e8f0}
+body.light .modal-bg [style*="background:#1e293b"]{background:#f8fafc!important}
+body.light .modal-bg [style*="background:#0f172a"]{background:#ffffff!important}
+/* -- Light mode: inline dark backgrounds anywhere in #content -- */
+body.light #content [style*="background:#0f172a"]{background:#f8fafc!important}
+body.light #content [style*="background:#0c1322"]{background:#f1f5f9!important}
+body.light #content [style*="background:#1e293b"]{background:#f8fafc!important}
+body.light #content [style*="color:#e2e8f0"]{color:#1e293b!important}
+body.light #content [style*="color:#94a3b8"]{color:#64748b!important}
+body.light #content [style*="color:#fff"]{color:#0f172a!important}
+body.light #content [style*="color:#ffffff"]{color:#0f172a!important}
+/* -- Info rows (email config cards) -- */
+.info-row{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:#1e293b;border:1px solid #334155;border-radius:8px}
+.info-row-label{font-size:13px;color:#64748b}
+.info-row-value{font-size:13px;color:#e2e8f0}
+.addr-row{padding:12px 16px;background:#1e293b;border:1px solid #334155;border-radius:8px}
+.addr-row-label{color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:3px}
+.addr-row-value{color:#e2e8f0;font-size:13px}
+body.light .info-row{background:#ffffff;border-color:#e2e8f0}
+body.light .info-row-value{color:#1e293b}
+body.light .addr-row{background:#ffffff;border-color:#e2e8f0}
+body.light .addr-row-value{color:#1e293b}
 </style>
 </head>
 <body>
@@ -14343,6 +15098,7 @@ select.input option{background:#1e293b}
     <div style="display:flex;align-items:center;gap:10px">
       <span style="font-size:12px;color:#475569">Refreshed: <span id="last-refresh">--</span></span>
       <button class="btn btn-ghost" onclick="refreshCurrent()"><i class="fas fa-rotate-right"></i></button>
+      <button class="btn btn-ghost" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode" style="padding:6px 10px;font-size:16px;line-height:1">☀️</button>
       <button class="btn btn-danger" onclick="doLogout()" style="padding:6px 14px"><i class="fas fa-sign-out-alt"></i> Logout</button>
     </div>
   </div>
@@ -14602,13 +15358,8 @@ select.input option{background:#1e293b}
               </div>
             </div>
             <div>
-              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Admin Email <span style="color:#818cf8;text-transform:lowercase;font-weight:400">(auto-generated)</span></label>
-              <div style="display:flex;align-items:center;background:#0f172a;border:1px solid #475569;border-radius:8px;overflow:hidden">
-                <span style="padding:8px 10px;color:#64748b;font-size:13px;white-space:nowrap">admin.</span>
-                <input type="text" id="new-email-slug" style="flex:1;background:transparent;border:none;color:#e2e8f0;font-size:13px;padding:8px 0;outline:none" placeholder="company-name" oninput="onEmailSlugInput()">
-                <span style="padding:8px 10px;color:#64748b;font-size:13px;white-space:nowrap">@clockinproof.com</span>
-              </div>
-              <p id="email-preview" style="font-size:11px;color:#818cf8;margin-top:4px;display:none"></p>
+              <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Admin Email</label>
+              <input type="email" id="new-admin-email" class="input" placeholder="admin@theircompany.com">
             </div>
             <div>
               <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Admin PIN <span style="color:#475569;text-transform:lowercase;font-weight:400">(default: 1234)</span></label>
@@ -14808,20 +15559,20 @@ select.input option{background:#1e293b}
         <div class="card" style="padding:20px">
           <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:14px"><i class="fas fa-envelope" style="color:#818cf8;margin-right:6px"></i>EMAIL CONFIGURATION</h3>
           <div style="display:flex;flex-direction:column;gap:10px">
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
-              <span style="font-size:13px;color:#94a3b8">RESEND_API_KEY</span>
+            <div class="info-row">
+              <span class="info-row-label">RESEND_API_KEY</span>
               <span class="pill badge-active">[v] Configured</span>
             </div>
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
-              <span style="font-size:13px;color:#94a3b8">From Domain</span>
-              <span style="font-size:13px;color:#e2e8f0">clockinproof.com [v]</span>
+            <div class="info-row">
+              <span class="info-row-label">From Domain</span>
+              <span class="info-row-value">clockinproof.com [v]</span>
             </div>
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
-              <span style="font-size:13px;color:#94a3b8">DKIM Status</span>
+            <div class="info-row">
+              <span class="info-row-label">DKIM Status</span>
               <span class="pill badge-active">Verified</span>
             </div>
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0f172a;border-radius:8px">
-              <span style="font-size:13px;color:#94a3b8">SPF Status</span>
+            <div class="info-row">
+              <span class="info-row-label">SPF Status</span>
               <span class="pill badge-active">Verified</span>
             </div>
           </div>
@@ -14829,21 +15580,21 @@ select.input option{background:#1e293b}
         <div class="card" style="padding:20px">
           <h3 style="font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:14px"><i class="fas fa-paper-plane" style="color:#818cf8;margin-right:6px"></i>SENDING ADDRESSES</h3>
           <div style="display:flex;flex-direction:column;gap:8px;font-size:13px">
-            <div style="padding:10px;background:#0f172a;border-radius:8px">
-              <div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:3px">GPS Fraud Alerts</div>
-              <div style="color:#e2e8f0">alerts@clockinproof.com</div>
+            <div class="addr-row">
+              <div class="addr-row-label">GPS Fraud Alerts</div>
+              <div class="addr-row-value">alerts@clockinproof.com</div>
             </div>
-            <div style="padding:10px;background:#0f172a;border-radius:8px">
-              <div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Weekly Reports</div>
-              <div style="color:#e2e8f0">reports@clockinproof.com</div>
+            <div class="addr-row">
+              <div class="addr-row-label">Weekly Reports</div>
+              <div class="addr-row-value">reports@clockinproof.com</div>
             </div>
-            <div style="padding:10px;background:#0f172a;border-radius:8px">
-              <div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Payslips</div>
-              <div style="color:#e2e8f0">payroll@clockinproof.com</div>
+            <div class="addr-row">
+              <div class="addr-row-label">Payslips</div>
+              <div class="addr-row-value">payroll@clockinproof.com</div>
             </div>
-            <div style="padding:10px;background:#0f172a;border-radius:8px">
-              <div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Welcome Emails</div>
-              <div style="color:#e2e8f0">admin.{slug}@clockinproof.com</div>
+            <div class="addr-row">
+              <div class="addr-row-label">Welcome Emails</div>
+              <div class="addr-row-value">admin.{slug}@clockinproof.com</div>
             </div>
           </div>
         </div>
@@ -14937,7 +15688,7 @@ select.input option{background:#1e293b}
             <div>
               <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">Resend API Key</label>
               <input type="password" id="sp-resend-key" class="input" placeholder="re_xxxxxxxxxxxxxxxxxxxx">
-              <p style="font-size:10px;color:#475569;margin-top:3px">Set as <code style="background:#0f172a;padding:1px 4px;border-radius:3px;color:#a5b4fc">RESEND_API_KEY</code> Cloudflare secret</p>
+              <p style="font-size:10px;color:#475569;margin-top:3px">Set as <code style="background:#e0e7ff;padding:1px 4px;border-radius:3px;color:#4f46e5">RESEND_API_KEY</code> Cloudflare secret</p>
             </div>
             <div>
               <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px">From Address</label>
@@ -14948,9 +15699,9 @@ select.input option{background:#1e293b}
               <button class="btn btn-primary" onclick="savePlatformResend()"><i class="fas fa-save"></i> Save</button>
               <button class="btn btn-ghost" onclick="testPlatformEmail()"><i class="fas fa-paper-plane"></i> Send Test Email</button>
             </div>
-            <div style="background:#0f172a;border:1px solid #1e293b;border-radius:6px;padding:10px;font-size:11px;color:#64748b">
+            <div class="addr-row" style="font-size:11px">
               <strong style="color:#94a3b8">Production setup:</strong><br>
-              <code style="color:#a5b4fc">wrangler pages secret put RESEND_API_KEY</code>
+              <code style="color:#818cf8">wrangler pages secret put RESEND_API_KEY</code>
             </div>
             <p id="sp-resend-status" style="font-size:12px;color:#34d399;display:none"></p>
           </div>
@@ -15686,6 +16437,26 @@ let allTenants = []
 let sessPage = 1
 const sessLimit = 50
 
+// -- Theme ---------------------------------------------------------------------
+function applyTheme(theme) {
+  if (theme === 'light') {
+    document.body.classList.add('light')
+    const btn = document.getElementById('theme-toggle')
+    if (btn) btn.textContent = '🌙'
+  } else {
+    document.body.classList.remove('light')
+    const btn = document.getElementById('theme-toggle')
+    if (btn) btn.textContent = '☀️'
+  }
+  localStorage.setItem('superadmin-theme', theme)
+}
+function toggleTheme() {
+  applyTheme(document.body.classList.contains('light') ? 'dark' : 'light')
+}
+;(function initTheme() {
+  applyTheme(localStorage.getItem('superadmin-theme') || 'dark')
+})()
+
 // -- Auth ----------------------------------------------------------------------
 async function doSuperLogin() {
   const pin = document.getElementById('super-pin').value.trim()
@@ -16371,27 +17142,13 @@ async function executeDeleteTenant() {
 let slugCheckTimer = null
 function onSlugInput() {
   const slug = document.getElementById('new-slug').value.trim()
-  const emailEl = document.getElementById('new-email-slug')
-  if (!emailEl._manuallyEdited) { emailEl.value = slug; updateEmailPreview(slug) }
   checkSlug(slug)
-}
-function onEmailSlugInput() {
-  const el = document.getElementById('new-email-slug')
-  el._manuallyEdited = true
-  updateEmailPreview(el.value.trim().toLowerCase().replace(/[^a-z0-9-]/g,'-').replace(/-+/g,'-'))
-}
-function updateEmailPreview(val) {
-  const p = document.getElementById('email-preview')
-  if (val) { p.textContent = '-> admin.'+val+'@clockinproof.com'; p.style.display='block' }
-  else p.style.display='none'
 }
 document.getElementById('new-company').addEventListener('input', function() {
   const slugEl = document.getElementById('new-slug')
-  const emailEl = document.getElementById('new-email-slug')
   if (!slugEl.value) {
     const auto = this.value.toLowerCase().replace(/[^a-z0-9\\s-]/g,'').trim().replace(/\\s+/g,'-').replace(/-+/g,'-')
     slugEl.value = auto
-    if (!emailEl._manuallyEdited) { emailEl.value = auto; updateEmailPreview(auto) }
     checkSlug(auto)
   }
 })
@@ -16410,14 +17167,13 @@ async function checkSlug(val) {
 async function createTenant() {
   const company  = document.getElementById('new-company').value.trim()
   const slug     = document.getElementById('new-slug').value.trim()
-  const eSlug    = (document.getElementById('new-email-slug').value.trim().toLowerCase().replace(/[^a-z0-9-]/g,'-').replace(/-+/g,'-'))||slug
-  const email    = 'admin.'+eSlug+'@clockinproof.com'
+  const email    = document.getElementById('new-admin-email').value.trim()
   const pin      = document.getElementById('new-pin').value.trim()
   const plan     = document.getElementById('new-plan').value
   const address  = document.getElementById('new-address').value.trim()
   if (!company || !slug) { showToast('[X] Company name and subdomain required', true); return }
   const res = document.getElementById('create-result')
-  res.style.cssText = 'display:block;padding:12px;border-radius:8px;background:#1e293b;color:#94a3b8;font-size:13px'
+  res.style.cssText = 'display:block;padding:12px 16px;border-radius:8px;background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid #94a3b8;color:#64748b;font-size:13px'
   res.textContent = 'Creating tenant...'
   try {
     const d = await api('/api/super/tenants', {
@@ -16425,19 +17181,18 @@ async function createTenant() {
       body: JSON.stringify({ slug, company_name:company, admin_email:email, admin_pin:pin||'1234', plan, company_address:address })
     })
     if (d.error) {
-      res.style.cssText = 'display:block;padding:12px;border-radius:8px;background:#7f1d1d33;border:1px solid #dc2626;color:#fca5a5;font-size:13px'
-      res.textContent = '[X] '+d.error; return
+      res.style.cssText = 'display:block;padding:14px 16px;border-radius:8px;background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #ef4444;font-size:13px'
+      res.innerHTML = \`<span style="color:#991b1b;font-weight:600">Error</span> <span style="color:#b91c1c">\${d.error}</span>\`; return
     }
-    res.style.cssText = 'display:block;padding:12px;border-radius:8px;background:#065f4633;border:1px solid #059669;color:#6ee7b7;font-size:13px'
-    res.innerHTML = \`[OK] <strong>Tenant created!</strong><br>
-      Admin email: <strong>\${email}</strong><br>
-      Worker app: <a href="https://\${d.slug}.clockinproof.com" target="_blank" style="color:#6ee7b7;text-decoration:underline">\${d.slug}.clockinproof.com</a>\`
-    ;['new-company','new-slug','new-email-slug','new-pin','new-address'].forEach(id => {
-      const el = document.getElementById(id); if(el){el.value='';el._manuallyEdited=false}
+    res.style.cssText = 'display:block;padding:14px 16px;border-radius:8px;background:#f0fdf4;border:1px solid #bbf7d0;border-left:4px solid #22c55e;font-size:13px'
+    res.innerHTML = \`<div style="font-weight:600;color:#15803d;margin-bottom:8px">✓ Tenant Created!</div>
+      <div style="margin-bottom:4px"><span style="color:#64748b">Admin email:</span> <span style="color:#1e293b;font-weight:500">\${email}</span></div>
+      <div><span style="color:#64748b">Worker app:</span> <a href="https://\${d.slug}.clockinproof.com" target="_blank" style="color:#2563eb;text-decoration:underline;font-weight:500">\${d.slug}.clockinproof.com</a></div>\`
+    ;['new-company','new-slug','new-admin-email','new-pin','new-address'].forEach(id => {
+      const el = document.getElementById(id); if(el) el.value=''
     })
     document.getElementById('new-plan').value = 'growth'
     document.getElementById('slug-check').textContent = ''
-    document.getElementById('email-preview').style.display = 'none'
     showToast('[gift]9 Tenant created!')
     allTenants = []
   } catch { 
