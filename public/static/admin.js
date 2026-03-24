@@ -6136,148 +6136,94 @@ function renderEncircleCards(jobs) {
   // Store for detail lookups
   _encircleJobsCache = jobs
 
-  container.innerHTML = jobs.map(j => {
+  // Wrap rows in a bordered list container
+  container.innerHTML = `<div style="border:1px solid var(--border,#e2e8f0);border-radius:14px;overflow:hidden;background:var(--bg-card,#fff)">`
+    + jobs.map((j, idx) => {
     const hasGPS    = j.lat && j.lng
     const typeColor = lossColor(j.type_of_loss)
     const typeLabel = (j.type_of_loss || 'Unknown').replace('type_of_loss_','').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())
     const typeIcon  = typeLabel.toLowerCase().includes('water') ? 'fa-tint' : typeLabel.toLowerCase().includes('fire') ? 'fa-fire' : typeLabel.toLowerCase().includes('mold') ? 'fa-leaf' : typeLabel.toLowerCase().includes('wind') ? 'fa-wind' : 'fa-home'
-    const date      = j.date_of_loss    ? new Date(j.date_of_loss).toLocaleDateString('en-CA', {month:'short', day:'numeric', year:'numeric'}) : null
-    const created   = j.date_claim_created ? new Date(j.date_claim_created).toLocaleDateString('en-CA', {month:'short', day:'numeric', year:'numeric'}) : null
-    // Always use the human-readable address for map links (opens address search in Google Maps)
+    const date      = j.date_of_loss ? new Date(j.date_of_loss).toLocaleDateString('en-CA', {month:'short', day:'numeric', year:'numeric'}) : null
     const mapsUrl   = `https://maps.google.com/?q=${encodeURIComponent(j.full_address || '')}`
 
     const phoneRaw   = j.policyholder_phone || ''
     const phoneClean = phoneRaw.replace(/\D/g,'')
-    const phoneLink  = phoneClean
-      ? `<a href="tel:+${phoneClean}" class="text-sky-600 hover:underline font-semibold">${phoneRaw}</a>`
-      : '<span class="text-gray-300 italic text-[11px]">Not provided</span>'
 
-    const emailLink = j.policyholder_email
-      ? `<a href="mailto:${escHtml(j.policyholder_email)}" class="text-sky-600 hover:underline break-all">${escHtml(j.policyholder_email)}</a>`
-      : '<span class="text-gray-300 italic text-[11px]">Not provided</span>'
-
-    const encLink = j.permalink_url
-      ? `<a href="${j.permalink_url}" target="_blank" class="inline-flex items-center gap-1 text-[11px] text-indigo-500 hover:text-indigo-700 font-medium border border-indigo-200 rounded-lg px-2 py-0.5 hover:bg-indigo-50 transition-colors"><i class="fas fa-external-link-alt"></i>Encircle</a>`
-      : ''
-
-    // Masked sensitive fields with card-scoped reveal IDs
     const claimKey = j.encircle_claim_id || Math.random()
-    const policyMasked = j.policy_number
-      ? `<span class="font-mono text-gray-600" id="enc-policy-${claimKey}">${maskSensitive(j.policy_number)}</span>
-         <button onclick="revealEncircleCardField('enc-policy-${claimKey}','${j.policy_number.replace(/'/g,'\\\'')}')" class="ml-1 text-[9px] text-sky-500 border border-sky-200 rounded px-1 py-0.5 hover:bg-sky-50">Show</button>`
-      : '<span class="text-gray-300 italic text-[11px]">--</span>'
 
     const insurerRefMasked = j.insurer_identifier
-      ? `<span class="font-mono text-gray-600 text-[11px]" id="enc-insurer-${claimKey}">${maskSensitive(j.insurer_identifier)}</span>
-         <button onclick="revealEncircleCardField('enc-insurer-${claimKey}','${j.insurer_identifier.replace(/'/g,'\\\'')}')" class="ml-1 text-[9px] text-sky-500 border border-sky-200 rounded px-1 py-0.5 hover:bg-sky-50">Show</button>`
-      : '<span class="text-gray-300 italic text-[11px]">--</span>'
-
-    const notesHtml = j.loss_details
-      ? `<div class="bg-amber-50 border border-amber-100 rounded-xl p-3 mt-1">
-           <p class="text-[10px] font-bold text-amber-700 uppercase tracking-wide mb-1 flex items-center gap-1"><i class="fas fa-clipboard-list"></i> Loss Notes</p>
-           <p class="text-xs text-gray-600 leading-relaxed italic">${escHtml(j.loss_details.substring(0,220))}${j.loss_details.length > 220 ? '...' : ''}</p>
-         </div>`
+      ? `<span class="font-mono" id="enc-insurer-${claimKey}" style="color:var(--text-secondary)">${maskSensitive(j.insurer_identifier)}</span>
+         <button onclick="event.stopPropagation();revealEncircleCardField('enc-insurer-${claimKey}','${j.insurer_identifier.replace(/'/g,'\\\'')}')" style="font-size:9px;color:#0ea5e9;border:1px solid #bae6fd;border-radius:4px;padding:0 4px;background:none;cursor:pointer;margin-left:2px">Show</button>`
       : ''
 
+    const isClosed = j.status === 'closed'
+    const rowBg    = isClosed ? 'background:rgba(239,68,68,.03)' : ''
+    const sep      = idx < jobs.length - 1 ? 'border-bottom:1px solid var(--border,#e2e8f0)' : ''
+
     return `
-    <div class="bg-white rounded-2xl shadow-sm border ${j.status === 'closed' ? 'border-red-100 opacity-80' : 'border-gray-100 hover:shadow-md hover:border-sky-200'} transition-all duration-200 overflow-hidden cursor-pointer" onclick="openEncircleCardDetail('${claimKey}')">
+    <div style="${sep};${rowBg}" class="${isClosed ? 'opacity-75' : 'hover:bg-sky-50/40'} transition-colors">
 
-      ${j.status === 'closed' ? `
-      <!-- CIP-Closed banner -- this job was closed inside ClockInProof -->
-      <div class="flex items-center justify-between px-4 py-1.5 bg-red-50 border-b border-red-100">
-        <div class="flex items-center gap-2">
-          <i class="fas fa-lock text-red-400 text-xs"></i>
-          <span class="text-xs font-bold text-red-500 uppercase tracking-wide">Closed in CIP</span>
-          ${j.cip_closed_note ? `<span class="text-[10px] text-red-400 italic">-- ${escHtml(j.cip_closed_note)}</span>` : ''}
+      <!-- ROW 1: icon | name | type | address ———————— GPS | Encircle | Dispatch -->
+      <div class="flex items-center gap-2 cursor-pointer" style="padding:10px 16px 4px" onclick="openEncircleCardDetail('${claimKey}')">
+        <!-- Type icon badge -->
+        <div class="flex-shrink-0 flex items-center justify-center rounded-lg ${typeColor.split(' ')[0]}" style="width:28px;height:28px">
+          <i class="fas ${typeIcon} ${typeColor.split(' ')[1]}" style="font-size:12px"></i>
         </div>
-        ${j.cip_closed_at ? `<span class="text-[10px] text-red-300">${new Date(j.cip_closed_at).toLocaleDateString('en-CA',{month:'short',day:'numeric'})}</span>` : ''}
+        <!-- Name + type pill + address -->
+        <div class="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
+          <span style="font-size:14px;font-weight:700;color:var(--text-primary,#1e293b);white-space:nowrap${isClosed ? ';text-decoration:line-through;color:#9ca3af' : ''}">${escHtml(j.policyholder_name || 'Unknown Policyholder')}</span>
+          <span class="${typeColor}" style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;white-space:nowrap">${escHtml(typeLabel)}</span>
+          ${j.full_address ? `<a href="${mapsUrl}" target="_blank" onclick="event.stopPropagation()" style="font-size:12px;color:var(--text-secondary,#64748b);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px;display:inline-block" class="hover:text-sky-600 hover:underline"><i class="fas fa-map-marker-alt" style="color:#38bdf8;font-size:10px;margin-right:3px"></i>${escHtml(j.full_address)}</a>` : ''}
+          ${isClosed ? `<span style="font-size:10px;font-weight:700;color:#ef4444;background:#fef2f2;padding:1px 7px;border-radius:20px;border:1px solid #fecaca">${j.cip_closed_note ? escHtml(j.cip_closed_note.substring(0,30)) : 'Closed in CIP'}</span>` : ''}
+        </div>
+        <!-- Right actions -->
+        <div class="flex items-center flex-shrink-0 gap-1.5" style="margin-left:8px">
+          ${!hasGPS ? `<span style="font-size:10px;font-weight:700;color:#f59e0b;background:#fffbeb;padding:2px 7px;border-radius:20px;border:1px solid #fde68a;white-space:nowrap"><i class="fas fa-map-marker-alt" style="margin-right:2px"></i>No GPS</span>` : ''}
+          ${j.permalink_url ? `<a href="${j.permalink_url}" target="_blank" onclick="event.stopPropagation()" style="font-size:11px;font-weight:600;color:#6366f1;border:1px solid #c7d2fe;border-radius:7px;padding:2px 8px;text-decoration:none;background:none;white-space:nowrap" class="hover:bg-indigo-50"><i class="fas fa-external-link-alt" style="font-size:9px;margin-right:3px"></i>Encircle</a>` : ''}
+          ${!isClosed
+            ? `<button onclick="event.stopPropagation();dispatchEncircleJob('${claimKey}')" style="font-size:11px;font-weight:600;color:#fff;background:#8b5cf6;border:none;border-radius:7px;padding:4px 10px;cursor:pointer;white-space:nowrap" class="hover:bg-violet-600"><i class="fas fa-paper-plane" style="font-size:9px;margin-right:4px"></i>Dispatch</button>`
+            : `<button onclick="event.stopPropagation();reopenEncircleJob('${j.encircle_claim_id}')" style="font-size:11px;font-weight:600;color:#16a34a;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:7px;padding:4px 10px;cursor:pointer;white-space:nowrap"><i class="fas fa-redo" style="font-size:9px;margin-right:4px"></i>Reopen</button>`
+          }
+        </div>
+      </div>
+
+      <!-- ROW 2: phone | email | date | PM | claim# | insurer ———————— Close Job -->
+      <div class="flex items-center" style="padding:2px 16px 10px;padding-left:58px">
+        <div class="flex-1 flex items-center flex-wrap" style="gap:4px 10px;font-size:12px;color:var(--text-secondary,#64748b);min-width:0">
+          ${phoneRaw ? `<span class="flex items-center" style="gap:3px;white-space:nowrap"><i class="fas fa-phone" style="font-size:9px;color:#38bdf8"></i><a href="tel:+${phoneClean}" onclick="event.stopPropagation()" style="color:#0ea5e9;text-decoration:none;font-weight:500" class="hover:underline">${phoneRaw}</a></span>` : ''}
+          ${phoneRaw && j.policyholder_email ? `<span style="color:var(--border,#e2e8f0)">|</span>` : ''}
+          ${j.policyholder_email ? `<span class="flex items-center" style="gap:3px;min-width:0"><i class="fas fa-envelope" style="font-size:9px;color:#38bdf8;flex-shrink:0"></i><a href="mailto:${escHtml(j.policyholder_email)}" onclick="event.stopPropagation()" style="color:#0ea5e9;text-decoration:none;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px;display:inline-block" class="hover:underline">${escHtml(j.policyholder_email)}</a></span>` : ''}
+          ${date ? `<span style="color:var(--border,#e2e8f0)">|</span><span class="flex items-center" style="gap:3px;white-space:nowrap"><i class="fas fa-calendar" style="font-size:9px;color:#94a3b8"></i>${date}</span>` : ''}
+          ${j.project_manager_name ? `<span style="color:var(--border,#e2e8f0)">|</span><span class="flex items-center" style="gap:3px;white-space:nowrap"><i class="fas fa-user" style="font-size:9px;color:#94a3b8"></i>${escHtml(j.project_manager_name)}</span>` : ''}
+          ${j.encircle_claim_id ? `<span style="color:var(--border,#e2e8f0)">|</span><span class="flex items-center" style="gap:2px;color:#94a3b8;white-space:nowrap"><i class="fas fa-hashtag" style="font-size:9px"></i>${j.encircle_claim_id}</span>` : ''}
+          ${j.insurer_identifier ? `<span style="color:var(--border,#e2e8f0)">|</span><span class="flex items-center" style="gap:2px;white-space:nowrap">${insurerRefMasked}</span>` : ''}
+          ${j.insurance_company_name ? `<span style="color:var(--border,#e2e8f0)">|</span><span class="flex items-center" style="gap:3px;white-space:nowrap"><i class="fas fa-shield-alt" style="font-size:9px;color:#94a3b8"></i>${escHtml(j.insurance_company_name)}</span>` : ''}
+          ${j.loss_details ? `<span style="color:var(--border,#e2e8f0)">|</span><button onclick="event.stopPropagation();toggleEncircleNotes('enc-notes-${claimKey}')" style="font-size:11px;font-weight:600;color:#d97706;background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:3px"><i class="fas fa-clipboard-list" style="font-size:10px"></i>Notes</button>` : ''}
+        </div>
+        <!-- Close Job -->
+        ${!isClosed
+          ? `<button onclick="event.stopPropagation();closeEncircleJob('${j.encircle_claim_id}','${(j.policyholder_name||'').replace(/'/g,"\\'")}' )" style="font-size:11px;font-weight:500;color:#9ca3af;background:none;border:1px solid transparent;border-radius:7px;padding:3px 8px;cursor:pointer;white-space:nowrap;flex-shrink:0;margin-left:8px" class="hover:text-red-500 hover:bg-red-50 hover:border-red-200"><i class="fas fa-times-circle" style="font-size:10px;margin-right:3px"></i>Close Job</button>`
+          : ''
+        }
+      </div>
+
+      <!-- Collapsible notes -->
+      ${j.loss_details ? `
+      <div id="enc-notes-${claimKey}" style="display:none;padding:0 16px 10px 58px">
+        <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 12px">
+          <p style="font-size:10px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;display:flex;align-items:center;gap:4px"><i class="fas fa-clipboard-list"></i>Loss Notes</p>
+          <p style="font-size:12px;color:#4b5563;line-height:1.5;font-style:italic">${escHtml(j.loss_details.substring(0,300))}${j.loss_details.length>300?'...':''}</p>
+        </div>
       </div>` : ''}
 
-      <!-- -- Card Top Bar -- -->
-      <div class="flex items-center gap-3 px-4 pt-4 pb-3">
-        <!-- Type icon -->
-        <div class="w-10 h-10 rounded-xl ${typeColor.split(' ')[0]} flex items-center justify-center flex-shrink-0 ${j.status === 'closed' ? 'opacity-50' : ''}">
-          <i class="fas ${typeIcon} text-base ${typeColor.split(' ')[1]}"></i>
-        </div>
-        <!-- Name + type badge -->
-        <div class="flex-1 min-w-0">
-          <p class="font-bold text-gray-900 text-sm leading-tight truncate ${j.status === 'closed' ? 'line-through text-gray-400' : ''}">${escHtml(j.policyholder_name || 'Unknown Policyholder')}</p>
-          <span class="inline-block mt-0.5 text-[10px] font-bold px-2 py-0.5 rounded-full ${typeColor}">${escHtml(typeLabel)}</span>
-        </div>
-        <!-- GPS + Encircle link -->
-        <div class="flex flex-col items-end gap-1.5 flex-shrink-0 ml-1">
-          ${hasGPS
-            ? `<span class="text-[10px] text-emerald-600 font-bold flex items-center gap-1 bg-emerald-50 px-1.5 py-0.5 rounded-full"><i class="fas fa-map-marker-alt"></i>GPS [v]</span>`
-            : `<span class="text-[10px] text-amber-500 font-bold flex items-center gap-1 bg-amber-50 px-1.5 py-0.5 rounded-full"><i class="fas fa-map-marker-alt"></i>No GPS</span>`
-          }
-          ${encLink}
-        </div>
-      </div>
-
-      <!-- -- Address row -- -->
-      <div class="px-4 pb-3 border-b border-gray-50">
-        <a href="${mapsUrl}" target="_blank" onclick="event.stopPropagation()"
-           class="inline-flex items-center gap-2 text-xs text-gray-700 hover:text-sky-600 hover:underline transition-colors leading-snug">
-          <i class="fas fa-map-marked-alt text-sky-400 flex-shrink-0"></i>
-          <span class="leading-snug">${escHtml(j.full_address || '--')}</span>
-        </a>
-      </div>
-
-      <!-- -- Contact grid -- -->
-      <div class="px-4 py-3 grid grid-cols-2 gap-x-4 gap-y-2.5 text-xs border-b border-gray-50">
-        <div>
-          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">? Phone</p>
-          ${phoneLink}
-        </div>
-        <div class="min-w-0">
-          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">?? Email</p>
-          <div class="truncate">${emailLink}</div>
-        </div>
-        ${date ? `<div>
-          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">? Date of Loss</p>
-          <p class="text-gray-700 font-medium">${date}</p>
-        </div>` : ''}
-        ${j.project_manager_name ? `<div>
-          <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wide mb-0.5">? Project Manager</p>
-          <p class="text-gray-800 font-semibold truncate">${escHtml(j.project_manager_name)}</p>
-        </div>` : ''}
-      </div>
-
-      <!-- -- Insurance (masked) -- -->
-      ${(j.insurance_company_name || j.policy_number || j.insurer_identifier) ? `
-      <div class="px-4 py-3 bg-amber-50/40 border-b border-amber-100/60 grid grid-cols-1 gap-2 text-xs">
-        <p class="text-[10px] font-bold text-amber-700 uppercase tracking-wide flex items-center gap-1 mb-0.5"><i class="fas fa-shield-alt"></i> Insurance</p>
-        ${j.insurance_company_name ? `<div class="flex items-center gap-2"><span class="text-gray-500 w-24 flex-shrink-0">Company</span><span class="font-semibold text-gray-800">${escHtml(j.insurance_company_name)}</span></div>` : ''}
-        ${j.policy_number ? `<div class="flex items-center gap-2"><span class="text-gray-500 w-24 flex-shrink-0">Policy #</span><span class="flex items-center gap-0.5">${policyMasked}</span></div>` : ''}
-        ${j.insurer_identifier ? `<div class="flex items-center gap-2"><span class="text-gray-500 w-24 flex-shrink-0">Insurer Ref</span><span class="flex items-center gap-0.5">${insurerRefMasked}</span></div>` : ''}
-      </div>` : ''}
-
-      <!-- -- Loss Notes -- -->
-      ${notesHtml ? `<div class="px-4 pb-3 pt-2">${notesHtml}</div>` : ''}
-
-      <!-- -- Card Footer -- -->
-      <div class="px-4 py-2.5 bg-gray-50 flex items-center justify-between text-[11px] text-gray-400 border-t border-gray-100">
-        <span class="flex items-center gap-1"><i class="fas fa-hashtag text-[9px]"></i>Claim ${j.encircle_claim_id}</span>
-        <div class="flex items-center gap-2">
-          ${j.status !== 'closed'
-            ? `<button onclick="event.stopPropagation(); dispatchEncircleJob('${claimKey}')"
-                class="inline-flex items-center gap-1 text-[11px] font-semibold text-white bg-violet-500 hover:bg-violet-600 px-2.5 py-1 rounded-lg transition-colors">
-                <i class="fas fa-paper-plane text-[10px]"></i>Dispatch
-              </button>
-              <button onclick="event.stopPropagation(); closeEncircleJob('${j.encircle_claim_id}', '${(j.policyholder_name||'').replace(/'/g,"\\'")}' )"
-                class="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-500 bg-white hover:bg-red-50 hover:text-red-600 border border-gray-200 hover:border-red-200 px-2.5 py-1 rounded-lg transition-colors">
-                <i class="fas fa-times-circle text-[10px]"></i>Close Job
-              </button>`
-            : `<button onclick="event.stopPropagation(); reopenEncircleJob('${j.encircle_claim_id}')"
-                class="inline-flex items-center gap-1 text-[11px] font-semibold text-green-600 bg-white hover:bg-green-50 border border-green-200 px-2.5 py-1 rounded-lg transition-colors">
-                <i class="fas fa-redo text-[10px]"></i>Reopen
-              </button>`
-          }
-          <span>${created ? `<i class="fas fa-calendar text-[9px]"></i>Created ${created}` : ''}</span>
-        </div>
-      </div>
     </div>`
-  }).join('')
+  }).join('') + `</div>`
+}
+
+function toggleEncircleNotes(id) {
+  const el = document.getElementById(id)
+  if (!el) return
+  el.style.display = el.style.display === 'none' ? 'block' : 'none'
 }
 
 // Cache for Encircle tab cards (populated by renderEncircleCards)
