@@ -3544,76 +3544,160 @@ setInterval(async () => {
 }, 60000)
 
 // -- Payroll Totals Tab --------------------------------------------------------
+// ── Canadian Payroll Tab ────────────────────────────────────────────────────
+let _payrollData = null  // last loaded payroll data (for export)
+
 async function loadPayrollTab() {
-  const listEl = document.getElementById('payroll-workers-list')
-  const ptPayroll = document.getElementById('pt-total-payroll')
-  const ptHours   = document.getElementById('pt-total-hours')
-  const ptWorkers = document.getElementById('pt-total-workers')
+  const listEl   = document.getElementById('payroll-workers-list')
+  const totalsEl = document.getElementById('payroll-employer-totals')
   if (!listEl) return
-  listEl.innerHTML = '<p class="text-gray-400 text-center py-8"><i class="fas fa-spinner fa-spin mr-2"></i>Loading...</p>'
+
+  // Read selectors
+  const provinceEl  = document.getElementById('payroll-province')
+  const freqEl      = document.getElementById('payroll-frequency')
+  const monthEl     = document.getElementById('payroll-month')
+
+  // Default month picker to current month if blank
+  if (monthEl && !monthEl.value) {
+    const now = new Date()
+    monthEl.value = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`
+  }
+
+  const province   = provinceEl?.value || 'ON'
+  const payPeriods = freqEl?.value     || '26'
+  const monthVal   = monthEl?.value    || new Date().toISOString().slice(0,7)
+  const [yr, mo]   = monthVal.split('-')
+
+  listEl.innerHTML = '<tr><td colspan="8" class="text-center py-10 text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Calculating...</td></tr>'
+  if (totalsEl) totalsEl.classList.add('hidden')
+
   try {
-    const res  = await fetch('/api/stats/summary?period=' + currentPeriod)
+    const res  = await fetch(`/api/payroll/${yr}/${mo}?province=${province}&pay_periods=${payPeriods}`)
     const data = await res.json()
-    const stats = data.stats || {}
+    _payrollData = data
 
-    if (ptPayroll) ptPayroll.textContent = '$' + (stats.total_earnings || 0).toFixed(2)
-    if (ptHours)   ptHours.textContent   = (stats.total_hours || 0).toFixed(1) + 'h'
-    if (ptWorkers) ptWorkers.textContent = stats.total_workers || 0
+    const workers = data.payroll || []
+    const totals  = data.employerTotals || {}
+    const fmt     = v => '$' + (v||0).toFixed(2)
 
-    // Get per-worker breakdown via sessions
-    const sRes  = await fetch('/api/sessions?limit=500')
-    const sData = await sRes.json()
-    const sessions = sData.sessions || []
+    // Update summary banner
+    const setEl = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v }
+    setEl('pt-total-payroll', fmt(totals.totalGross))
+    setEl('pt-total-hours',   workers.reduce((s,w) => s + (w.total_hours||0), 0).toFixed(1) + 'h')
+    setEl('pt-net-pay',       fmt(totals.totalNetPay))
+    setEl('pt-total-cpp',     fmt(totals.totalCPP))
+    setEl('pt-total-ei',      fmt(totals.totalEI))
+    setEl('pt-total-workers', workers.length)
+    // Update navbar stat
+    const nb = document.getElementById('stat-total-payroll')
+    if (nb) nb.textContent = fmt(totals.totalGross)
+    const nb2 = document.getElementById('stat-total-payroll-card')
+    if (nb2) nb2.textContent = fmt(totals.totalGross)
 
-    // Group by worker
-    const byWorker = {}
-    sessions.forEach(sess => {
-      if (!byWorker[sess.worker_id]) byWorker[sess.worker_id] = {
-        name: sess.worker_name, phone: sess.worker_phone, sessions: [], hours: 0, earnings: 0
-      }
-      byWorker[sess.worker_id].sessions.push(sess)
-      byWorker[sess.worker_id].hours    += sess.total_hours || 0
-      byWorker[sess.worker_id].earnings += sess.earnings    || 0
-    })
-
-    const workers = Object.values(byWorker).sort((a, b) => b.earnings - a.earnings)
     if (!workers.length) {
-      listEl.innerHTML = '<p class="text-gray-400 text-center py-8">No payroll data for this period</p>'
+      listEl.innerHTML = '<tr><td colspan="8" class="text-center py-10 text-gray-400">No payroll data for this period</td></tr>'
       return
     }
 
-    listEl.innerHTML = workers.map(w => `
-      <div class="bg-white border border-gray-100 rounded-2xl p-4 hover:shadow-md transition-shadow">
-        <div class="flex items-center justify-between gap-3">
-          <div class="flex items-center gap-3 flex-1 min-w-0">
-            <div class="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center flex-shrink-0">
-              <span class="text-indigo-700 font-bold text-sm">${w.name.charAt(0).toUpperCase()}</span>
+    listEl.innerHTML = workers.map(w => {
+      const p = w.payroll || {}
+      return `<tr class="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+        <td class="px-3 py-2.5">
+          <div class="flex items-center gap-2">
+            <div class="w-7 h-7 bg-indigo-100 rounded-full flex items-center justify-center flex-shrink-0">
+              <span class="text-indigo-700 font-bold text-xs">${(w.name||'?').charAt(0).toUpperCase()}</span>
             </div>
-            <div class="min-w-0">
-              <p class="font-semibold text-gray-800 truncate">${w.name}</p>
-              <p class="text-xs text-gray-400">${w.phone} . ${w.sessions.length} shift${w.sessions.length !== 1 ? 's' : ''}</p>
+            <div>
+              <p class="font-semibold text-gray-800 text-xs">${w.name||'—'}</p>
+              <p class="text-[10px] text-gray-400">${w.province||province} &middot; ${w.sessions?.length||0} shifts</p>
             </div>
           </div>
-          <div class="text-right flex-shrink-0">
-            <p class="text-xl font-bold text-green-700">$${w.earnings.toFixed(2)}</p>
-            <p class="text-xs text-gray-400">${w.hours.toFixed(1)}h worked</p>
-          </div>
-        </div>
-        <!-- Mini bar showing proportion of total earnings -->
-        <div class="mt-3 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-          <div class="h-full bg-gradient-to-r from-indigo-400 to-purple-500 rounded-full" style="width:${Math.min(100,(w.earnings/(stats.total_earnings||1))*100).toFixed(1)}%"></div>
-        </div>
-        <div class="mt-2 flex gap-3 text-[11px] text-gray-400">
-          <span><i class="fas fa-clock mr-1"></i>${w.hours.toFixed(1)} hrs</span>
-          <span><i class="fas fa-calendar mr-1"></i>${w.sessions.length} sessions</span>
-          <span class="ml-auto text-indigo-600 font-medium">${((w.earnings/(stats.total_earnings||1))*100).toFixed(1)}% of payroll</span>
-        </div>
-      </div>
-    `).join('')
+        </td>
+        <td class="px-3 py-2.5 text-right text-gray-700">${(w.total_hours||0).toFixed(1)}h</td>
+        <td class="px-3 py-2.5 text-right font-medium text-gray-800">${fmt(p.grossPay)}</td>
+        <td class="px-3 py-2.5 text-right text-orange-700">${fmt(p.cpp)}${p.cpp2 > 0 ? '<span class="text-[10px] text-orange-400 ml-0.5">+'+fmt(p.cpp2)+'</span>' : ''}</td>
+        <td class="px-3 py-2.5 text-right text-red-700">${fmt(p.ei)}</td>
+        <td class="px-3 py-2.5 text-right text-gray-700">${fmt(p.federalTax)}</td>
+        <td class="px-3 py-2.5 text-right text-gray-700">${fmt(p.provincialTax)}</td>
+        <td class="px-3 py-2.5 text-right font-bold text-green-700">${fmt(p.netPay)}</td>
+      </tr>`
+    }).join('')
+
+    // Show employer totals footer
+    if (totalsEl) {
+      totalsEl.classList.remove('hidden')
+      setEl('et-gross',    fmt(totals.totalGross))
+      setEl('et-cpp',      fmt(totals.totalCPP))
+      setEl('et-ei',       fmt(totals.totalEI))
+      setEl('et-fedtax',   fmt(totals.totalFedTax))
+      setEl('et-provtax',  fmt(totals.totalProvTax))
+      setEl('et-netpay',   fmt(totals.totalNetPay))
+      setEl('et-emp-cpp',  fmt(totals.totalEmployerCPP))
+      setEl('et-emp-cpp2', fmt(totals.totalEmployerCPP2))
+      setEl('et-emp-ei',   fmt(totals.totalEmployerEI))
+      setEl('et-emp-total',fmt(totals.totalEmployerCost))
+    }
+
+    // Set province selector to tenant default on first load
+    if (provinceEl && data.province && !provinceEl._loaded) {
+      provinceEl.value = data.province
+      provinceEl._loaded = true
+    }
+
   } catch(e) {
-    if (listEl) listEl.innerHTML = '<p class="text-red-400 text-center py-8">Error loading payroll data</p>'
-    console.error(e)
+    listEl.innerHTML = '<tr><td colspan="8" class="text-center py-8 text-red-400">Error loading payroll data</td></tr>'
+    console.error('loadPayrollTab:', e)
   }
+}
+
+function exportPayrollCSV() {
+  if (!_payrollData) { showToast('Load payroll data first', true); return }
+  const workers = _payrollData.payroll || []
+  const period  = _payrollData.period  || ''
+  const rows = [['Name','Phone','Province','Hours','Gross Pay','CPP','CPP2','EI','Federal Tax','Prov Tax','Total Deductions','Net Pay']]
+  workers.forEach(w => {
+    const p = w.payroll || {}
+    rows.push([
+      w.name, w.phone, w.province||'', (w.total_hours||0).toFixed(2),
+      (p.grossPay||0).toFixed(2), (p.cpp||0).toFixed(2), (p.cpp2||0).toFixed(2),
+      (p.ei||0).toFixed(2), (p.federalTax||0).toFixed(2), (p.provincialTax||0).toFixed(2),
+      (p.totalDeductions||0).toFixed(2), (p.netPay||0).toFixed(2)
+    ])
+  })
+  // Employer totals row
+  const t = _payrollData.employerTotals || {}
+  rows.push(['','','','','','','','','','','Employer CPP Match:', (t.totalEmployerCPP||0).toFixed(2)])
+  rows.push(['','','','','','','','','','','Employer EI (1.4x):',  (t.totalEmployerEI||0).toFixed(2)])
+  rows.push(['','','','','','','','','','','Total Employer Cost:', (t.totalEmployerCost||0).toFixed(2)])
+
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob)
+  a.download = `payroll-${period}.csv`; a.click()
+}
+
+function exportT4Summary() {
+  if (!_payrollData) { showToast('Load payroll data first', true); return }
+  const workers = _payrollData.payroll || []
+  const year    = (_payrollData.period||'').slice(0,4) || new Date().getFullYear()
+  // T4 Summary fields (Box 14=Gross, Box 16=CPP, Box 18=EI, Box 22=Income Tax Withheld)
+  const rows = [['Employee Name','Phone','Province','Box 14 - Gross Employment Income','Box 16 - CPP Contributions','Box 17 - CPP2','Box 18 - EI Premiums','Box 22 - Income Tax Deducted','Net Pay']]
+  workers.forEach(w => {
+    const p = w.payroll || {}
+    rows.push([
+      w.name, w.phone||'', w.province||'',
+      (p.grossPay||0).toFixed(2),
+      (p.cpp||0).toFixed(2),
+      (p.cpp2||0).toFixed(2),
+      (p.ei||0).toFixed(2),
+      ((p.federalTax||0)+(p.provincialTax||0)).toFixed(2),
+      (p.netPay||0).toFixed(2)
+    ])
+  })
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob)
+  a.download = `t4-summary-${year}.csv`; a.click()
 }
 
 // -- Accountant Weekly Summary Tab ---------------------------------------------
